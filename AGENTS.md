@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Commands
 
@@ -10,9 +10,6 @@ All commands use Bun as the package manager and script runner.
 - `bun run dev` — start the bot in watch mode (tsx watch)
 - `bun run start` — start the bot once (tsx)
 - `bun run lint` — run ESLint (typescript-eslint, rules include `consistent-type-imports`)
-- `bun run biome` — run Biome (formatter + linter, configured by `biome.json`); use `bun run biome:fix` to auto-apply
-- `bun run type-check` — `tsc --noEmit` without emitting to `dist/`
-- `bun run knip` — detect unused files, dependencies, and exports (configured by `knip.json`)
 - `bun run test` — run all tests once with Vitest
 - `bun run build` — type-check and emit to `dist/` (prebuild wipes `dist/`)
 - `bun run smoke:stage` — run `src/scripts/stage-audio-smoke.ts` to verify voice playback in a stage channel
@@ -46,8 +43,6 @@ Entry point: `src/index.ts` reads config, creates the Discord client, then regis
   - `schedule.ts` — JST-aware next-start computation
   - `timeline.ts` — builds the event timeline (`work-start-soon`, `phase-start`, `phase-ending-soon`, `break-start`, `session-end`) and the progress-message formatter
   - `service.ts` — orchestrator: schedules, joins voice, plays audio, posts/edits progress messages, records attendance
-  - `session-clock.ts` — `createSessionClock`, `getDelayFor`, `clampTimeToEvent`, `getTimelineNow`, `findTimelineStartIndex`; switches between wall-clock and compressed minute scales
-  - `playback-budget.ts` — `resolvePlaybackTimeouts` bounds the audio player's start/finish waits so a stalled player cannot overrun the gap between events
   - `engagement.ts` — check-in buttons, attendance persistence (`data/timekeeper-history.json`), Wikipedia-powered fortune summary at session end
   - `wikipedia.ts` — fetches a random JA Wikipedia topic with a hardcoded fallback
   - `voice-debug.ts` — structured JSON logging around `@discordjs/voice` (errors only by default; state-change handlers are commented out)
@@ -76,7 +71,7 @@ If you change voice behavior, leave these workarounds in place until you confirm
 
 ### Timekeeper session clock
 
-`createSessionClock` (in `session-clock.ts`) drives two time scales:
+`createSessionClock` (in `service.ts`) drives two time scales:
 
 - **wall-clock mode**: scheduled sessions — delays match real time
 - **mid-session resume / `TIMEKEEPER_RUN_ON_READY=true`**: minute durations are compressed to 1 second so the whole session runs in ~minutes instead of ~100 minutes
