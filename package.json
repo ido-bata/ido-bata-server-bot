@@ -1,6 +1,6 @@
 {
   "name": "ido-bata-server-bot",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Discord server bot for ido-bata operations",
   "main": "dist/index.js",
   "packageManager": "bun@1.3.10",

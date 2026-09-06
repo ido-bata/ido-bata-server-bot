@@ -1,12 +1,12 @@
 import { basename } from "node:path";
 
 import { describe, expect, it } from "vitest";
+import { timekeeperConfig } from "../src/features/timekeeper/config.js";
 import {
   getCurrentOrNextDailyStartAt,
   getNextDailyStartAt,
   getTimekeeperPreparationStartAt,
 } from "../src/features/timekeeper/schedule.js";
-import { timekeeperConfig } from "../src/features/timekeeper/config.js";
 import {
   buildProgressMessage,
   buildTimekeeperTimeline,
@@ -179,13 +179,17 @@ describe("timekeeper timeline", () => {
   });
 
   it.each([4, 6])("rejects phaseCount %d with exact error message", (phaseCount) => {
-    const phases = phaseCount === 4
-      ? timekeeperConfig.phases.slice(0, 4)
-      : [...timekeeperConfig.phases, timekeeperConfig.phases[0]!];
+    const phases =
+      phaseCount === 4
+        ? timekeeperConfig.phases.slice(0, 4)
+        : [...timekeeperConfig.phases, timekeeperConfig.phases[0]!];
 
-    expect(() => buildTimekeeperTimeline(new Date("2026-04-01T21:00:00+09:00"), { ...timekeeperConfig, phases })).toThrow(
-      `Timekeeper requires exactly 5 phases, received ${phaseCount}`,
-    );
+    expect(() =>
+      buildTimekeeperTimeline(new Date("2026-04-01T21:00:00+09:00"), {
+        ...timekeeperConfig,
+        phases,
+      }),
+    ).toThrow(`Timekeeper requires exactly 5 phases, received ${phaseCount}`);
   });
 
   it("preparation starts 3 minutes before a 21:00 JST session start", () => {

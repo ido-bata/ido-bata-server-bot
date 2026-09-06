@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildProgressMessage,
-  buildTimekeeperTimeline,
-} from "../src/features/timekeeper/timeline.js";
-import {
   clampTimeToEvent,
   createSessionClock,
   findTimelineStartIndex,
   getDelayFor,
   getTimelineNow,
 } from "../src/features/timekeeper/session-clock.js";
+import {
+  buildProgressMessage,
+  buildTimekeeperTimeline,
+} from "../src/features/timekeeper/timeline.js";
 
 const TIMELINE_START_AT = new Date("2026-04-01T21:00:00+09:00");
 
@@ -68,9 +68,7 @@ describe("timekeeper session clock", () => {
     it("returns the wall-clock delta when the clock is normal (60_000)", () => {
       const clock = createSessionClock(timeline, TIMELINE_START_AT, 0, 60_000, runtimeNowMs);
       const targetAt = timeline[1]!.at;
-      expect(getDelayFor(clock, targetAt, runtimeNowMs)).toBe(
-        targetAt.getTime() - runtimeNowMs,
-      );
+      expect(getDelayFor(clock, targetAt, runtimeNowMs)).toBe(targetAt.getTime() - runtimeNowMs);
     });
 
     it("returns 15_000 for a 15-minute target under a fresh compressed clock", () => {
@@ -136,11 +134,7 @@ describe("timekeeper session clock", () => {
       const clock = createSessionClock(timeline, TIMELINE_START_AT, 0, 1_000, startAtMs);
       const event = timeline[1]!;
       const timelineNow = getTimelineNow(clock, startAtMs + 7_000);
-      const message = buildProgressMessage(
-        event,
-        clampTimeToEvent(event, timelineNow),
-        0,
-      );
+      const message = buildProgressMessage(event, clampTimeToEvent(event, timelineNow), 0);
       expect(message).toContain("07/15分");
     });
   });
