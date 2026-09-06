@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      timezone: "Asia/Tokyo"
+      time: "09:00"
+    open-pull-requests-limit: 5
+    groups:
+      - name: "patch updates"
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps"
+    labels:
+      - "deps"
+    # Bun owns the lockfile but the npm ecosystem is the closest signal for our dependencies.
+    # Required checks are owned by `.github/workflows/ci.yml`.

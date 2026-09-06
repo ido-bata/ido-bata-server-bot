@@ -1,0 +1,29 @@
+name: Release Drafter
+
+on:
+  push:
+    # Main branch and any active release branch feed into the next draft release.
+    branches:
+      - main
+      - "release-*-*-*"
+  # Allow manually refreshing the draft from the Actions tab.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update-draft-release:
+    name: Update draft release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Update draft release
+        uses: release-drafter/release-drafter@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          config-name: release-drafter.yml
+          publish: false
+          # Only populate categories that have at least one PR; hide empty groups.
+          include-templates: true

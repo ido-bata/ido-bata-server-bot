@@ -1,0 +1,57 @@
+name: バグ報告 / Bug report
+description: 不具合を再現・報告するためのテンプレート。
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        再現可能な不具合のためのIssueです。
+  - type: input
+    id: version
+    attributes:
+      label: 対象バージョン / Target version
+      placeholder: release-0-2-0
+  - type: dropdown
+    id: severity
+    attributes:
+      label: 重要度 / Severity
+      options:
+        - Critical (本番運用を止める)
+        - High (主要な機能が使えない)
+        - Medium (回避策がある)
+        - Low (軽微)
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / Component
+      options:
+        - timekeeper
+        - reaction-roles
+        - config / infra
+        - docs
+        - other
+  - type: textarea
+    id: repro
+    attributes:
+      label: 再現手順 / Reproduction
+      placeholder: |
+        1. ...
+        2. ...
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待される挙動 / Expected
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際の挙動 / Actual
+  - type: textarea
+    id: logs
+    attributes:
+      label: ログ / スクリーンショット
+      description: Discord のメッセージIDやbotのログ。**Discord bot token は絶対に貼らないこと。**
+  - type: textarea
+    id: verify
+    attributes:
+      label: 検証方針 / Verification plan
+      placeholder: どのテストをどう修正 / 追加するか

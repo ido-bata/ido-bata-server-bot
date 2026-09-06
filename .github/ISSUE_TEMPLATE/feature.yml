@@ -1,0 +1,53 @@
+name: 機能追加 / Feature
+description: ユーザー可視の機能を追加・変更するチケットのテンプレート。
+labels: ["type:feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        機能追加 / 改善のIssueです。各セクションを埋めてください。
+  - type: input
+    id: target-version
+    attributes:
+      label: Target version
+      description: 紐付ける `release-<major>-<minor>-<patch>` または "backlog"
+      placeholder: release-0-2-0
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / Component
+      options:
+        - timekeeper
+        - reaction-roles
+        - config / infra
+        - docs
+        - other
+  - type: textarea
+    id: objective
+    attributes:
+      label: 目的 / Objective
+      placeholder: |
+        何を解決したいか・何を可能にしたいかを1〜2文で。
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 受け入れ条件 / Acceptance criteria
+      placeholder: |
+        - チェック可能な箇条書き
+        - テストがどうgreenを示すか
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope / Non-scope
+      placeholder: |
+        含むもの / 含まないもの
+  - type: textarea
+    id: dependency
+    attributes:
+      label: 依存・ブロッカー / Dependencies & blockers
+  - type: textarea
+    id: verify
+    attributes:
+      label: 検証方針 / Verification plan
+      placeholder: |
+        unit / smoke / integration / manual のどれをどう実行するか

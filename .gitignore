@@ -1,5 +1,23 @@
 node_modules/
 dist/
+coverage/
+.tmp/
+.reference/
+
+# Env / secrets — keep committed examples only
 .env
+.env.*
+!.env.example
+!.env.*.example
+
+# Logs
 *.log
+
+# Local persisted state for the timekeeper feature
 data/timekeeper-history.json
+
+# Editor / OS / tooling
+.DS_Store
+.idea/
+.vscode/
+*.tsbuildinfo

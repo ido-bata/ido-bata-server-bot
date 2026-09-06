@@ -5,11 +5,22 @@ Discord server bot for local development first, with future hosted deployment.
 ## Setup
 
 1. Install Bun 1.3 or later.
-2. Copy `.env.example` to `.env`.
-3. Fill in the Discord application values.
-4. Run `bun install`.
+2. Run `bun install`.
+3. Provide the required environment variables — see [Environment](#environment). The exact source is left to the host (CI secret, secret manager, exported shell variables, or — only as a last resort — a local `.env` file that **is not committed**). `.env.example` documents the schema and is the source of truth; do not rely on it for real secrets.
 
-If a bot token is ever pasted into chat, logs, or a public place, rotate it immediately in the Discord Developer Portal and replace it in `.env`.
+If a bot token is ever pasted into chat, logs, a commit, or an agent result, rotate it immediately in the Discord Developer Portal and re-source the new value from your secret manager.
+
+## Environment
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `DISCORD_TOKEN` | yes | Bot token from the Discord Developer Portal |
+| `DISCORD_CLIENT_ID` | yes | Application (bot) client ID |
+| `DISCORD_GUILD_ID` | yes | Development guild ID |
+| `DISCORD_ENABLE_MESSAGE_CONTENT` | no | Set to `true` to enable the privileged Message Content intent (also enable it on the Developer Portal side) |
+| `TIMEKEEPER_RUN_ON_READY` | no | `true` runs the timekeeper session immediately on `ClientReady` and compresses in-session minutes to 1 second for testing. Without it the timekeeper schedules for the next 21:00 JST. |
+
+Validation lives in `src/config.ts` (Zod). The bot refuses to start with a clear error if a required variable is missing or empty.
 
 ## Commands
 
@@ -41,7 +52,7 @@ Next, feature handlers can be added for reaction roles, pinned templates, and vo
 
 ## Reaction roles
 
-Reaction role rules are currently defined in [src/features/reaction-roles/config.ts](C:\Users\rebui\Desktop\ido-bata-server-bot\src\features\reaction-roles\config.ts).
+Reaction role rules are defined in [`src/features/reaction-roles/config.ts`](./src/features/reaction-roles/config.ts).
 
 Each rule needs:
 
@@ -53,7 +64,7 @@ Replace the placeholder values in that file with your real Discord IDs before te
 
 ## Timekeeper
 
-The daily timekeeper is configured in [src/features/timekeeper/config.ts](C:\Users\rebui\Desktop\ido-bata-server-bot\src\features\timekeeper\config.ts).
+The daily timekeeper is configured in [`src/features/timekeeper/config.ts`](./src/features/timekeeper/config.ts).
 
 Current behavior:
 

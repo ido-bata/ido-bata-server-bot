@@ -1,0 +1,42 @@
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+version-resolver:
+  major:
+    labels: ["breaking"]
+  minor:
+    labels: ["feature"]
+  patch:
+    labels: ["bug", "deps", "security"]
+  default: patch
+
+categories:
+  - title: "🚨 Breaking changes"
+    labels: ["breaking"]
+  - title: "🚀 Added"
+    labels: ["feature"]
+  - title: "🔧 Changed"
+    labels: ["change"]
+  - title: "🐛 Fixed"
+    labels: ["bug"]
+  - title: "🛡️ Security"
+    labels: ["security"]
+  - title: "📦 Dependencies"
+    labels: ["deps"]
+  - title: "📝 Documentation"
+    labels: ["docs"]
+
+exclude-labels:
+  - "skip-changelog"
+
+change-template: "- $TITLE (#$NUMBER) @$AUTHOR"
+
+template: |
+  ## Changes
+
+  $CHANGES
+
+  ## Contributors
+
+  $CONTRIBUTORS
+
+  **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...HEAD
