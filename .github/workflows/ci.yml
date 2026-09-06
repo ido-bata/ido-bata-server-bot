@@ -9,7 +9,7 @@ on:
 # Cancel superseded runs on the same PR / branch and avoid running duplicate work.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-projects: true
+  cancel-in-progress: true
 
 permissions:
   contents: read
