@@ -5,6 +5,7 @@
   "main": "dist/index.js",
   "packageManager": "bun@1.3.10",
   "scripts": {
+    "audit": "bun audit --production",
     "biome": "biome check .",
     "biome:fix": "biome check --write .",
     "build": "tsc --project tsconfig.json",

@@ -51,3 +51,6 @@ jobs:
 
       - name: Unused code
         run: bun run knip
+
+      - name: Audit production dependencies
+        run: bun audit --production
