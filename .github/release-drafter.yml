@@ -1,29 +1,33 @@
 name-template: "v$RESOLVED_VERSION"
 tag-template: "v$RESOLVED_VERSION"
+# Resolver prefers the team's `type:*` labels and falls back to the
+# generic labels documented in docs/process.md. This keeps release-drafter
+# working both for hand-labelled PRs and for dependabot / chore / refactor
+# PRs that may not carry a `type:*` label.
 version-resolver:
   major:
-    labels: ["breaking"]
+    labels: ["breaking", "type:feat"]
   minor:
-    labels: ["feature"]
+    labels: ["feature", "type:feat"]
   patch:
-    labels: ["bug", "deps", "security"]
+    labels: ["bug", "type:bug", "type:refactor", "type:chore", "type:test", "deps", "security", "dependencies"]
   default: patch
 
 categories:
   - title: "🚨 Breaking changes"
-    labels: ["breaking"]
+    labels: ["breaking", "type:feat"]
   - title: "🚀 Added"
-    labels: ["feature"]
+    labels: ["feature", "type:feat"]
   - title: "🔧 Changed"
-    labels: ["change"]
+    labels: ["change", "type:refactor", "type:chore"]
   - title: "🐛 Fixed"
-    labels: ["bug"]
+    labels: ["bug", "type:bug"]
   - title: "🛡️ Security"
     labels: ["security"]
   - title: "📦 Dependencies"
-    labels: ["deps"]
+    labels: ["deps", "dependencies"]
   - title: "📝 Documentation"
-    labels: ["docs"]
+    labels: ["docs", "documentation"]
 
 exclude-labels:
   - "skip-changelog"

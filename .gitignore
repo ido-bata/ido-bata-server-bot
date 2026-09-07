@@ -21,3 +21,7 @@ data/timekeeper-history.json
 .idea/
 .vscode/
 *.tsbuildinfo
+
+# Claude Code worktrees — per-worker isolated mutable workspaces.
+# eslint / vitest already exclude this path; .gitignore keeps biome in sync.
+.claude/worktrees/

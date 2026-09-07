@@ -19,6 +19,7 @@ This file is the dispatcher for Claude Code (claude.ai/code) when working on `id
 | React to a dependency advisory / secret leak   | `docs/security.md`                         |
 | Decide what verification to run                | `docs/quality.md`                          |
 | Onboarding for a new contributor               | `README.md`, `CONTRIBUTING.md`             |
+| Document an architectural / process decision   | `docs/adr/` (read newest first)            |
 
 ## Commands
 
