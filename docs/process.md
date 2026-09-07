@@ -10,6 +10,19 @@ How durable work flows through this repo. Maintained in repo-controlled docs (th
 - **Demo / retro**: end of sprint. Issues for the next sprint are triaged on Monday morning and assigned a `Target version`.
 - **Hotfixes**: a critical, exposed, dependency-level vulnerability (see [`docs/security.md`](./security.md)) or a confirmed production outage can interrupt the current sprint with a patch release.
 
+## Active sprint
+
+| Version | Start date | Target release date | Status |
+| ------- | ---------- | ------------------- | ------ |
+| `release-0-1-0` | 2026-09-07 | 2026-09-14 | In Progress |
+
+### Included Issues
+
+- #51: `bun audit --production` を required check 化
+- #54: 依存関係の更新とセキュリティパッチ適用
+- #55: timekeeper ステージ接続の安定性改善
+- #56: リリース駆動アジャイル開発プロセスの導入
+
 ## SemVer policy
 
 This repo follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html):
