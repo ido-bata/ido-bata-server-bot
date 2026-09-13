@@ -15,6 +15,7 @@ describe("readConfig", () => {
       discordClientId: "client-id",
       discordGuildId: "guild-id",
       enableMessageContentIntent: false,
+      enableGuildMembersIntent: false,
     });
   });
 
@@ -27,6 +28,17 @@ describe("readConfig", () => {
     });
 
     expect(config.enableMessageContentIntent).toBe(true);
+  });
+
+  it("enables guild members intent only when explicitly configured", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_ID: "guild-id",
+      DISCORD_ENABLE_GUILD_MEMBERS: "true",
+    });
+
+    expect(config.enableGuildMembersIntent).toBe(true);
   });
 
   it("throws when a required variable is missing", () => {

@@ -13,6 +13,7 @@ async function main(): Promise<void> {
   const config = readConfig(process.env);
   const client = createDiscordClient({
     enableMessageContentIntent: config.enableMessageContentIntent,
+    enableGuildMembersIntent: config.enableGuildMembersIntent,
   });
 
   client.once(Events.ClientReady, (readyClient) => {
