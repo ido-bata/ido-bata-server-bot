@@ -10,17 +10,17 @@ import {
  * `node:fs.watch`). Exported so callers can compose it; tests inject their
  * own factory to avoid touching the filesystem.
  */
-export function createFsWatcherFactory(): FileWatcherFactory {
+function createFsWatcherFactory(): FileWatcherFactory {
   return (filePath, onChange) => createFsWatcher(filePath, onChange);
 }
 
-export const consoleConfigStoreLogger: ConfigStoreLogger = {
+const consoleConfigStoreLogger: ConfigStoreLogger = {
   info: (message, meta) => console.log(`[config-hot-reload] ${message}`, meta ?? ""),
   warn: (message, meta) => console.warn(`[config-hot-reload] ${message}`, meta ?? ""),
   error: (message, meta) => console.error(`[config-hot-reload] ${message}`, meta ?? ""),
 };
 
-export type RegisterConfigHotReloadOptions = {
+type RegisterConfigHotReloadOptions = {
   /** Absolute path to the runtime config file (typically `data/config.json`). */
   filePath: string;
   /** Override the default 1s debounce. Tests pass `0` or small values. */
@@ -51,21 +51,3 @@ export function registerConfigHotReload(options: RegisterConfigHotReloadOptions)
 
   return store;
 }
-
-export {
-  type HotReloadConfig,
-  hotReloadConfigSchema,
-  parseHotReloadConfig,
-  safeParseHotReloadConfig,
-} from "./schema.js";
-export {
-  ConfigStore,
-  type ConfigStoreLogger,
-  createFsWatcher,
-  type ErrorListener,
-  type FileWatcher,
-  type FileWatcherFactory,
-  type TimerFactory,
-  type TimerHandle,
-  type UpdateListener,
-} from "./store.js";

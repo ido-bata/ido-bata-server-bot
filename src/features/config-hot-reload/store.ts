@@ -10,8 +10,8 @@ export type ConfigStoreLogger = {
   error: (message: string, meta?: Record<string, unknown>) => void;
 };
 
-export type UpdateListener = (config: HotReloadConfig, previous: HotReloadConfig) => void;
-export type ErrorListener = (error: Error, context: { filePath: string }) => void;
+type UpdateListener = (config: HotReloadConfig, previous: HotReloadConfig) => void;
+type ErrorListener = (error: Error, context: { filePath: string }) => void;
 
 export type FileWatcher = {
   close: () => void;

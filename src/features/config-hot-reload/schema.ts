@@ -19,7 +19,7 @@ const discordSnowflake = z
   .string()
   .regex(/^\d{17,20}$/, "must be a Discord snowflake (17-20 digits)");
 
-export const hotReloadConfigSchema = z
+const hotReloadConfigSchema = z
   .object({
     announcementChannelId: discordSnowflake.optional(),
     auditLogChannelId: discordSnowflake.optional(),
@@ -31,10 +31,6 @@ export const hotReloadConfigSchema = z
   .strict();
 
 export type HotReloadConfig = z.infer<typeof hotReloadConfigSchema>;
-
-export function parseHotReloadConfig(raw: unknown): HotReloadConfig {
-  return hotReloadConfigSchema.parse(raw);
-}
 
 export function safeParseHotReloadConfig(raw: unknown): {
   ok: boolean;
