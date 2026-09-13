@@ -17,6 +17,9 @@ coverage/
 data/timekeeper-history.json
 data/timekeeper-sessions.json
 
+# Local persisted state for the scheduled-announcements feature
+data/scheduled-announcements.json
+
 # Editor / OS / tooling
 .DS_Store
 .idea/

@@ -7,6 +7,7 @@ import { readConfig } from "./config.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
+import { registerScheduledAnnouncements } from "./features/scheduled-announcements/service.js";
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 
@@ -32,6 +33,7 @@ async function main(): Promise<void> {
       await channel.send(content);
     },
   });
+  registerScheduledAnnouncements(client);
   registerTimekeeper(client);
   registerShutdownHandler(client);
 
