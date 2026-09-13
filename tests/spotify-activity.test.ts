@@ -32,9 +32,9 @@ describe("spotify activity", () => {
   });
 
   it("detects a Spotify activity by applicationId", () => {
-    expect(
-      isSpotifyActivity({ ...spotifyActivity, name: null, applicationId: "spotify" }),
-    ).toBe(true);
+    expect(isSpotifyActivity({ ...spotifyActivity, name: null, applicationId: "spotify" })).toBe(
+      true,
+    );
   });
 
   it("rejects non-Spotify listening activity", () => {
@@ -83,12 +83,8 @@ describe("spotify activity", () => {
   });
 
   it("returns null when the Spotify activity is missing required fields", () => {
-    expect(
-      parseSpotifyActivity([{ ...spotifyActivity, details: null }]),
-    ).toBeNull();
-    expect(
-      parseSpotifyActivity([{ ...spotifyActivity, state: null }]),
-    ).toBeNull();
+    expect(parseSpotifyActivity([{ ...spotifyActivity, details: null }])).toBeNull();
+    expect(parseSpotifyActivity([{ ...spotifyActivity, state: null }])).toBeNull();
   });
 
   it("treats null or undefined activity lists as no Spotify playback", () => {

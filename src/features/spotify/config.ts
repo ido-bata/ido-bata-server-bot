@@ -1,4 +1,4 @@
-export type SpotifyVisibility = "self" | "public";
+type SpotifyVisibility = "self" | "public";
 
 export type SpotifyConfig = {
   enabled: boolean;

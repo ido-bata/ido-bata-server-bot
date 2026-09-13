@@ -8,7 +8,7 @@ import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
-import { readSpotifyConfig, isSpotifyConfigured } from "./features/spotify/config.js";
+import { isSpotifyConfigured, readSpotifyConfig } from "./features/spotify/config.js";
 import { registerSpotifyNowPlaying } from "./features/spotify/service.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 

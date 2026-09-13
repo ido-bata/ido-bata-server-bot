@@ -1,12 +1,12 @@
 import type { SpotifyActivityShape, SpotifyTrack } from "./activity.js";
 import { parseSpotifyActivity } from "./activity.js";
 import {
+  formatNowPlayingEmbed,
   type NowPlayingEmbedContent,
   type NowPlayingListener,
   type StopReason,
-  formatNowPlayingEmbed,
 } from "./formatter.js";
-import type { StoredNowPlaying, NowPlayingStore } from "./state.js";
+import type { NowPlayingStore, StoredNowPlaying } from "./state.js";
 
 export type PresenceUpdateInput = {
   userId: string;
@@ -15,19 +15,19 @@ export type PresenceUpdateInput = {
   activities: ReadonlyArray<SpotifyActivityShape | null | undefined> | null | undefined;
 };
 
-export type SendEmbedFn = (
+type SendEmbedFn = (
   userId: string,
   embed: NowPlayingEmbedContent,
   target: NowPlayingListener,
 ) => Promise<string | null>;
 
-export type EditEmbedFn = (
+type EditEmbedFn = (
   userId: string,
   messageId: string,
   embed: NowPlayingEmbedContent,
 ) => Promise<void>;
 
-export type DeleteEmbedFn = (userId: string, messageId: string) => Promise<void>;
+type DeleteEmbedFn = (userId: string, messageId: string) => Promise<void>;
 
 export type NowPlayingHandlerDependencies = {
   store: NowPlayingStore;
@@ -118,9 +118,7 @@ export function createSpotifyNowPlayingHandler(
     return { kind: "removed", entry, reason };
   }
 
-  async function onPresenceUpdate(
-    input: PresenceUpdateInput,
-  ): Promise<NowPlayingHandlerResult> {
+  async function onPresenceUpdate(input: PresenceUpdateInput): Promise<NowPlayingHandlerResult> {
     const track = parseSpotifyActivity(input.activities);
 
     if (!track) {
@@ -164,10 +162,3 @@ export function createSpotifyNowPlayingHandler(
 
   return { onPresenceUpdate, pruneStale, stopFor };
 }
-
-// Re-exports for tests / public surface
-export { parseSpotifyActivity, isSpotifyActivity } from "./activity.js";
-export { formatNowPlayingEmbed, formatStoppedEmbed } from "./formatter.js";
-export { NowPlayingStore, type StoredNowPlaying } from "./state.js";
-export type { SpotifyTrack, SpotifyActivityShape } from "./activity.js";
-export type { NowPlayingEmbedContent, NowPlayingListener, StopReason } from "./formatter.js";

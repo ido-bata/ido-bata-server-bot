@@ -1,7 +1,7 @@
 import { ActivityType } from "discord.js";
 
-export const SPOTIFY_ACTIVITY_NAME = "Spotify";
-export const SPOTIFY_APPLICATION_ID = "spotify";
+const SPOTIFY_ACTIVITY_NAME = "Spotify";
+const SPOTIFY_APPLICATION_ID = "spotify";
 
 export type SpotifyActivityShape = {
   type: number;
@@ -31,9 +31,7 @@ export type SpotifyTrack = {
   trackId: string | null;
 };
 
-export function isSpotifyActivity(
-  activity: SpotifyActivityShape | null | undefined,
-): boolean {
+export function isSpotifyActivity(activity: SpotifyActivityShape | null | undefined): boolean {
   if (!activity) {
     return false;
   }
@@ -47,10 +45,7 @@ export function isSpotifyActivity(
 }
 
 export function parseSpotifyActivity(
-  activities:
-    | ReadonlyArray<SpotifyActivityShape | null | undefined>
-    | null
-    | undefined,
+  activities: ReadonlyArray<SpotifyActivityShape | null | undefined> | null | undefined,
 ): SpotifyTrack | null {
   if (!activities) {
     return null;

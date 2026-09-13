@@ -33,9 +33,7 @@ describe("spotify config", () => {
   });
 
   it("falls back to the default stale threshold when env is missing or invalid", () => {
-    expect(
-      readSpotifyConfig({ DISCORD_ENABLE_SPOTIFY: "true" }).staleAfterMs,
-    ).toBe(5 * 60 * 1000);
+    expect(readSpotifyConfig({ DISCORD_ENABLE_SPOTIFY: "true" }).staleAfterMs).toBe(5 * 60 * 1000);
     expect(
       readSpotifyConfig({
         DISCORD_ENABLE_SPOTIFY: "true",

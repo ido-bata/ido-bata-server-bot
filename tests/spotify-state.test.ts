@@ -74,15 +74,9 @@ describe("NowPlayingStore", () => {
     const store = new NowPlayingStore(60_000);
     const entry = buildEntry();
     expect(store.isSameTrack(entry, { ...track })).toBe(true);
-    expect(
-      store.isSameTrack(entry, { ...track, title: "Together Forever" }),
-    ).toBe(false);
-    expect(
-      store.isSameTrack(entry, { ...track, artist: "Different Artist" }),
-    ).toBe(false);
-    expect(
-      store.isSameTrack(entry, { ...track, trackId: "different-id" }),
-    ).toBe(false);
+    expect(store.isSameTrack(entry, { ...track, title: "Together Forever" })).toBe(false);
+    expect(store.isSameTrack(entry, { ...track, artist: "Different Artist" })).toBe(false);
+    expect(store.isSameTrack(entry, { ...track, trackId: "different-id" })).toBe(false);
   });
 
   it("clears all entries", () => {

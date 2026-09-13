@@ -9,8 +9,6 @@ export type StoredNowPlaying = {
   lastUpdatedAt: number;
 };
 
-export type StaleReason = "stale";
-
 export class NowPlayingStore {
   private readonly entries = new Map<string, StoredNowPlaying>();
   private readonly staleAfterMs: number;

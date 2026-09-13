@@ -1,18 +1,11 @@
 import type { Channel, Client, TextBasedChannel } from "discord.js";
 import { ChannelType, Events } from "discord.js";
 
-import {
-  isSpotifyActivity,
-  parseSpotifyActivity,
-  type SpotifyActivityShape,
-} from "./activity.js";
-import { type SpotifyConfig, isSpotifyConfigured } from "./config.js";
-import {
-  type NowPlayingEmbedContent,
-  type NowPlayingHandlerResult,
-  createSpotifyNowPlayingHandler,
-} from "./handler.js";
-import { NowPlayingStore, type StoredNowPlaying } from "./state.js";
+import type { SpotifyActivityShape } from "./activity.js";
+import { isSpotifyConfigured, type SpotifyConfig } from "./config.js";
+import type { NowPlayingEmbedContent } from "./formatter.js";
+import { createSpotifyNowPlayingHandler, type NowPlayingHandlerResult } from "./handler.js";
+import { NowPlayingStore } from "./state.js";
 
 const PRUNE_INTERVAL_MS = 60_000;
 
@@ -72,10 +65,7 @@ function toEmbedPayload(content: NowPlayingEmbedContent): { embeds: NowPlayingEm
   return { embeds: [toEmbedContent(content)] };
 }
 
-export function createSpotifyService(
-  client: Client,
-  config: SpotifyConfig,
-): { stop: () => void } {
+function createSpotifyService(client: Client, config: SpotifyConfig): { stop: () => void } {
   if (!isSpotifyConfigured(config)) {
     console.warn(
       "Spotify now-playing is disabled. Set DISCORD_ENABLE_SPOTIFY=true and SPOTIFY_CHANNEL_ID (for public mode) to enable.",
@@ -133,11 +123,9 @@ export function createSpotifyService(
   });
 
   const onPresenceUpdate = (oldPresence: unknown, newPresence: unknown): void => {
-    void handler
-      .onPresenceUpdate(mapPresenceUpdate(newPresence))
-      .catch((error: unknown) => {
-        console.error("Spotify now-playing handler failed", error);
-      });
+    void handler.onPresenceUpdate(mapPresenceUpdate(newPresence)).catch((error: unknown) => {
+      console.error("Spotify now-playing handler failed", error);
+    });
   };
 
   client.on(Events.PresenceUpdate, onPresenceUpdate);
@@ -167,7 +155,10 @@ export function createSpotifyService(
   };
 }
 
-export function registerSpotifyNowPlaying(client: Client, config: SpotifyConfig): { stop: () => void } {
+export function registerSpotifyNowPlaying(
+  client: Client,
+  config: SpotifyConfig,
+): { stop: () => void } {
   return createSpotifyService(client, config);
 }
 
@@ -235,7 +226,3 @@ function extractMessageId(message: EditableMessage): string | null {
   const id = (message as unknown as { id?: string }).id;
   return id ?? null;
 }
-
-// Re-export for tests
-export { isSpotifyActivity, parseSpotifyActivity };
-export type { StoredNowPlaying };

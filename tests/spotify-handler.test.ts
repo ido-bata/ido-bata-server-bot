@@ -7,7 +7,9 @@ import {
 } from "../src/features/spotify/handler.js";
 import { NowPlayingStore } from "../src/features/spotify/state.js";
 
-function spotifyActivity(overrides: Partial<{ title: string; artist: string; trackId: string }> = {}) {
+function spotifyActivity(
+  overrides: Partial<{ title: string; artist: string; trackId: string }> = {},
+) {
   return {
     type: ActivityType.Listening,
     name: "Spotify",
