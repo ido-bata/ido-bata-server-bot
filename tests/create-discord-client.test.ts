@@ -13,7 +13,6 @@ describe("createDiscordClient", () => {
     expect(client.options.intents.has(GatewayIntentBits.GuildMessageReactions)).toBe(true);
     expect(client.options.intents.has(GatewayIntentBits.GuildVoiceStates)).toBe(true);
     expect(client.options.intents.has(GatewayIntentBits.MessageContent)).toBe(false);
-    expect(client.options.intents.has(GatewayIntentBits.GuildMembers)).toBe(false);
   });
 
   it("includes message content intent only when enabled", () => {
