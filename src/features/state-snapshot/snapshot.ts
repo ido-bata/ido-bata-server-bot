@@ -11,11 +11,7 @@ import {
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 
-import {
-  decryptBuffer,
-  encryptBuffer,
-  resolveEncryptionKey,
-} from "./encryption.js";
+import { decryptBuffer, encryptBuffer, resolveEncryptionKey } from "./encryption.js";
 
 export type SnapshotFileEntry = {
   path: string;
@@ -60,14 +56,9 @@ export function buildSnapshotId(now: Date): string {
   });
   const parts = formatter.formatToParts(now);
   const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return [
-    lookup.year,
-    lookup.month,
-    lookup.day,
-    lookup.hour,
-    lookup.minute,
-    lookup.second,
-  ].join("-");
+  return [lookup.year, lookup.month, lookup.day, lookup.hour, lookup.minute, lookup.second].join(
+    "-",
+  );
 }
 
 export function snapshotFilePath(snapshotDir: string, id: string): string {
@@ -163,7 +154,11 @@ export function readSnapshotMetadata(
   const encrypted = decodeEncryptedContainer(readFileSync(snapshotPath));
   const payload = decryptBuffer(encrypted, key);
   const { manifest } = unpackSnapshotPayload(payload);
-  const id = snapshotPath.split(/[\\/]/).pop()?.replace(/\.snap\.enc$/, "") ?? "";
+  const id =
+    snapshotPath
+      .split(/[\\/]/)
+      .pop()
+      ?.replace(/\.snap\.enc$/, "") ?? "";
   return {
     createdAt: manifest.createdAt,
     files: manifest.files,
@@ -204,10 +199,7 @@ export async function collectSourceFiles(sourcePaths: string[]): Promise<Snapsho
   return entries;
 }
 
-export function listSnapshots(
-  snapshotDir: string,
-  hexKey: string | undefined,
-): SnapshotMetadata[] {
+export function listSnapshots(snapshotDir: string, hexKey: string | undefined): SnapshotMetadata[] {
   if (!existsSync(snapshotDir)) {
     return [];
   }

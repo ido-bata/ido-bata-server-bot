@@ -110,8 +110,7 @@ async function main(): Promise<void> {
       `Created at: ${result.manifest.createdAt}`,
       "Files:",
       ...result.files.map(
-        (file) =>
-          `  - ${file.path}  (${file.size} bytes, sha256=${file.sha256.slice(0, 12)}...)`,
+        (file) => `  - ${file.path}  (${file.size} bytes, sha256=${file.sha256.slice(0, 12)}...)`,
       ),
     ].join("\n"),
   );

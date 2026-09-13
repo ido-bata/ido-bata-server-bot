@@ -8,6 +8,8 @@ export const snapshotConfigSchema = z.object({
   monthlyRetention: z.number().int().positive(),
   snapshotHourJst: z.number().int().min(0).max(23),
   snapshotMinuteJst: z.number().int().min(0).max(59),
+  uploadRemote: z.string().optional(),
+  uploadBranch: z.string().min(1).optional(),
 });
 
 export type SnapshotConfig = z.infer<typeof snapshotConfigSchema>;
@@ -20,20 +22,21 @@ export type SnapshotRuntimeOptions = {
   monthlyRetention?: number;
   snapshotHourJst?: number;
   snapshotMinuteJst?: number;
+  uploadRemote?: string;
+  uploadBranch?: string;
 };
 
 export function readSnapshotConfig(options: SnapshotRuntimeOptions = {}): SnapshotConfig {
   return snapshotConfigSchema.parse({
     snapshotDir: options.snapshotDir ?? "data/snapshots",
-    sourcePaths: options.sourcePaths ?? [
-      "data/bot.db",
-      "data/timekeeper-history.json",
-    ],
+    sourcePaths: options.sourcePaths ?? ["data/bot.db", "data/timekeeper-history.json"],
     dailyRetention: options.dailyRetention ?? 7,
     weeklyRetention: options.weeklyRetention ?? 4,
     monthlyRetention: options.monthlyRetention ?? 12,
     snapshotHourJst: options.snapshotHourJst ?? 3,
     snapshotMinuteJst: options.snapshotMinuteJst ?? 0,
+    uploadRemote: options.uploadRemote ?? process.env.STATE_SNAPSHOT_UPLOAD_REMOTE ?? undefined,
+    uploadBranch: options.uploadBranch ?? process.env.STATE_SNAPSHOT_UPLOAD_BRANCH ?? undefined,
   });
 }
 

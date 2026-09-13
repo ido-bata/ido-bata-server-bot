@@ -26,6 +26,13 @@ Before bumping a dependency, confirm whether the vulnerable code path is actuall
 - If a leak is suspected: rotate the token in the Discord Developer Portal **first**, then update the local `.env`.
 - Secrets are loaded only at startup from environment variables (`dotenv/config`); no secret ever lives in this repo.
 
+## Snapshot encryption key
+
+- `STATE_SNAPSHOT_ENCRYPTION_KEY` is a hex-encoded 32-byte (256-bit) AES-GCM key used by the daily state-snapshot scheduler. Treat it like any other secret: keep it out of version control, CI logs, and Issue / PR bodies.
+- Rotate the key if it has ever been committed, pasted into chat, or exposed to an untrusted process. Rotation requires decrypting every existing snapshot with the old key and re-encrypting with the new one; do not simply overwrite the key while snapshots remain encrypted with the previous one.
+- The snapshot scheduler pushes the encrypted `.snap.enc` files to a GitHub branch and a workflow uploads them as workflow artifacts with 30-day retention. The encryption key never enters the workflow, so a leaked artifact cannot be decrypted without the key.
+- `STATE_SNAPSHOT_UPLOAD_REMOTE` and `STATE_SNAPSHOT_UPLOAD_BRANCH` configure the GitHub branch destination. They are not secrets, but reviewers should confirm the destination branch is dedicated to snapshots and not used for any other content.
+
 ## Triage SLA
 
 | Severity (per source) | Reachability unknown       | Reachability confirmed                              |

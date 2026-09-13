@@ -1,12 +1,5 @@
 import { randomBytes } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -20,6 +13,7 @@ import {
 import {
   applyRetentionPlan,
   classifySnapshot,
+  isoWeekKeyOfDate,
   planRetention,
 } from "../src/features/state-snapshot/retention.js";
 import { getNextSnapshotStartAt } from "../src/features/state-snapshot/schedule.js";
@@ -31,7 +25,13 @@ import {
   readSnapshotMetadata,
   restoreSnapshot,
   type SnapshotFileEntry,
+  type SnapshotMetadata,
 } from "../src/features/state-snapshot/snapshot.js";
+import {
+  createCompositeUploader,
+  createGitHubBranchUploader,
+  createNoopUploader,
+} from "../src/features/state-snapshot/uploaders.js";
 
 function makeKeyHex(): string {
   return randomBytes(32).toString("hex");
@@ -66,9 +66,7 @@ describe("state-snapshot encryption", () => {
     const tampered = Buffer.from(encrypted.ciphertext);
     tampered[0] = tampered[0]! ^ 0xff;
 
-    expect(() =>
-      decryptBuffer({ ...encrypted, ciphertext: tampered }, key),
-    ).toThrow();
+    expect(() => decryptBuffer({ ...encrypted, ciphertext: tampered }, key)).toThrow();
   });
 
   it("rejects malformed encryption keys", () => {
@@ -204,15 +202,15 @@ describe("state-snapshot retention", () => {
   it("classifies snapshots by age relative to a reference date", () => {
     const referenceDate = new Date("2026-04-30T00:00:00Z");
     const baseDir = "/tmp/snapshots";
-    expect(classifySnapshot(makeMetadata("d", "2026-04-29T00:00:00Z", baseDir), referenceDate).bucket).toBe(
-      "daily",
-    );
-    expect(classifySnapshot(makeMetadata("w", "2026-04-20T00:00:00Z", baseDir), referenceDate).bucket).toBe(
-      "weekly",
-    );
-    expect(classifySnapshot(makeMetadata("m", "2026-03-15T00:00:00Z", baseDir), referenceDate).bucket).toBe(
-      "monthly",
-    );
+    expect(
+      classifySnapshot(makeMetadata("d", "2026-04-29T00:00:00Z", baseDir), referenceDate).bucket,
+    ).toBe("daily");
+    expect(
+      classifySnapshot(makeMetadata("w", "2026-04-20T00:00:00Z", baseDir), referenceDate).bucket,
+    ).toBe("weekly");
+    expect(
+      classifySnapshot(makeMetadata("m", "2026-03-15T00:00:00Z", baseDir), referenceDate).bucket,
+    ).toBe("monthly");
   });
 
   it("keeps the configured number of dailies and evicts the rest", () => {
@@ -236,6 +234,87 @@ describe("state-snapshot retention", () => {
     expect(plan.delete.map((entry) => entry.id).sort()).toEqual(["d4", "d5"]);
   });
 
+  it("keeps one representative per ISO week in the weekly tier", () => {
+    const referenceDate = new Date("2026-04-30T00:00:00Z");
+    const baseDir = "/tmp/snapshots";
+    // Five consecutive days in the weekly band (7-30 days old). Without
+    // generational selection all five would be candidates, but only one
+    // snapshot per ISO week should survive.
+    const snapshots = [
+      makeMetadata("w-mon", "2026-04-20T00:00:00Z", baseDir), // ISO week 2026-W17
+      makeMetadata("w-tue", "2026-04-21T00:00:00Z", baseDir),
+      makeMetadata("w-wed", "2026-04-22T00:00:00Z", baseDir),
+      makeMetadata("w-thu", "2026-04-23T00:00:00Z", baseDir),
+      makeMetadata("w-sat", "2026-04-11T00:00:00Z", baseDir), // ISO week 2026-W15
+    ];
+
+    const plan = planRetention(
+      snapshots,
+      { dailyRetention: 7, monthlyRetention: 12, weeklyRetention: 4 },
+      referenceDate,
+    );
+
+    const keptIds = plan.keep.map((entry) => entry.id).sort();
+    expect(keptIds).toEqual(["w-sat", "w-thu"]);
+    expect(plan.delete.map((entry) => entry.id).sort()).toEqual(["w-mon", "w-tue", "w-wed"]);
+  });
+
+  it("keeps one representative per calendar month in the monthly tier", () => {
+    const referenceDate = new Date("2026-04-30T00:00:00Z");
+    const baseDir = "/tmp/snapshots";
+    // 13 days across 13 different months in the monthly band (>= 30 days).
+    const snapshots = [
+      makeMetadata("m-25-04", "2025-04-15T00:00:00Z", baseDir),
+      makeMetadata("m-25-05", "2025-05-15T00:00:00Z", baseDir),
+      makeMetadata("m-25-06", "2025-06-15T00:00:00Z", baseDir),
+      makeMetadata("m-25-07", "2025-07-15T00:00:00Z", baseDir),
+      makeMetadata("m-25-08", "2025-08-15T00:00:00Z", baseDir),
+      makeMetadata("m-25-09", "2025-09-15T00:00:00Z", baseDir),
+      makeMetadata("m-25-10", "2025-10-15T00:00:00Z", baseDir),
+      makeMetadata("m-25-11", "2025-11-15T00:00:00Z", baseDir),
+      makeMetadata("m-25-12", "2025-12-15T00:00:00Z", baseDir),
+      makeMetadata("m-26-01", "2026-01-15T00:00:00Z", baseDir),
+      makeMetadata("m-26-02", "2026-02-15T00:00:00Z", baseDir),
+      makeMetadata("m-26-03", "2026-03-15T00:00:00Z", baseDir),
+      makeMetadata("m-25-04b", "2025-04-20T00:00:00Z", baseDir), // same month as m-25-04
+    ];
+
+    const plan = planRetention(
+      snapshots,
+      { dailyRetention: 7, monthlyRetention: 12, weeklyRetention: 4 },
+      referenceDate,
+    );
+
+    // m-25-04 + m-25-04b collapse into a single month representative (the most
+    // recent, m-25-04b). m-26-03 is the 12th and final monthly survivor; the
+    // 13th distinct month (m-25-04) is evicted.
+    const keptIds = plan.keep.map((entry) => entry.id).sort();
+    expect(keptIds).toEqual(
+      [
+        "m-25-04b",
+        "m-25-05",
+        "m-25-06",
+        "m-25-07",
+        "m-25-08",
+        "m-25-09",
+        "m-25-10",
+        "m-25-11",
+        "m-25-12",
+        "m-26-01",
+        "m-26-02",
+        "m-26-03",
+      ].sort(),
+    );
+    expect(plan.delete.map((entry) => entry.id)).toEqual(["m-25-04"]);
+  });
+
+  it("derives ISO week keys consistently for boundary dates", () => {
+    expect(isoWeekKeyOfDate(new Date("2026-01-01T00:00:00Z"))).toBe("2026-W01");
+    expect(isoWeekKeyOfDate(new Date("2026-04-20T00:00:00Z"))).toBe("2026-W17");
+    // 2025-12-31 (Wednesday) belongs to ISO week 1 of 2026.
+    expect(isoWeekKeyOfDate(new Date("2025-12-31T00:00:00Z"))).toBe("2026-W01");
+  });
+
   it("deletes snapshot files when applying the plan", async () => {
     const workDir = createTempDir("retention-");
     const referenceDate = new Date("2026-04-30T00:00:00Z");
@@ -243,9 +322,7 @@ describe("state-snapshot retention", () => {
     const snapshots = ["d1", "d2", "d3", "d4"].map((id, index) => {
       const filePath = join(workDir, `${id}.snap.enc`);
       writeFileSync(filePath, "x");
-      const createdAt = new Date(
-        referenceDate.getTime() - (index + 1) * 86_400_000,
-      ).toISOString();
+      const createdAt = new Date(referenceDate.getTime() - (index + 1) * 86_400_000).toISOString();
       return makeMetadata(id, createdAt, workDir);
     });
 
@@ -274,11 +351,7 @@ describe("state-snapshot retention", () => {
     const filePath = join(workDir, "d1.snap.enc");
     writeFileSync(filePath, "x");
     const snapshots = [
-      makeMetadata(
-        "d1",
-        new Date(referenceDate.getTime() - 5 * 86_400_000).toISOString(),
-        workDir,
-      ),
+      makeMetadata("d1", new Date(referenceDate.getTime() - 5 * 86_400_000).toISOString(), workDir),
     ];
 
     const plan = planRetention(
@@ -291,5 +364,91 @@ describe("state-snapshot retention", () => {
     expect(existsSync(filePath)).toBe(true);
 
     rmSync(workDir, { recursive: true, force: true });
+  });
+});
+
+describe("state-snapshot uploaders", () => {
+  function makeMetadata(path: string): SnapshotMetadata {
+    return {
+      createdAt: new Date().toISOString(),
+      files: [],
+      id: path,
+      path,
+    };
+  }
+
+  it("noop uploader never throws", async () => {
+    const uploader = createNoopUploader();
+    await expect(uploader.upload(makeMetadata("/tmp/nope.snap.enc"))).resolves.toBeUndefined();
+  });
+
+  it("composite uploader aggregates names", () => {
+    const uploader = createCompositeUploader([
+      createNoopUploader(),
+      createGitHubBranchUploader({
+        branch: "state-snapshots",
+        remote: "origin",
+        workdir: "/tmp",
+      }),
+    ]);
+    expect(uploader.name).toContain("noop");
+    expect(uploader.name).toContain("github-branch");
+  });
+
+  it("composite uploader raises when every uploader fails", async () => {
+    const failing = {
+      name: "always-fails",
+      upload: () => Promise.reject(new Error("boom")),
+    };
+    const composite = createCompositeUploader([failing]);
+    await expect(
+      composite.upload({
+        createdAt: new Date().toISOString(),
+        files: [],
+        id: "x",
+        path: "/tmp/missing.snap.enc",
+      }),
+    ).rejects.toThrow(/All snapshot uploaders failed|boom/i);
+  });
+
+  it("composite uploader tolerates partial failures", async () => {
+    let goodCalled = false;
+    const failing = {
+      name: "always-fails",
+      upload: () => Promise.reject(new Error("boom")),
+    };
+    const good = {
+      name: "good",
+      upload: () => {
+        goodCalled = true;
+        return Promise.resolve();
+      },
+    };
+    const composite = createCompositeUploader([failing, good]);
+    await expect(
+      composite.upload({
+        createdAt: new Date().toISOString(),
+        files: [],
+        id: "x",
+        path: "/tmp/x.snap.enc",
+      }),
+    ).resolves.toBeUndefined();
+    expect(goodCalled).toBe(true);
+  });
+
+  it("github-branch uploader throws when the snapshot file is missing", async () => {
+    const uploader = createGitHubBranchUploader({
+      branch: "state-snapshots",
+      remote: "origin",
+      workdir: "/tmp",
+    });
+    await expect(
+      uploader.upload({
+        createdAt: new Date().toISOString(),
+        files: [],
+        id: "x",
+        path: "/nonexistent.snap.enc",
+      }),
+    ).rejects.toThrow(/no longer exists/);
   });
 });

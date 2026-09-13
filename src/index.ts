@@ -8,8 +8,11 @@ import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
-import { createSnapshotRuntime, registerStateSnapshotScheduler } from "./features/state-snapshot/service.js";
 import { readSnapshotConfig } from "./features/state-snapshot/config.js";
+import {
+  createSnapshotRuntime,
+  registerStateSnapshotScheduler,
+} from "./features/state-snapshot/service.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 
 async function main(): Promise<void> {

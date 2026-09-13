@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 
 import { decryptBuffer, resolveEncryptionKey } from "./encryption.js";
-import { type SnapshotMetadata } from "./snapshot.js";
+import type { SnapshotMetadata } from "./snapshot.js";
 
 export type RetentionPolicy = {
   dailyRetention: number;
@@ -17,6 +17,7 @@ export type ClassifiedSnapshot = {
 };
 
 const ISO_DATE_LENGTH = 10;
+const ISO_MONTH_LENGTH = 7;
 const WEEK_MS = 7 * 86_400_000;
 const MONTH_MS = 30 * 86_400_000;
 
@@ -46,61 +47,125 @@ export function planRetention(
   policy: RetentionPolicy,
   referenceDate: Date = new Date(),
 ): RetentionPlan {
-  const keep: SnapshotMetadata[] = [];
-  const deleteEntries: SnapshotMetadata[] = [];
+  // Generational retention: each tier keeps at most one representative per
+  // time bucket (day / ISO week / calendar month) and only the N most recent
+  // buckets survive. This is what makes "7 daily / 4 weekly / 12 monthly"
+  // actually mean "7 distinct days, 4 distinct ISO weeks, 12 distinct months".
+  const sorted = snapshots
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 
-  // Group by bucket. Within a bucket, sort oldest -> newest so we always keep the
-  // most recent N.
-  const byBucket: Record<Bucket, SnapshotMetadata[]> = {
-    daily: [],
-    monthly: [],
-    weekly: [],
-  };
-  for (const snapshot of snapshots) {
-    byBucket[classifySnapshot(snapshot, referenceDate).bucket].push(snapshot);
-  }
+  const dailyKeep = pickTierKeep(
+    sorted,
+    isDailyCandidate,
+    dayKeyOf,
+    policy.dailyRetention,
+    referenceDate,
+  );
+  const dailyPaths = new Set(dailyKeep.map((entry) => entry.path));
 
-  for (const bucket of ["daily", "weekly", "monthly"] as const) {
-    const entries = byBucket[bucket].slice().sort((left, right) =>
-      left.createdAt.localeCompare(right.createdAt),
-    );
-    const limit = policy[`${bucket}Retention`];
-    const overflow = entries.length - limit;
+  const weeklyKeep = pickTierKeep(
+    sorted.filter((entry) => !dailyPaths.has(entry.path)),
+    isWeeklyCandidate,
+    isoWeekKeyOf,
+    policy.weeklyRetention,
+    referenceDate,
+  );
+  const weeklyPaths = new Set(weeklyKeep.map((entry) => entry.path));
 
-    if (overflow > 0) {
-      deleteEntries.push(...entries.slice(0, overflow));
-      keep.push(...entries.slice(overflow));
-    } else {
-      keep.push(...entries);
-    }
-  }
+  const monthlyKeep = pickTierKeep(
+    sorted.filter((entry) => !dailyPaths.has(entry.path) && !weeklyPaths.has(entry.path)),
+    isMonthlyCandidate,
+    monthKeyOf,
+    policy.monthlyRetention,
+    referenceDate,
+  );
 
-  // De-duplicate while preserving keep precedence.
-  const seen = new Set<string>();
-  const dedupedKeep: SnapshotMetadata[] = [];
-  for (const entry of keep) {
-    if (seen.has(entry.path)) {
+  const keepSet = new Set<string>();
+  const keepList: SnapshotMetadata[] = [];
+  for (const entry of [...dailyKeep, ...weeklyKeep, ...monthlyKeep]) {
+    if (keepSet.has(entry.path)) {
       continue;
     }
-    seen.add(entry.path);
-    dedupedKeep.push(entry);
+    keepSet.add(entry.path);
+    keepList.push(entry);
   }
 
-  const deleteSet = new Set(deleteEntries.map((entry) => entry.path));
-  for (const entry of dedupedKeep) {
-    deleteSet.delete(entry.path);
+  const deleteList: SnapshotMetadata[] = [];
+  for (const entry of sorted) {
+    if (!keepSet.has(entry.path)) {
+      deleteList.push(entry);
+    }
   }
 
-  return {
-    delete: [...deleteSet].map((path) => {
-      const found = snapshots.find((snapshot) => snapshot.path === path);
-      if (!found) {
-        throw new Error(`Retention plan referenced missing snapshot: ${path}`);
-      }
-      return found;
-    }),
-    keep: dedupedKeep,
-  };
+  return { delete: deleteList, keep: keepList };
+}
+
+function pickTierKeep(
+  candidates: SnapshotMetadata[],
+  isEligible: (snapshot: SnapshotMetadata, referenceDate: Date) => boolean,
+  groupKeyOf: (snapshot: SnapshotMetadata) => string,
+  limit: number,
+  referenceDate: Date,
+): SnapshotMetadata[] {
+  const eligible = candidates.filter((snapshot) => isEligible(snapshot, referenceDate));
+  // Pick the most recent snapshot per group key (one per day / week / month).
+  const representativeByGroup = new Map<string, SnapshotMetadata>();
+  for (const snapshot of eligible) {
+    const key = groupKeyOf(snapshot);
+    const existing = representativeByGroup.get(key);
+    if (!existing || snapshot.createdAt > existing.createdAt) {
+      representativeByGroup.set(key, snapshot);
+    }
+  }
+  // Iterate groups in newest-first order so the limit keeps the most recent N.
+  const groups = [...representativeByGroup.entries()].sort(([leftKey], [rightKey]) =>
+    rightKey.localeCompare(leftKey),
+  );
+  return groups.slice(0, limit).map(([, snapshot]) => snapshot);
+}
+
+function isDailyCandidate(snapshot: SnapshotMetadata, referenceDate: Date): boolean {
+  return ageOf(snapshot, referenceDate) < WEEK_MS;
+}
+
+function isWeeklyCandidate(snapshot: SnapshotMetadata, referenceDate: Date): boolean {
+  const age = ageOf(snapshot, referenceDate);
+  return age >= WEEK_MS && age < MONTH_MS;
+}
+
+function isMonthlyCandidate(snapshot: SnapshotMetadata, referenceDate: Date): boolean {
+  return ageOf(snapshot, referenceDate) >= MONTH_MS;
+}
+
+function ageOf(snapshot: SnapshotMetadata, referenceDate: Date): number {
+  return referenceDate.getTime() - new Date(snapshot.createdAt).getTime();
+}
+
+function dayKeyOf(snapshot: SnapshotMetadata): string {
+  return snapshot.createdAt.slice(0, ISO_DATE_LENGTH);
+}
+
+function monthKeyOf(snapshot: SnapshotMetadata): string {
+  return snapshot.createdAt.slice(0, ISO_MONTH_LENGTH);
+}
+
+// ISO week key (e.g. "2026-W12") based on UTC components of createdAt.
+// Uses the standard algorithm: the ISO week is determined by the Thursday of
+// the calendar week the date falls in.
+export function isoWeekKeyOf(snapshot: SnapshotMetadata): string {
+  return isoWeekKeyOfDate(new Date(snapshot.createdAt));
+}
+
+export function isoWeekKeyOfDate(date: Date): string {
+  const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  // Shift to the Thursday of the same ISO week: Monday = 1, ..., Sunday = 7.
+  const dayOfWeek = target.getUTCDay() === 0 ? 7 : target.getUTCDay();
+  target.setUTCDate(target.getUTCDate() + (4 - dayOfWeek));
+  const isoYear = target.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(isoYear, 0, 1));
+  const weekNumber = Math.ceil(((target.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+  return `${isoYear}-W${String(weekNumber).padStart(2, "0")}`;
 }
 
 export function applyRetentionPlan(
