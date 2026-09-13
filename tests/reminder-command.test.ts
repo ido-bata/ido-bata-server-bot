@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { executeRemindCommand } from "../src/features/reminder/command.js";
-import type { AddReminderInput, AddReminderResult, ReminderQueue } from "../src/features/reminder/service.js";
+import type {
+  AddReminderInput,
+  AddReminderResult,
+  ReminderQueue,
+} from "../src/features/reminder/service.js";
 
 type ReplyCall = { content: string; ephemeral?: boolean };
 
@@ -24,22 +28,26 @@ function makeFakeInteraction(input: { duration: string; message: string; userId?
   return { interaction, replies };
 }
 
-function makeFakeQueue(overrides: Partial<Pick<ReminderQueue, "add" | "countForUser">> = {}): Pick<ReminderQueue, "add" | "countForUser"> {
+function makeFakeQueue(
+  overrides: Partial<Pick<ReminderQueue, "add" | "countForUser">> = {},
+): Pick<ReminderQueue, "add" | "countForUser"> {
   const adds: AddReminderInput[] = [];
   const stub = {
-    add: overrides.add ?? vi.fn((input: AddReminderInput): AddReminderResult => {
-      adds.push(input);
-      return {
-        ok: true,
-        reminder: {
-          id: "id-1",
-          userId: input.userId,
-          message: input.message,
-          fireAt: input.fireAt.toISOString(),
-          createdAt: (input.createdAt ?? new Date()).toISOString(),
-        },
-      };
-    }),
+    add:
+      overrides.add ??
+      vi.fn((input: AddReminderInput): AddReminderResult => {
+        adds.push(input);
+        return {
+          ok: true,
+          reminder: {
+            id: "id-1",
+            userId: input.userId,
+            message: input.message,
+            fireAt: input.fireAt.toISOString(),
+            createdAt: (input.createdAt ?? new Date()).toISOString(),
+          },
+        };
+      }),
     countForUser: overrides.countForUser ?? vi.fn(() => 0),
   };
   return stub;

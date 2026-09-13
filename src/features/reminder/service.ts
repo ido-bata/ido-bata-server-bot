@@ -5,13 +5,8 @@ import { Events } from "discord.js";
 
 import { executeRemindCommand, type RemindCommandDeps } from "./command.js";
 import { reminderConfig } from "./config.js";
-import { type ReminderFire, pickNextFire, pickOverdueReminders } from "./scheduler.js";
-import {
-  type LoadOptions,
-  loadReminders,
-  type PersistedReminder,
-  saveReminders,
-} from "./store.js";
+import { pickNextFire, pickOverdueReminders, type ReminderFire } from "./scheduler.js";
+import { type LoadOptions, loadReminders, type PersistedReminder, saveReminders } from "./store.js";
 
 type Logger = {
   info: (message: string) => void;
@@ -36,7 +31,7 @@ export type AddReminderResult =
   | { ok: true; reminder: PersistedReminder }
   | { ok: false; error: string };
 
-export type DmSurface = {
+type DmSurface = {
   send: (body: string) => Promise<unknown>;
 };
 
@@ -191,9 +186,7 @@ export function createReminderQueue(
     return [...reminders];
   }
 
-  async function sendImmediateDm(
-    reminder: PersistedReminder,
-  ): Promise<{ delivered: boolean }> {
+  async function sendImmediateDm(reminder: PersistedReminder): Promise<{ delivered: boolean }> {
     const body = buildReminderBody(reminder);
     const surface = options.openDm
       ? await options.openDm(reminder.userId)
@@ -229,9 +222,7 @@ export function createReminderQueue(
         );
         completed.push(fire.reminder.id);
       } catch (error) {
-        logger.error(
-          `Failed to dispatch reminder ${fire.reminder.id}: ${stringifyError(error)}`,
-        );
+        logger.error(`Failed to dispatch reminder ${fire.reminder.id}: ${stringifyError(error)}`);
       }
     }
 

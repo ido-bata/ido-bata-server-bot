@@ -1,5 +1,3 @@
-import { SlashCommandBuilder } from "discord.js";
-
 import { reminderConfig } from "./config.js";
 import { formatDurationVerbose, parseDuration } from "./duration.js";
 import type { ReminderQueue } from "./service.js";
@@ -38,25 +36,6 @@ function formatJstTimestamp(date: Date): string {
     hour12: false,
   }).format(date);
 }
-
-export const remindCommandName = "remind" as const;
-
-export const remindCommandBuilder = new SlashCommandBuilder()
-  .setName(remindCommandName)
-  .setDescription("指定時間後に DM でリマインドします。例: /remind me in 30m \"check oven\"")
-  .addStringOption((option) =>
-    option
-      .setName("duration")
-      .setDescription("待機時間 (例: 30m, 1h30m, 2d)")
-      .setRequired(true),
-  )
-  .addStringOption((option) =>
-    option
-      .setName("message")
-      .setDescription("リマインド本文")
-      .setRequired(true)
-      .setMaxLength(500),
-  );
 
 export async function executeRemindCommand(
   interaction: ChatInputCommandInteractionLike,

@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
-
-import {
-  type PersistedReminder,
-} from "../src/features/reminder/store.js";
 import {
   getNextFireTime,
   pickNextFire,
   pickOverdueReminders,
 } from "../src/features/reminder/scheduler.js";
+import type { PersistedReminder } from "../src/features/reminder/store.js";
 
 function reminder(overrides: Partial<PersistedReminder>): PersistedReminder {
   return {
@@ -23,7 +20,10 @@ function reminder(overrides: Partial<PersistedReminder>): PersistedReminder {
 describe("reminder scheduler", () => {
   it("returns null when the reminder is in the past", () => {
     const now = new Date("2030-01-02T00:00:00+09:00");
-    const result = getNextFireTime(reminder({ fireAt: new Date("2030-01-01T00:00:00+09:00").toISOString() }), now);
+    const result = getNextFireTime(
+      reminder({ fireAt: new Date("2030-01-01T00:00:00+09:00").toISOString() }),
+      now,
+    );
     expect(result).toBeNull();
   });
 

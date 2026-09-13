@@ -39,9 +39,8 @@ export function parseDuration(input: string): ParseDurationResult {
   let total = 0;
   const normalizedParts: string[] = [];
   let lastIndex = 0;
-  let match: RegExpExecArray | null;
 
-  while ((match = tokenizer.exec(trimmed)) !== null) {
+  for (const match of trimmed.matchAll(tokenizer)) {
     if (match.index !== lastIndex) {
       return {
         ok: false,
@@ -49,8 +48,8 @@ export function parseDuration(input: string): ParseDurationResult {
       };
     }
 
-    const value = Number.parseInt(match[1]!, 10);
-    const unit = match[2]!;
+    const value = Number.parseInt(match[1] ?? "", 10);
+    const unit = match[2] ?? "";
     const unitMs = UNIT_TO_MS[unit];
 
     if (!Number.isFinite(value) || value <= 0) {
@@ -59,7 +58,7 @@ export function parseDuration(input: string): ParseDurationResult {
 
     total += value * unitMs;
     normalizedParts.push(`${value}${unit}`);
-    lastIndex = tokenizer.lastIndex;
+    lastIndex = match.index + match[0].length;
   }
 
   if (total === 0) {

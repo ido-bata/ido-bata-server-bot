@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { reminderConfig } from "../src/features/reminder/config.js";
 import { createReminderQueue } from "../src/features/reminder/service.js";
-import { loadReminders, type LoadOptions, saveReminders } from "../src/features/reminder/store.js";
+import { type LoadOptions, loadReminders, saveReminders } from "../src/features/reminder/store.js";
 
 function makeTempDir(): { options: LoadOptions; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "reminder-service-"));

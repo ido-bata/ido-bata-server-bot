@@ -1,12 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import { formatDuration, formatDurationVerbose, parseDuration } from "../src/features/reminder/duration.js";
+import {
+  formatDuration,
+  formatDurationVerbose,
+  parseDuration,
+} from "../src/features/reminder/duration.js";
 
 describe("reminder duration parser", () => {
   it("parses a single unit", () => {
     expect(parseDuration("30m")).toEqual({ ok: true, durationMs: 30 * 60_000, normalized: "30m" });
     expect(parseDuration("1h")).toEqual({ ok: true, durationMs: 60 * 60_000, normalized: "1h" });
-    expect(parseDuration("2d")).toEqual({ ok: true, durationMs: 2 * 24 * 60 * 60_000, normalized: "2d" });
+    expect(parseDuration("2d")).toEqual({
+      ok: true,
+      durationMs: 2 * 24 * 60 * 60_000,
+      normalized: "2d",
+    });
   });
 
   it("parses chained units", () => {

@@ -4,11 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import {
-  type LoadOptions,
-  loadReminders,
-  saveReminders,
-} from "../src/features/reminder/store.js";
+import { type LoadOptions, loadReminders, saveReminders } from "../src/features/reminder/store.js";
 
 function makeLoadOptions(): { options: LoadOptions; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "reminder-store-"));
