@@ -104,7 +104,7 @@ export function isTimekeeperSessionActive(): boolean {
  * Whether the currently running session is paused (phase-ending-soon events
  * are suppressed). Always `false` when no session is active.
  */
-export function isTimekeeperSessionPaused(): boolean {
+function isTimekeeperSessionPaused(): boolean {
   return activePaused && activeSession !== null;
 }
 
@@ -169,7 +169,7 @@ export function requestTimekeeperSkip(): boolean {
  * Used in place of a bare `delay()` so that a moderator's `/timekeeper skip`
  * can interrupt a multi-minute wait between events.
  */
-export function awaitInterruptibleDelay(ms: number): Promise<void> {
+function awaitInterruptibleDelay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     if (skipFlag) {
       skipFlag = false;
