@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 
 import type { CalendarCache, CalendarEvent, SourceCalendarEntry } from "./types.js";
@@ -51,7 +61,23 @@ export function saveCache(cachePath: string, cache: CalendarCache): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(cachePath, JSON.stringify(cache, null, 2), "utf8");
+  // Write atomically: serialise to a uniquely-named temp file via O_EXCL, then rename
+  // it onto the final path. This avoids symlink TOCTOU attacks even when cachePath lives
+  // in a shared directory such as /tmp.
+  const payload = `${JSON.stringify(cache, null, 2)}\n`;
+  const tempPath = `${cachePath}.${randomBytes(8).toString("hex")}.tmp`;
+  const fd = openSync(tempPath, "wx", 0o600);
+  try {
+    writeFileSync(fd, payload, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+  try {
+    renameSync(tempPath, cachePath);
+  } catch (error) {
+    rmSync(tempPath, { force: true });
+    throw error;
+  }
 }
 
 export function upsertSourceEntry(cache: CalendarCache, entry: SourceCalendarEntry): CalendarCache {

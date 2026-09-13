@@ -3,6 +3,7 @@ import "dotenv/config";
 import { Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
+import { createSlashCommandRegistry } from "./bot/slash-commands.js";
 import { readConfig } from "./config.js";
 import { registerIcalCalendar } from "./features/ical-calendar/index.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
@@ -17,9 +18,19 @@ async function main(): Promise<void> {
     enableMessageContentIntent: config.enableMessageContentIntent,
     enableGuildMembersIntent: config.enableGuildMembersIntent,
   });
+  const slashCommands = createSlashCommandRegistry();
 
-  client.once(Events.ClientReady, (readyClient) => {
+  client.once(Events.ClientReady, async (readyClient) => {
     console.log(`Logged in as ${readyClient.user.tag}`);
+    try {
+      await slashCommands.deploy({
+        clientId: config.discordClientId,
+        guildId: config.discordGuildId,
+        token: config.discordToken,
+      });
+    } catch (error) {
+      console.error("Failed to deploy slash commands", error);
+    }
   });
 
   registerReactionRoleHandlers(client);
@@ -36,6 +47,7 @@ async function main(): Promise<void> {
   registerTimekeeper(client);
   registerShutdownHandler(client);
   const icalService = registerIcalCalendar(client, {
+    slashCommands,
     onReady: (service) => {
       service.startScheduler();
       void service

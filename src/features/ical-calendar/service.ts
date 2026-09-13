@@ -52,8 +52,15 @@ export function createCalendarService(options: CalendarServiceOptions = {}): Cal
   async function fetchAndCacheAll() {
     const result = await fetcher.fetchAll(config.sources);
     const grouped = groupEventsBySource(result.events);
+    // Sources that failed to fetch keep their previous cached events (and timestamp);
+    // only successfully fetched sources are merged below. This preserves partial state
+    // when one source is temporarily unreachable.
+    const failedIds = new Set(result.failedSources.map((failed) => failed.id));
     let nextCache = cache;
     for (const source of config.sources) {
+      if (failedIds.has(source.id)) {
+        continue;
+      }
       const events = grouped.get(source.id) ?? [];
       nextCache = mergeSourceEvents(nextCache, source.id, events, result.fetchedAt);
     }

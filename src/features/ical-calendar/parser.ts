@@ -66,7 +66,7 @@ function extractValue(value: unknown): string | undefined {
   if (typeof value === "string") {
     return value;
   }
-  if (typeof value === "object" && value !== null && "val" in value) {
+  if (typeof value === "object" && "val" in value) {
     const val = (value as { val: unknown }).val;
     if (typeof val === "string") {
       return val;

@@ -68,9 +68,8 @@ export type DiscordCalendarBinder = {
 export function bindDiscordCalendarCommands(
   client: Client,
   service: CalendarService,
+  command: CalendarSlashCommand = createCalendarSlashCommand(),
 ): DiscordCalendarBinder {
-  const command = createCalendarSlashCommand();
-
   return {
     bind() {
       client.on("interactionCreate", async (interaction) => {

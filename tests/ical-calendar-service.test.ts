@@ -235,4 +235,64 @@ describe("ical-calendar service", () => {
     service.stopScheduler();
     // No assertion needed - just ensure cleanup runs.
   });
+
+  it("preserves previous cache for sources that fail to fetch", async () => {
+    const now = new Date("2026-09-13T00:00:00Z");
+
+    // First fetch: only team source has events; public source fails.
+    const successIcs = [
+      "BEGIN:VEVENT",
+      "UID:keep-me",
+      "DTSTAMP:20260913T000000Z",
+      "DTSTART:20260915T100000Z",
+      "DTEND:20260915T110000Z",
+      "SUMMARY:Keep",
+      "END:VEVENT",
+    ].join("\n");
+
+    const workingFetcher = createCalendarFetcher({
+      fetchImpl: async (url: string) => {
+        const sourceId = url.includes("team") ? "team" : "public";
+        if (sourceId === "public") {
+          throw new Error("HTTP 503 Service Unavailable");
+        }
+        return successIcs;
+      },
+      rateLimitMs: 0,
+      now: () => now,
+    });
+
+    const cachePath = `/tmp/ical-failure-${Math.random().toString(36).slice(2)}.json`;
+    tmpPaths.push(cachePath);
+
+    const service = createCalendarService({
+      config: { ...config, cachePath },
+      fetcher: workingFetcher,
+      now: () => now,
+    });
+
+    // Initial fetch: only team source has events; public source fails.
+    const first = await service.fetchAndCacheAll();
+    expect(first.failedSources.map((f) => f.id)).toEqual(["public"]);
+    expect(service.listUpcomingEvents().map((event) => event.uid)).toEqual(["team:keep-me"]);
+
+    // A second service instance loading the same cache file and then fetching with a
+    // failing fetcher must preserve the previously cached events for both sources.
+    const failingFetcher = createCalendarFetcher({
+      fetchImpl: async () => {
+        throw new Error("HTTP 503 Service Unavailable");
+      },
+      rateLimitMs: 0,
+      now: () => now,
+    });
+    const brokenService = createCalendarService({
+      config: { ...config, cachePath },
+      fetcher: failingFetcher,
+      now: () => now,
+    });
+    const result = await brokenService.fetchAndCacheAll();
+    expect(result.failedSources.map((f) => f.id).sort()).toEqual(["public", "team"]);
+    // The previously cached team event must still be present.
+    expect(brokenService.listUpcomingEvents().map((event) => event.uid)).toEqual(["team:keep-me"]);
+  });
 });
