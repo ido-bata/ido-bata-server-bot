@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - Lightweight security workflow (`bun audit --production` + CodeQL on push / PR).
 - GitHub issue forms (feature / bug) and a pull request template.
 - Sprint / release / agile workflow doc with `release-<major>-<minor>-<patch>` branch model and Issue-only ticket branches.
+- Birthday auto-role feature: `/birthday set|remove` slash command, JST 0:00 daily scheduler that grants and removes the `@Birthday` role, optional announcement in a configured text channel, and JSON-persisted registry at `data/birthdays.json`.
 
 ### Changed
 
