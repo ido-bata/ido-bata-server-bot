@@ -1,0 +1,8 @@
+{
+  "announcementChannelId": "000000000000000000",
+  "auditLogChannelId": "000000000000000000",
+  "memberRoleId": "000000000000000000",
+  "guestRoleId": "000000000000000000",
+  "enableWelcomeMessage": false,
+  "enableAuditLogging": false
+}
