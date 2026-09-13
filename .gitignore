@@ -13,8 +13,9 @@ coverage/
 # Logs
 *.log
 
-# Local persisted state for the timekeeper feature
+# Local persisted state for features
 data/timekeeper-history.json
+data/birthdays.json
 
 # Editor / OS / tooling
 .DS_Store
