@@ -1,0 +1,51 @@
+# Compose file for ido-bata-server-bot.
+#
+# Usage:
+#   docker compose up --build           # build the runtime image and start the bot
+#   docker compose down                 # stop and remove the container
+#   docker compose logs -f bot          # tail container logs
+#
+# The bot requires a populated `.env` (see `.env.example`). The file is
+# loaded via `env_file:` so secrets never enter the image layer.
+#
+# The container listens on port 8080 for the `/health` endpoint added by
+# issue #26 — `compose.yml` exposes the port and `docker compose ps` shows
+# the healthcheck status. Until the endpoint lands, the healthcheck fails;
+# that's expected and documented in the Containerfile.
+services:
+  bot:
+    container_name: ido-bata-server-bot
+    build:
+      context: .
+      dockerfile: Containerfile
+      target: runtime
+    image: ido-bata-server-bot:dev
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      CONTAINER: "true"
+      HEALTH_PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persist the timekeeper attendance file across container restarts
+      # (data/ is gitignored — see .gitignore).
+      - bot-data:/app/data
+      # tmp-audio is mounted read-only so contributors can iterate on the
+      # WAV timeline without rebuilding the image.
+      - ./tmp-audio:/app/tmp-audio:ro
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('http').get('http://127.0.0.1:8080/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  bot-data:
