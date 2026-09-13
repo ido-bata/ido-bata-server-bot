@@ -35,6 +35,24 @@ src/index.ts
 - `src/scripts/stage-audio-smoke.ts` — joins the configured voice channel, plays the first timeline clip, then exits
 - `tests/` — vitest specs that mirror `src/` layout (`config.test.ts`, `timekeeper-timeline.test.ts`, `timekeeper-engagement.test.ts`, etc.)
 
+## Container runtime
+
+The bot ships a multi-stage `Containerfile` and a single-service `compose.yml`. The image targets are kept in `src/features/container/target.ts` so CI and local scripts can resolve them through the same code path.
+
+```text
+Containerfile (multi-stage)
+├── base       node:22-slim + Bun + tsx on PATH
+├── deps       base + `bun install --frozen-lockfile` (production deps)
+├── build      deps + `bun run build` → dist/
+└── runtime    node:22-slim + dist/ (from build) + node_modules (from deps)
+```
+
+The `runtime` stage is what `compose.yml` builds. Its entrypoint is `node dist/index.js`, so the runtime image does not need TypeScript or `tsx`. The `runtime` image exposes port `8080` for the `/health` endpoint added by issue #26; the bundled `HEALTHCHECK` and the compose-level `healthcheck:` both probe it on a 30s interval.
+
+Compose loads secrets from `.env` via `env_file:` — `DISCORD_TOKEN` and friends are never `COPY`'d into a layer, and `.dockerignore` blocks `.env`/`.env.*` from the build context. Local persisted state (`data/timekeeper-history.json`) is mounted from a named volume (`bot-data`) so the attendance log survives container restarts.
+
+The CI workflow builds the `runtime` image on every PR that touches `Containerfile` / `compose.yml` / `.dockerignore`, asserts the image is under the 300 MB budget, and validates `compose.yml` with `docker compose config`. Container changes must keep that gate green.
+
 ## Timekeeper timeline model
 
 `buildTimekeeperTimeline()` in `src/features/timekeeper/timeline.ts` constructs exactly 12 events for the default 5-phase config. Each event has a numeric `order` (1–12) that maps to a WAV filename in `tmp-audio/`:
