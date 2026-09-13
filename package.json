@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "prebuild": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "smoke:stage": "tsx src/scripts/stage-audio-smoke.ts",
+    "restore:state": "tsx src/scripts/restore-snapshot.ts",
     "start": "tsx src/index.ts",
     "test": "vitest run",
     "type-check": "tsc --project tsconfig.json --noEmit"
