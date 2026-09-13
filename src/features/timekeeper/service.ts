@@ -89,14 +89,6 @@ export function cancelActiveSession(
   return true;
 }
 
-/**
- * Read-only snapshot of the currently active session, if any. Used by tests
- * and by the shutdown handler to decide whether anything needs to be flushed.
- */
-export function getActiveSession(): TimekeeperSessionEngagement | null {
-  return activeSession;
-}
-
 export function registerTimekeeper(client: Client): void {
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isButton()) {

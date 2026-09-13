@@ -3,7 +3,7 @@ import type { Client } from "discord.js";
 
 import { cancelActiveSession } from "../timekeeper/service.js";
 
-export type ShutdownSignal = "SIGINT" | "SIGTERM";
+type ShutdownSignal = "SIGINT" | "SIGTERM";
 
 export type ShutdownDependencies = {
   /**
