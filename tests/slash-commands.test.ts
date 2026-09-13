@@ -110,6 +110,59 @@ describe("slash command handler", () => {
       expect.objectContaining({ commandName: "echo" }),
     );
   });
+
+  it("lists guild-scoped commands in /help via guild.commands.fetch()", async () => {
+    const reply = vi.fn(async () => undefined);
+    const fetch = vi.fn(async () =>
+      new Map([
+        [
+          "2",
+          { name: "ping", description: "Returns Pong with the WS latency." },
+        ],
+        [
+          "1",
+          { name: "help", description: "Lists the slash commands available in this guild." },
+        ],
+      ]),
+    );
+    const handler = createSlashCommandHandler();
+    await handler.handleInteraction({
+      isChatInputCommand: () => true,
+      isRepliable: () => true,
+      commandName: "help",
+      reply,
+      user: { id: "user-1" },
+      client: { ws: { ping: 5 } },
+      guild: { commands: { fetch } },
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(reply).toHaveBeenCalledWith({
+      content:
+        "- `/help` — Lists the slash commands available in this guild.\n" +
+        "- `/ping` — Returns Pong with the WS latency.",
+      ephemeral: true,
+    });
+  });
+
+  it("falls back to an empty list when /help is invoked outside a guild", async () => {
+    const reply = vi.fn(async () => undefined);
+    const handler = createSlashCommandHandler();
+    await handler.handleInteraction({
+      isChatInputCommand: () => true,
+      isRepliable: () => true,
+      commandName: "help",
+      reply,
+      user: { id: "user-1" },
+      client: { ws: { ping: 5 } },
+      guild: null,
+    });
+
+    expect(reply).toHaveBeenCalledWith({
+      content: "No slash commands are registered yet.",
+      ephemeral: true,
+    });
+  });
 });
 
 describe("deploySlashCommands", () => {
