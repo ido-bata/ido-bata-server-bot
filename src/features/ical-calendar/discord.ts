@@ -3,7 +3,7 @@ import { SlashCommandBuilder } from "discord.js";
 
 import type { CalendarService } from "./service.js";
 
-export type ReplyableInteraction = {
+type ReplyableInteraction = {
   reply: (options: string | { content?: string; ephemeral?: boolean }) => Promise<unknown>;
 };
 

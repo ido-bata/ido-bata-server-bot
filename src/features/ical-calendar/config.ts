@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -20,11 +20,11 @@ export type IcalCalendarConfig = {
   staleAfterMs: number;
 };
 
-export const DEFAULT_ANNOUNCEMENT_CHANNEL_ID: string | null = null;
-export const DEFAULT_FETCH_INTERVAL_MS = 60 * 60 * 1000;
-export const DEFAULT_LOOK_AHEAD_DAYS = 7;
-export const DEFAULT_RATE_LIMIT_MS = 60_000;
-export const DEFAULT_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_ANNOUNCEMENT_CHANNEL_ID: string | null = null;
+const DEFAULT_FETCH_INTERVAL_MS = 60 * 60 * 1000;
+const DEFAULT_LOOK_AHEAD_DAYS = 7;
+const DEFAULT_RATE_LIMIT_MS = 60_000;
+const DEFAULT_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 
 const calendarSourceSchema = z.object({
   id: z.string().min(1),
@@ -69,11 +69,6 @@ export function readConfig(path?: string): IcalCalendarConfig {
     sources: persisted.sources ?? [],
     staleAfterMs: DEFAULT_STALE_AFTER_MS,
   };
-}
-
-export function writeConfig(config: PersistedShape, path?: string): void {
-  const dataPath = path ?? resolveDataPath();
-  writeFileSync(dataPath, JSON.stringify(config, null, 2), "utf8");
 }
 
 export function findSource(sources: CalendarSource[], id: string): CalendarSource | null {

@@ -1,12 +1,12 @@
 import type { RESTPostAPIApplicationCommandsJSONBody } from "discord.js";
 import { REST, Routes } from "discord.js";
 
-export type SlashCommandDefinition = {
+type SlashCommandDefinition = {
   name: string;
   toJSON: () => RESTPostAPIApplicationCommandsJSONBody;
 };
 
-export type DeploySlashCommandsOptions = {
+type DeploySlashCommandsOptions = {
   clientId: string;
   guildId: string;
   token: string;

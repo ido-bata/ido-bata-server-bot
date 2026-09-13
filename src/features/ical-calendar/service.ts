@@ -1,5 +1,5 @@
 import { isStale, loadCache, mergeSourceEvents, saveCache } from "./cache.js";
-import { type CalendarSource, findSource, type IcalCalendarConfig, readConfig } from "./config.js";
+import { findSource, type IcalCalendarConfig, readConfig } from "./config.js";
 import { type CalendarFetcher, createCalendarFetcher } from "./fetcher.js";
 import { filterUpcoming, listEventsMessage, showEventMessage, sortByStart } from "./format.js";
 import type { Logger } from "./logger.js";
@@ -178,5 +178,3 @@ const defaultLogger: Logger = {
   error: (...args) => console.error(...args),
   warn: (...args) => console.warn(...args),
 };
-
-export type { CalendarSource };

@@ -36,7 +36,7 @@ export function showEventMessage(event: CalendarEvent, sourceName: string): stri
   return lines.join("\n");
 }
 
-export function formatEventLine(
+function formatEventLine(
   event: CalendarEvent,
   sourceNames: Map<string, string>,
   now: Date,

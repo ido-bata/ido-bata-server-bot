@@ -19,12 +19,6 @@ export type CalendarCache = {
   sources: SourceCalendarEntry[];
 };
 
-export type CalendarListOptions = {
-  now?: Date;
-  sourceIds?: string[] | null;
-  until: Date;
-};
-
 export type CalendarFetchResult = {
   events: CalendarEvent[];
   failedSources: { id: string; reason: string }[];
