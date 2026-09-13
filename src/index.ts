@@ -1,5 +1,6 @@
 import "dotenv/config";
 
+import type { TextChannel } from "discord.js";
 import { Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
@@ -7,7 +8,15 @@ import { readConfig } from "./config.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
+<<<<<<< HEAD
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
+=======
+import { deployRoleSlashCommands } from "./features/role-slash/deploy.js";
+import {
+  createRoleSlashCommandRegistry,
+} from "./features/role-slash/registry.js";
+import { registerRoleSlashHandlers } from "./features/role-slash/handler.js";
+>>>>>>> 3d7341a (feat(bot): add /role assign and /role remove slash commands)
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 
 async function main(): Promise<void> {
@@ -17,11 +26,41 @@ async function main(): Promise<void> {
     enableGuildMembersIntent: config.enableGuildMembersIntent,
   });
 
+  const slashRegistry = createRoleSlashCommandRegistry();
+
   client.once(Events.ClientReady, (readyClient) => {
     console.log(`Logged in as ${readyClient.user.tag}`);
+
+    void deployRoleSlashCommands({
+      registry: slashRegistry,
+      token: config.discordToken,
+      clientId: config.discordClientId,
+      guildId: config.discordGuildId,
+    }).catch((error: unknown) => {
+      console.error("Failed to deploy role slash commands on ready", error);
+    });
+
+    // If an audit channel is configured, attempt to log a startup notice so
+    // operators know the bot is online. Best-effort — failure here must not
+    // crash the bot.
+    if (config.roleAuditChannelId) {
+      void readyClient.channels
+        .fetch(config.roleAuditChannelId)
+        .then(async (channel) => {
+          if (channel && channel.isTextBased() && "send" in channel) {
+            await (channel as TextChannel).send(
+              "role slash commands registered (/role assign, /role remove).",
+            );
+          }
+        })
+        .catch((error: unknown) => {
+          console.warn("Failed to post role-slash startup notice", error);
+        });
+    }
   });
 
   registerReactionRoleHandlers(client);
+<<<<<<< HEAD
   registerMemberAuditHandlers(client, {
     config: memberAuditConfig,
     sendMessage: async (channelId, content) => {
@@ -32,6 +71,9 @@ async function main(): Promise<void> {
       await channel.send(content);
     },
   });
+=======
+  registerRoleSlashHandlers(client);
+>>>>>>> 3d7341a (feat(bot): add /role assign and /role remove slash commands)
   registerTimekeeper(client);
   registerShutdownHandler(client);
 
