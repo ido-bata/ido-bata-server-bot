@@ -46,8 +46,20 @@ async function main(): Promise<void> {
     filePath: join(process.cwd(), "data", "config.json"),
   });
 
-  const shutdown = () => {
+  // Registering a SIGINT/SIGTERM listener suppresses Node's default exit
+  // behavior, so we must tear down the Discord client and terminate the
+  // process explicitly — otherwise Ctrl-C / `docker stop` will hang on the
+  // live gateway connection.
+  let shuttingDown = false;
+  const shutdown = (signal: NodeJS.Signals): void => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    console.log(`Received ${signal}, shutting down`);
     configStore.stop();
+    client.destroy();
+    process.exit(0);
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);

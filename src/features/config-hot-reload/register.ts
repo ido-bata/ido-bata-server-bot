@@ -1,27 +1,17 @@
-import { watch, type FSWatcher } from "node:fs";
-
 import {
   ConfigStore,
   type ConfigStoreLogger,
-  type FileWatcher,
+  createFsWatcher,
   type FileWatcherFactory,
 } from "./store.js";
 
 /**
- * Default watcher factory backed by `fs.watch`. Exported so callers can
- * compose it; tests inject their own factory to avoid touching the
- * filesystem.
+ * Default watcher factory backed by `createFsWatcher` (which delegates to
+ * `node:fs.watch`). Exported so callers can compose it; tests inject their
+ * own factory to avoid touching the filesystem.
  */
 export function createFsWatcherFactory(): FileWatcherFactory {
-  return (filePath, onChange) => {
-    const watcher: FSWatcher = watch(filePath, () => onChange());
-    const fileWatcher: FileWatcher = {
-      close: () => {
-        watcher.close();
-      },
-    };
-    return fileWatcher;
-  };
+  return (filePath, onChange) => createFsWatcher(filePath, onChange);
 }
 
 export const consoleConfigStoreLogger: ConfigStoreLogger = {
@@ -73,6 +63,7 @@ export {
   type TimerFactory,
   type TimerHandle,
   type UpdateListener,
+  createFsWatcher,
 } from "./store.js";
 export {
   type HotReloadConfig,

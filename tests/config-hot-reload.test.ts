@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 
 import {
   ConfigStore,
+  createFsWatcher,
   type ConfigStoreLogger,
   type FileWatcher,
   type FileWatcherFactory,
@@ -396,5 +397,26 @@ describe("ConfigStore", () => {
     await timers.advance(1000);
     await store.whenIdle();
     expect(store.get()).toEqual({ announcementChannelId: "111111111111111111" });
+  });
+});
+
+describe("createFsWatcher", () => {
+  let dir: string;
+  let filePath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "config-hot-reload-fs-"));
+    filePath = join(dir, "config.json");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("does not throw when the target file does not exist at startup", () => {
+    expect(() => {
+      const watcher = createFsWatcher(filePath, () => {});
+      watcher.close();
+    }).not.toThrow();
   });
 });

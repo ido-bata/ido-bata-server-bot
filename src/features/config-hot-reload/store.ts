@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
-import type { FSWatcher } from "node:fs";
+import { existsSync, watch, type FSWatcher } from "node:fs";
+import { basename, dirname } from "node:path";
 
 import { safeParseHotReloadConfig } from "./schema.js";
 import type { HotReloadConfig } from "./schema.js";
@@ -48,12 +49,76 @@ const defaultLogger: ConfigStoreLogger = {
   error: (message, meta) => console.error(`[config-hot-reload] ${message}`, meta ?? ""),
 };
 
+/**
+ * Start a `fs.watch`-backed watcher that survives a missing target file.
+ *
+ * When `filePath` exists, the file is watched directly. When the file is
+ * absent (the common "first run" case), the parent directory is watched
+ * instead and events are filtered down to the target basename so we still
+ * notice the file's first appearance without throwing ENOENT during startup.
+ */
+export function createFsWatcher(filePath: string, onChange: () => void): FileWatcher {
+  const dir = dirname(filePath);
+  const target = basename(filePath);
+  let fileWatcher: FSWatcher | null = null;
+  let parentWatcher: FSWatcher | null = null;
+
+  const closeAll = (): void => {
+    if (fileWatcher) {
+      fileWatcher.close();
+      fileWatcher = null;
+    }
+    if (parentWatcher) {
+      parentWatcher.close();
+      parentWatcher = null;
+    }
+  };
+
+  const watchFile = (): FSWatcher => {
+    const watcher = watch(filePath, () => onChange());
+    watcher.on("error", (err) => {
+      if (isMissingFileError(err) && fileWatcher === watcher) {
+        watcher.close();
+        fileWatcher = null;
+        watchParent();
+      }
+    });
+    return watcher;
+  };
+
+  const watchParent = (): FSWatcher => {
+    const watcher = watch(dir, (_eventType, filename) => {
+      // Linux sometimes passes `null` for filename; treat any event as a
+      // possible hit and verify by checking the file's existence.
+      if (filename !== null && filename !== target) {
+        return;
+      }
+      onChange();
+      if (!existsSync(filePath) || fileWatcher !== null) {
+        return;
+      }
+      try {
+        fileWatcher = watchFile();
+        watcher.close();
+        parentWatcher = null;
+      } catch {
+        // Still missing or not watchable; keep the parent watcher.
+      }
+    });
+    return watcher;
+  };
+
+  if (existsSync(filePath)) {
+    fileWatcher = watchFile();
+  } else {
+    parentWatcher = watchParent();
+  }
+
+  return { close: closeAll };
+}
+
 function defaultWatcherFactory(filePath: string, onChange: () => void): FileWatcher {
-  // Node-only: dynamic import to keep Bun-side scripts working.
-  // The actual watcher handle type is `FSWatcher` from `node:fs`.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const watcher: FSWatcher = require("node:fs").watch(filePath, () => onChange());
-  return { close: () => watcher.close() };
+  return createFsWatcher(filePath, onChange);
 }
 
 function defaultTimerFactory(): TimerFactory {

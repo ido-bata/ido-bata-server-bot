@@ -9,6 +9,7 @@ export {
   type TimerHandle,
   type UpdateListener,
   consoleConfigStoreLogger,
+  createFsWatcher,
   createFsWatcherFactory,
   registerConfigHotReload,
 } from "./register.js";
