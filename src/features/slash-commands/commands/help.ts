@@ -15,9 +15,7 @@ export const helpCommand: SlashCommandDefinition = {
     // `Routes.applicationGuildCommands(...)`. Fetch the guild-scoped manager
     // explicitly so the list reflects what was actually registered to this
     // guild.
-    const commands = interaction.guild
-      ? await interaction.guild.commands.fetch()
-      : new Map();
+    const commands = interaction.guild ? await interaction.guild.commands.fetch() : new Map();
 
     const lines = Array.from(commands.values())
       .map((command) => `- \`/${command.name}\` — ${command.description}`)

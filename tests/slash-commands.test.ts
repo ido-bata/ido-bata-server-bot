@@ -113,17 +113,12 @@ describe("slash command handler", () => {
 
   it("lists guild-scoped commands in /help via guild.commands.fetch()", async () => {
     const reply = vi.fn(async () => undefined);
-    const fetch = vi.fn(async () =>
-      new Map([
-        [
-          "2",
-          { name: "ping", description: "Returns Pong with the WS latency." },
-        ],
-        [
-          "1",
-          { name: "help", description: "Lists the slash commands available in this guild." },
-        ],
-      ]),
+    const fetch = vi.fn(
+      async () =>
+        new Map([
+          ["2", { name: "ping", description: "Returns Pong with the WS latency." }],
+          ["1", { name: "help", description: "Lists the slash commands available in this guild." }],
+        ]),
     );
     const handler = createSlashCommandHandler();
     await handler.handleInteraction({
