@@ -186,7 +186,12 @@ export function registerMessageAuditHandlers(
       // Skip DMs — the audit channel is guild-scoped by design.
       return;
     }
-    const resolvedOld = await resolveMessage(oldMessage);
+    // Note: for `oldMessage` we must NOT call `.fetch()` — by the time the
+    // MESSAGE_UPDATE event fires the message on the server has already been
+    // overwritten, so a fetch returns the post-edit content. If the pre-edit
+    // snapshot is only available as a partial, we record it as unavailable
+    // rather than misreporting the new body as both before and after.
+    const beforeContent = isPartial(oldMessage) ? null : (oldMessage.content ?? null);
     const resolvedNew = await resolveMessage(newMessage);
 
     await handler.onMessageUpdate({
@@ -194,7 +199,7 @@ export function registerMessageAuditHandlers(
       authorName: resolvedNew.author?.username ?? resolvedNew.author?.id ?? "unknown",
       channelId: resolvedNew.channelId,
       messageId: resolvedNew.id,
-      before: resolvedOld.content ?? null,
+      before: beforeContent,
       after: resolvedNew.content ?? null,
       editedAt: new Date(resolvedNew.editedTimestamp ?? Date.now()),
       isBot: resolvedNew.author?.bot ?? false,

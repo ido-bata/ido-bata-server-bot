@@ -3,8 +3,10 @@ export type EditAuditInput = {
   authorName: string;
   channelId: string;
   messageId: string;
-  // Content captured before the edit. Null when MessageContent intent is off
-  // and the pre-edit payload arrived as a partial message with no content.
+  // Content captured before the edit. Null when the pre-edit snapshot is
+  // unavailable — either MessageContent intent is disabled, or the cached
+  // old message arrived as a partial (fetching it after the edit would only
+  // return the post-edit value, so we leave `before` blank).
   before: string | null;
   // Content captured after the edit. Null when MessageContent intent is off.
   after: string | null;
