@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Added
 
+- Slash Commands scaffold under `src/features/slash-commands/` (config / registry / handler / deploy) with `/ping` and `/help` as the minimum examples. Guild-scope registration runs idempotently on `ClientReady` via the Discord REST API.
 - Project-local AI agent dispatchers (`CLAUDE.md` / `AGENTS.md`) pointing to a `docs/` knowledge base (architecture, process, recovery, security, quality).
 - Dependabot weekly update PRs (`npm` ecosystem, Asia/Tokyo Monday 09:00).
 - Lightweight security workflow (`bun audit --production` + CodeQL on push / PR).
