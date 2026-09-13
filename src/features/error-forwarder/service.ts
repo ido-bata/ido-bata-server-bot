@@ -7,12 +7,11 @@ import {
   type ErrorEmbedData,
   type ErrorKind,
   formatErrorEmbed,
-  hashStack,
   shortHash,
 } from "./formatter.js";
 import { StackRateLimiter } from "./rate-limit.js";
 
-export type LoggerLike = {
+type LoggerLike = {
   info: (message: string, meta?: Record<string, unknown>) => void;
   warn: (message: string, meta?: Record<string, unknown>) => void;
   error: (message: string, meta?: Record<string, unknown>) => void;
@@ -200,9 +199,3 @@ export function registerErrorForwarder(
 
   return reporter;
 }
-
-/**
- * Hash helper re-exported so consumers can correlate logs with embeds without
- * importing the formatter module directly.
- */
-export { hashStack as hashErrorStack, shortHash };

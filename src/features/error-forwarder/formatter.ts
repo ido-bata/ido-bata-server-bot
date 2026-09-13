@@ -17,7 +17,7 @@ export type ErrorContext = {
   runtimeVersion?: string;
 };
 
-export type ErrorEmbedField = {
+type ErrorEmbedField = {
   name: string;
   value: string;
   inline?: boolean;
