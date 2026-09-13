@@ -13,8 +13,9 @@ coverage/
 # Logs
 *.log
 
-# Local persisted state for the timekeeper feature
+# Local persisted state files (runtime only — these are never committed)
 data/timekeeper-history.json
+data/reminders.json
 
 # Editor / OS / tooling
 .DS_Store
