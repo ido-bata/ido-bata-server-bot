@@ -58,7 +58,9 @@ export function createFileBirthdayStorage(filePath: string): BirthdayStorage {
   return { load, save };
 }
 
-export function createInMemoryBirthdayStorage(initial: BirthdayStore = { birthdays: {} }): BirthdayStorage {
+export function createInMemoryBirthdayStorage(
+  initial: BirthdayStore = { birthdays: {} },
+): BirthdayStorage {
   let state: BirthdayStore = {
     birthdays: { ...initial.birthdays },
   };

@@ -4,19 +4,15 @@
 
 import type { Channel, Client, GuildMember } from "discord.js";
 import { ChannelType, Events } from "discord.js";
-
-import {
-  birthdayRoleConfig,
-  type BirthdayRoleConfig,
-  isBirthdayRoleConfigured,
-} from "./config.js";
 import { birthdayCommand, createBirthdayCommandRegistry } from "./commands.js";
+import { type BirthdayRoleConfig, birthdayRoleConfig, isBirthdayRoleConfigured } from "./config.js";
+import { type JstDate, previousJstDate, toJstDate } from "./date.js";
 import {
-  createBirthdayRoleHandler,
   type BirthdayRoleHandler,
+  createBirthdayRoleHandler,
   type HandlerDependencies,
 } from "./handler.js";
-import { getNextTickAfter, type SchedulePhase } from "./schedule.js";
+import { getNextTickAfter } from "./schedule.js";
 
 type ServiceOptions = {
   config?: BirthdayRoleConfig;
@@ -82,48 +78,52 @@ export function registerBirthdayRoleHandlers(
   return service;
 }
 
-function scheduleDailyLoop(
-  client: Client,
-  service: BirthdayRoleService,
-  now: () => Date,
-  // Track which phase ran previously so the loop alternates between
-  // `assign` (grant today's Birthday role) and `remove` (drop yesterday's).
-  // The default of `"remove"` makes the very first tick an `assign`, which
-  // is what the bot must do on boot when a birthday is already in progress.
-  previousPhase: SchedulePhase = "remove",
-): void {
-  const tick = getNextTickAfter(now(), previousPhase);
+function scheduleDailyLoop(client: Client, service: BirthdayRoleService, now: () => Date): void {
+  const tick = getNextTickAfter(now());
   const delayMs = Math.max(0, tick.at.getTime() - now().getTime());
 
   console.log(
-    `[BirthdayRole] Next tick: ${tick.phase} at ${tick.at.toISOString()} (in ${Math.round(
-      delayMs / 1000,
-    )}s)`,
+    `[BirthdayRole] Next tick at ${tick.at.toISOString()} (in ${Math.round(delayMs / 1000)}s)`,
   );
 
   setTimeout(() => {
-    void safeRun(client, service, tick.phase).finally(() => {
-      scheduleDailyLoop(client, service, now, tick.phase);
+    // At JST midnight the wall-clock has just rolled into the new day,
+    // so `now()` already yields today's JstDate. We then derive
+    // yesterday by subtracting one calendar day (handles month/year
+    // rollover via the previousJstDate helper).
+    const tickNow = now();
+    const today = toJstDate(tickNow);
+    const yesterday = previousJstDate(today);
+
+    void runMidnightTick(client, service, yesterday, today).finally(() => {
+      scheduleDailyLoop(client, service, now);
     });
   }, delayMs);
 }
 
-async function safeRun(
+async function runMidnightTick(
   client: Client,
   service: BirthdayRoleService,
-  phase: "assign" | "remove",
+  yesterday: JstDate,
+  today: JstDate,
 ): Promise<void> {
+  // Run removal before assignment so any member whose birthday crosses
+  // midnight gets re-assigned on the new day without a visible gap.
   try {
-    const result =
-      phase === "assign"
-        ? await service.handler.runAssignTick()
-        : await service.handler.runRemoveTick();
-
-    console.log(`[BirthdayRole] ${phase} tick completed`, result);
-    void client;
+    const removed = await service.handler.runRemoveTick(yesterday);
+    console.log("[BirthdayRole] remove tick completed", removed);
   } catch (error: unknown) {
-    console.error(`[BirthdayRole] ${phase} tick failed`, error);
+    console.error("[BirthdayRole] remove tick failed", error);
   }
+
+  try {
+    const granted = await service.handler.runAssignTick(today);
+    console.log("[BirthdayRole] assign tick completed", granted);
+  } catch (error: unknown) {
+    console.error("[BirthdayRole] assign tick failed", error);
+  }
+
+  void client;
 }
 
 // Used by tests to avoid touching the real Discord Client. Production callers

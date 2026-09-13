@@ -6,9 +6,9 @@
 import type {
   ChatInputCommandInteraction,
   RESTPostAPIChatInputApplicationCommandsJSONBody,
+  SlashCommandSubcommandsOnlyBuilder,
 } from "discord.js";
 import { SlashCommandBuilder } from "discord.js";
-import type { SlashCommandSubcommandsOnlyBuilder } from "discord.js";
 
 import type { BirthdayRoleHandler } from "./handler.js";
 
@@ -19,9 +19,7 @@ export type BirthdayCommandContext = {
   commandName: string;
 };
 
-export type BirthdayCommandBuilder =
-  | SlashCommandBuilder
-  | SlashCommandSubcommandsOnlyBuilder;
+export type BirthdayCommandBuilder = SlashCommandBuilder | SlashCommandSubcommandsOnlyBuilder;
 
 export type BirthdayCommandDefinition = {
   name: BirthdayCommandName;
@@ -100,9 +98,10 @@ async function dispatchBirthdayInteraction(
 
     if (!result.ok) {
       await interaction.reply({
-        content: result.reason === "invalid-date"
-          ? "誕生日の形式が正しくありません (YYYY-MM-DD)。"
-          : "誕生日の保存に失敗しました。",
+        content:
+          result.reason === "invalid-date"
+            ? "誕生日の形式が正しくありません (YYYY-MM-DD)。"
+            : "誕生日の保存に失敗しました。",
         ephemeral: true,
       });
       return;
@@ -118,9 +117,7 @@ async function dispatchBirthdayInteraction(
   if (sub === "remove") {
     const result = await deps.handler.removeBirthday(interaction.user.id);
     await interaction.reply({
-      content: result.removed
-        ? "誕生日の登録を取り消しました。"
-        : "誕生日は登録されていません。",
+      content: result.removed ? "誕生日の登録を取り消しました。" : "誕生日は登録されていません。",
       ephemeral: true,
     });
     return;
@@ -137,8 +134,9 @@ function defaultResolveDate(raw: unknown): string | null {
     return null;
   }
 
-  const value = (raw as { options?: { getString?: (name: string) => string | null } }).options
-    ?.getString?.("date");
+  const value = (
+    raw as { options?: { getString?: (name: string) => string | null } }
+  ).options?.getString?.("date");
 
   return typeof value === "string" && value.length > 0 ? value : null;
 }

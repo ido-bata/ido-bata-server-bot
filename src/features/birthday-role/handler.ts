@@ -3,14 +3,15 @@
 // tests can exercise the logic without a live Client.
 
 import { type BirthdayRoleConfig, isBirthdayRoleConfigured } from "./config.js";
-import { parseBirthdayDate, toJstDate } from "./date.js";
+import { type JstDate, parseBirthdayDate } from "./date.js";
+import { selectBirthdaysOnDate } from "./schedule.js";
 import {
+  type BirthdayEntry,
+  type BirthdayStorage,
   createFileBirthdayStorage,
   listBirthdays,
   removeBirthday,
   setBirthday,
-  type BirthdayEntry,
-  type BirthdayStorage,
 } from "./storage.js";
 
 type MemberLike = {
@@ -39,13 +40,15 @@ export type HandlerDependencies = {
 };
 
 export type BirthdayRoleHandler = {
-  setBirthday: (userId: string, dateInput: string) => Promise<
-    | { ok: true; entry: BirthdayEntry }
-    | { ok: false; reason: "invalid-date" | "storage-failed" }
+  setBirthday: (
+    userId: string,
+    dateInput: string,
+  ) => Promise<
+    { ok: true; entry: BirthdayEntry } | { ok: false; reason: "invalid-date" | "storage-failed" }
   >;
   removeBirthday: (userId: string) => Promise<{ removed: boolean }>;
-  runAssignTick: () => Promise<AssignTickResult>;
-  runRemoveTick: () => Promise<RemoveTickResult>;
+  runAssignTick: (target: JstDate) => Promise<AssignTickResult>;
+  runRemoveTick: (target: JstDate) => Promise<RemoveTickResult>;
 };
 
 export type AssignTickResult = {
@@ -111,13 +114,11 @@ export function createBirthdayRoleHandler(deps: HandlerDependencies): BirthdayRo
     return { removed: true };
   }
 
-  async function runAssignTick(): Promise<AssignTickResult> {
-    const today = toJstDate(now());
+  async function runAssignTick(target: JstDate): Promise<AssignTickResult> {
     const store = await storage.load();
-    const todays = listBirthdays(store).filter((entry) => {
-      const parsed = parseBirthdayDate(entry.date);
-      return parsed !== null && parsed.month === today.month && parsed.day === today.day;
-    });
+    const todays = selectBirthdaysOnDate(listBirthdays(store), target, parseBirthdayDate)
+      .map((userId) => store.birthdays[userId])
+      .filter((entry): entry is BirthdayEntry => entry !== undefined);
 
     const result: AssignTickResult = {
       attempted: todays.map((entry) => entry.userId),
@@ -149,7 +150,11 @@ export function createBirthdayRoleHandler(deps: HandlerDependencies): BirthdayRo
       }
     }
 
-    if (result.granted.length > 0 && deps.fetchAnnouncementChannel && config.announcementChannelId) {
+    if (
+      result.granted.length > 0 &&
+      deps.fetchAnnouncementChannel &&
+      config.announcementChannelId
+    ) {
       try {
         const channel = await deps.fetchAnnouncementChannel();
         if (channel) {
@@ -166,18 +171,20 @@ export function createBirthdayRoleHandler(deps: HandlerDependencies): BirthdayRo
     return result;
   }
 
-  async function runRemoveTick(): Promise<RemoveTickResult> {
+  async function runRemoveTick(target: JstDate): Promise<RemoveTickResult> {
     const store = await storage.load();
-    const entries = listBirthdays(store);
+    const targets = selectBirthdaysOnDate(listBirthdays(store), target, parseBirthdayDate)
+      .map((userId) => store.birthdays[userId])
+      .filter((entry): entry is BirthdayEntry => entry !== undefined);
 
     const result: RemoveTickResult = {
-      attempted: entries.map((entry) => entry.userId),
+      attempted: targets.map((entry) => entry.userId),
       removed: [],
       skippedNoRole: [],
       failed: [],
     };
 
-    for (const entry of entries) {
+    for (const entry of targets) {
       const member = deps.fetchMember ? await deps.fetchMember(entry.userId) : null;
 
       if (!member) {

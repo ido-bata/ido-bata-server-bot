@@ -1,8 +1,11 @@
 // REST deployer for the birthday slash command. Mirrors the minimal shape
 // used by slash-commands base (#13) so the future migration is mechanical.
 
-import type { REST, RESTPostAPIChatInputApplicationCommandsJSONBody } from "discord.js";
-import type { SlashCommandSubcommandsOnlyBuilder } from "discord.js";
+import type {
+  REST,
+  RESTPostAPIChatInputApplicationCommandsJSONBody,
+  SlashCommandSubcommandsOnlyBuilder,
+} from "discord.js";
 import { REST as RestClass, Routes, SlashCommandBuilder } from "discord.js";
 
 import type { BirthdayCommandDefinition, BirthdayCommandRegistry } from "./commands.js";

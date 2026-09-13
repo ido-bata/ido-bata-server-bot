@@ -2,6 +2,7 @@
 // because the issue scopes the feature to a single timezone.
 
 const JST_OFFSET_MINUTES = 9 * 60;
+const MS_PER_DAY = 24 * 60 * 60_000;
 
 export type JstDate = {
   year: number;
@@ -18,16 +19,12 @@ export function toJstDate(date: Date): JstDate {
   };
 }
 
-// Returns the next instant (in UTC) where JST date is exactly
-// (year, month, day) at 00:00 JST. Useful for the "remove" scheduler.
-export function nextJstMidnightUtc(
-  now: Date,
-  year: number,
-  month: number,
-  day: number,
-): Date {
-  const targetUtcMs =
-    Date.UTC(year, month - 1, day, 0, 0, 0, 0) - JST_OFFSET_MINUTES * 60_000;
+// Returns the UTC instant for the JST midnight that starts `today`. The
+// unused `_now` argument is preserved in the signature so callers that pass
+// `now` explicitly can stay readable; it is intentionally ignored because
+// the function computes a calendar-day instant, not an offset from now.
+export function nextJstMidnightUtc(_now: Date, year: number, month: number, day: number): Date {
+  const targetUtcMs = Date.UTC(year, month - 1, day, 0, 0, 0, 0) - JST_OFFSET_MINUTES * 60_000;
   return new Date(targetUtcMs);
 }
 
@@ -51,6 +48,20 @@ export function getNextJstMidnightUtc(now: Date): Date {
     tomorrowJst.getUTCMonth() + 1,
     tomorrowJst.getUTCDate(),
   );
+}
+
+// Returns the JST date that comes immediately before `today`. Handles month
+// and year rollover (including leap years) via Date.UTC arithmetic.
+export function previousJstDate(today: JstDate): JstDate {
+  const todayMidnightUtcMs =
+    Date.UTC(today.year, today.month - 1, today.day) - JST_OFFSET_MINUTES * 60_000;
+  const yesterdayMidnightUtcMs = todayMidnightUtcMs - MS_PER_DAY;
+  const yesterdayJst = new Date(yesterdayMidnightUtcMs + JST_OFFSET_MINUTES * 60_000);
+  return {
+    year: yesterdayJst.getUTCFullYear(),
+    month: yesterdayJst.getUTCMonth() + 1,
+    day: yesterdayJst.getUTCDate(),
+  };
 }
 
 export function parseBirthdayDate(input: string): JstDate | null {

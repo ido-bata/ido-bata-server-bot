@@ -1,10 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-
-import { type BirthdayRoleConfig } from "../src/features/birthday-role/config.js";
 import {
   birthdayCommand,
   createBirthdayCommandRegistry,
 } from "../src/features/birthday-role/commands.js";
+import type { BirthdayRoleConfig } from "../src/features/birthday-role/config.js";
 import { createBirthdayRoleHandler } from "../src/features/birthday-role/handler.js";
 import { createInMemoryBirthdayStorage } from "../src/features/birthday-role/storage.js";
 
@@ -36,7 +35,7 @@ function makeInteraction(
       // Mirrors discord.js: `getSubcommand()` returns the active subcommand
       // name with no influence from any argument we might pass.
       getSubcommand: () => options.subcommand,
-      getString: (name: string) => (name === "date" ? options.date ?? null : null),
+      getString: (name: string) => (name === "date" ? (options.date ?? null) : null),
     },
     reply: vi.fn(async () => undefined),
   };
