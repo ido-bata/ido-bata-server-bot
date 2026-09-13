@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Added
 
+- Personal reminder feature (`src/features/reminder/`): `/remind me <duration> "message"` slash command schedules a DM with caps at 7 days duration and 10 active reminders per user; scheduler scans every 30s and reloads from `data/reminders.json` on boot (gitignored) with malformed-file tolerance, matching the timekeeper-history pattern.
 - Project-local AI agent dispatchers (`CLAUDE.md` / `AGENTS.md`) pointing to a `docs/` knowledge base (architecture, process, recovery, security, quality).
 - Dependabot weekly update PRs (`npm` ecosystem, Asia/Tokyo Monday 09:00).
 - Lightweight security workflow (`bun audit --production` + CodeQL on push / PR).
