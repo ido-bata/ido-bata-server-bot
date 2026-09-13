@@ -1,0 +1,11 @@
+{
+  "sources": [
+    {
+      "id": "team-events",
+      "name": "チーム予定",
+      "url": "https://calendar.google.com/calendar/ical/team%40example.com/public/basic.ics"
+    }
+  ],
+  "lookAheadDays": 7,
+  "announcementChannelId": null
+}

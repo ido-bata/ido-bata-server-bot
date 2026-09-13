@@ -4,6 +4,7 @@ import { Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
+import { registerIcalCalendar } from "./features/ical-calendar/index.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 
@@ -19,6 +20,18 @@ async function main(): Promise<void> {
 
   registerReactionRoleHandlers(client);
   registerTimekeeper(client);
+  const icalService = registerIcalCalendar(client, {
+    onReady: (service) => {
+      service.startScheduler();
+      void service
+        .fetchAndCacheAll()
+        .catch((error: unknown) => console.error("[ical-calendar] initial fetch failed", error));
+    },
+  });
+
+  process.on("beforeExit", () => {
+    icalService.stopScheduler();
+  });
 
   await client.login(config.discordToken);
 }
