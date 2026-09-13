@@ -1,8 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { errorForwarderConfig } from "../src/features/error-forwarder/config.js";
 import { StackRateLimiter } from "../src/features/error-forwarder/rate-limit.js";
-import { createErrorReporter } from "../src/features/error-forwarder/service.js";
+import {
+  createErrorReporter,
+  registerErrorForwarder,
+} from "../src/features/error-forwarder/service.js";
 
 describe("error-forwarder service", () => {
   function buildHarness(options: { channelId?: string; limit?: number } = {}) {
@@ -185,5 +188,143 @@ describe("error-forwarder service", () => {
 
     await reporter.report(new Error("first"), "uncaughtException");
     expect(sendEmbed).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("error-forwarder registerErrorForwarder", () => {
+  function captureExit(): {
+    exitProcess: (code: number) => never;
+    whenExited: Promise<number>;
+  } {
+    let resolveExit: (code: number) => void = () => {};
+    const whenExited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    const exitProcess = (code: number) => {
+      resolveExit(code);
+      // Returning `never` keeps the signature; tests await `whenExited`
+      // instead of relying on the (would-be) exit side-effect.
+      return undefined as never;
+    };
+    return { exitProcess, whenExited };
+  }
+
+  // Tests below attach real listeners via `process.on(...)`. Snapshot the
+  // count before each registration so we can clean up exactly the listeners
+  // this suite added without disturbing unrelated test plumbing.
+  let baselineUncaught = 0;
+  let baselineRejection = 0;
+
+  beforeEach(() => {
+    baselineUncaught = process.listenerCount("uncaughtException");
+    baselineRejection = process.listenerCount("unhandledRejection");
+  });
+
+  afterEach(() => {
+    // Only strip the listener this suite added — never touch anyone else's.
+    while (process.listenerCount("uncaughtException") > baselineUncaught) {
+      const last = process.listeners("uncaughtException").pop();
+      if (!last) break;
+      process.removeListener("uncaughtException", last);
+    }
+    while (process.listenerCount("unhandledRejection") > baselineRejection) {
+      const last = process.listeners("unhandledRejection").pop();
+      if (!last) break;
+      process.removeListener("unhandledRejection", last);
+    }
+  });
+
+  function registerHarness(options: { fatal: boolean; exitProcess: (code: number) => never }) {
+    const listenersBefore = process.listenerCount("uncaughtException");
+    const config = {
+      ...errorForwarderConfig,
+      channelId: "channel-1",
+      uncaughtExceptionIsFatal: options.fatal,
+    };
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const sendEmbed = vi.fn(async () => undefined);
+    const resolveChannel = vi.fn(async () => ({ id: "channel-1" }) as never);
+    const limiter = new StackRateLimiter({ maxPerWindow: 3, windowMs: 60_000 });
+
+    const reporter = registerErrorForwarder(null as never, {
+      config,
+      logger,
+      limiter,
+      resolveChannel,
+      sendEmbed,
+      exitProcess: options.exitProcess,
+    });
+
+    expect(process.listenerCount("uncaughtException")).toBe(listenersBefore + 1);
+    expect(process.listenerCount("unhandledRejection")).toBe(listenersBefore + 1);
+
+    return { reporter, logger, sendEmbed, resolveChannel };
+  }
+
+  it("exits with code 1 after a successful report when uncaughtExceptionIsFatal is true", async () => {
+    const { exitProcess, whenExited } = captureExit();
+    const { sendEmbed } = registerHarness({ fatal: true, exitProcess });
+
+    const error = new Error("boom");
+    error.stack = "Error: boom\n    at /app/foo.ts:1:1";
+    process.emit("uncaughtException", error);
+
+    await expect(whenExited).resolves.toBe(1);
+    expect(sendEmbed).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not exit when uncaughtExceptionIsFatal is false", async () => {
+    const exitSpy = vi.fn(() => undefined as never);
+    registerHarness({ fatal: false, exitProcess: exitSpy });
+
+    const error = new Error("non-fatal");
+    error.stack = "Error: non-fatal\n    at /app/foo.ts:1:1";
+    process.emit("uncaughtException", error);
+
+    // Give the async chain a chance to settle. Vitest's `await` resolution
+    // happens once all microtasks drain, which is enough time for the
+    // listener's `.finally` to have run if it was going to.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it("still exits when the best-effort report itself rejects", async () => {
+    const { exitProcess, whenExited } = captureExit();
+    const sendEmbed = vi.fn(async () => {
+      throw new Error("network down");
+    });
+
+    const config = {
+      ...errorForwarderConfig,
+      channelId: "channel-1",
+      uncaughtExceptionIsFatal: true,
+    };
+    const baseline = process.listenerCount("uncaughtException");
+    registerErrorForwarder(null as never, {
+      config,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      limiter: new StackRateLimiter({ maxPerWindow: 3, windowMs: 60_000 }),
+      resolveChannel: vi.fn(async () => ({ id: "channel-1" }) as never),
+      sendEmbed,
+      exitProcess,
+    });
+    expect(process.listenerCount("uncaughtException")).toBe(baseline + 1);
+
+    const error = new Error("boom");
+    error.stack = "Error: boom\n    at /app/foo.ts:1:1";
+    process.emit("uncaughtException", error);
+
+    await expect(whenExited).resolves.toBe(1);
+    expect(sendEmbed).toHaveBeenCalledTimes(1);
+  });
+
+  it("never exits the process on an unhandledRejection", async () => {
+    const exitSpy = vi.fn(() => undefined as never);
+    registerHarness({ fatal: true, exitProcess: exitSpy });
+
+    process.emit("unhandledRejection", "rejection reason");
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(exitSpy).not.toHaveBeenCalled();
   });
 });

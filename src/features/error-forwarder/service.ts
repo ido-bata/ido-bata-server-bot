@@ -31,6 +31,12 @@ export type ErrorReporterOptions = {
   /** Builds the ErrorContext; injected so tests can fix timestamps. */
   buildContext?: (kind: ErrorKind) => ErrorContext;
   now?: () => Date;
+  /**
+   * Terminates the process with `code`. Defaults to `process.exit`. Override
+   * with a spy in tests so `uncaughtException` handling can be exercised
+   * without actually killing the test runner.
+   */
+  exitProcess?: (code: number) => never;
 };
 
 const DEFAULT_LOGGER: LoggerLike = {
@@ -163,12 +169,29 @@ export function createErrorReporter(
 
 export function registerErrorForwarder(
   client: Client,
-  options: Omit<ErrorReporterOptions, "client" | "resolveChannel"> = {},
+  options: ErrorReporterOptions = {},
 ): ErrorReporter {
   const reporter = createErrorReporter(client, options);
+  const config = options.config ?? errorForwarderConfig;
+  const exitProcess: (code: number) => never =
+    options.exitProcess ?? ((code) => process.exit(code));
 
+  // Registering a `uncaughtException` listener suppresses Node's default
+  // "print stack and exit" behaviour, so we re-establish it explicitly. The
+  // best-effort embed / log report is awaited first to give moderators a
+  // chance to see the failure before the process terminates.
   process.on("uncaughtException", (error) => {
-    void reporter.report(error, "uncaughtException");
+    reporter
+      .report(error, "uncaughtException")
+      .catch(() => {
+        // Reporting itself failed — swallow it. The original crash is what
+        // matters, and exiting below still surfaces that.
+      })
+      .finally(() => {
+        if (config.uncaughtExceptionIsFatal) {
+          exitProcess(1);
+        }
+      });
   });
 
   process.on("unhandledRejection", (reason) => {
