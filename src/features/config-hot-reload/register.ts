@@ -36,9 +36,7 @@ export type RegisterConfigHotReloadOptions = {
  * already started (initial load + watch); the caller owns the lifecycle and
  * must call `.stop()` on shutdown.
  */
-export function registerConfigHotReload(
-  options: RegisterConfigHotReloadOptions,
-): ConfigStore {
+export function registerConfigHotReload(options: RegisterConfigHotReloadOptions): ConfigStore {
   const store = new ConfigStore({
     filePath: options.filePath,
     debounceMs: options.debounceMs,
@@ -55,19 +53,19 @@ export function registerConfigHotReload(
 }
 
 export {
+  type HotReloadConfig,
+  hotReloadConfigSchema,
+  parseHotReloadConfig,
+  safeParseHotReloadConfig,
+} from "./schema.js";
+export {
   ConfigStore,
   type ConfigStoreLogger,
+  createFsWatcher,
   type ErrorListener,
   type FileWatcher,
   type FileWatcherFactory,
   type TimerFactory,
   type TimerHandle,
   type UpdateListener,
-  createFsWatcher,
 } from "./store.js";
-export {
-  type HotReloadConfig,
-  hotReloadConfigSchema,
-  parseHotReloadConfig,
-  safeParseHotReloadConfig,
-} from "./schema.js";

@@ -2,18 +2,17 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
+import type { HotReloadConfig } from "../src/features/config-hot-reload/index.js";
 import {
   ConfigStore,
-  createFsWatcher,
   type ConfigStoreLogger,
+  createFsWatcher,
   type FileWatcher,
   type FileWatcherFactory,
   type TimerFactory,
   type TimerHandle,
 } from "../src/features/config-hot-reload/index.js";
-import type { HotReloadConfig } from "../src/features/config-hot-reload/index.js";
 
 class FakeTimers {
   private readonly pending: Array<{

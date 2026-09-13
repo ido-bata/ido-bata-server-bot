@@ -1,9 +1,8 @@
+import { existsSync, type FSWatcher, watch } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { existsSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
-
-import { safeParseHotReloadConfig } from "./schema.js";
 import type { HotReloadConfig } from "./schema.js";
+import { safeParseHotReloadConfig } from "./schema.js";
 
 export type ConfigStoreLogger = {
   info: (message: string, meta?: Record<string, unknown>) => void;
@@ -18,10 +17,7 @@ export type FileWatcher = {
   close: () => void;
 };
 
-export type FileWatcherFactory = (
-  filePath: string,
-  onChange: () => void,
-) => FileWatcher;
+export type FileWatcherFactory = (filePath: string, onChange: () => void) => FileWatcher;
 
 export type TimerHandle = {
   clear: () => void;
