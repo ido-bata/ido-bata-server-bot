@@ -3,7 +3,11 @@ import { z } from "zod";
 const configSchema = z.object({
   DISCORD_TOKEN: z.string().min(1),
   DISCORD_CLIENT_ID: z.string().min(1),
-  DISCORD_GUILD_ID: z.string().min(1),
+  // Legacy single-guild env (deprecated). Either DISCORD_GUILD_ID or
+  // DISCORD_GUILD_IDS must be supplied; both is fine — IDs are unioned.
+  DISCORD_GUILD_ID: z.string().optional(),
+  // Comma-separated list of guild ids this process should connect to.
+  DISCORD_GUILD_IDS: z.string().optional(),
   // Optional: audit log channel for `/role` slash command usage. When set,
   // the bot forwards a structured entry to the channel after each command.
   ROLE_AUDIT_CHANNEL_ID: z.string().optional(),
@@ -12,27 +16,53 @@ const configSchema = z.object({
 export type BotConfig = {
   discordToken: string;
   discordClientId: string;
+  /** Legacy single-guild id (deprecated). May be empty when using DISCORD_GUILD_IDS. */
   discordGuildId: string;
+  /** Resolved multi-guild ids (deduplicated). Always includes the legacy id when set. */
+  discordGuildIds: string[];
   enableMessageContentIntent: boolean;
   enableGuildMembersIntent: boolean;
-  roleAuditChannelId: string | null;
   enablePresenceIntent: boolean;
+  roleAuditChannelId: string | null;
 };
+
+function parseGuildList(guildId?: string, guildIds?: string): string[] {
+  const set = new Set<string>();
+  if (guildIds && guildIds.length > 0) {
+    for (const id of guildIds.split(",")) {
+      const trimmed = id.trim();
+      if (trimmed.length > 0) {
+        set.add(trimmed);
+      }
+    }
+  }
+  if (guildId && guildId.length > 0) {
+    set.add(guildId);
+  }
+  return [...set];
+}
 
 export function readConfig(env: NodeJS.ProcessEnv): BotConfig {
   const parsed = configSchema.parse(env);
   const enableMessageContentIntent = env.DISCORD_ENABLE_MESSAGE_CONTENT === "true";
   const enableGuildMembersIntent = env.DISCORD_ENABLE_GUILD_MEMBERS === "true";
-  const roleAuditChannelId = parsed.ROLE_AUDIT_CHANNEL_ID?.trim() || null;
   const enablePresenceIntent = env.DISCORD_ENABLE_PRESENCE === "true";
+  const roleAuditChannelId = parsed.ROLE_AUDIT_CHANNEL_ID?.trim() || null;
+  const discordGuildIds = parseGuildList(parsed.DISCORD_GUILD_ID, parsed.DISCORD_GUILD_IDS);
+  if (discordGuildIds.length === 0) {
+    throw new Error(
+      "At least one Discord guild id is required: set DISCORD_GUILD_ID or DISCORD_GUILD_IDS.",
+    );
+  }
 
   return {
     discordToken: parsed.DISCORD_TOKEN,
     discordClientId: parsed.DISCORD_CLIENT_ID,
-    discordGuildId: parsed.DISCORD_GUILD_ID,
+    discordGuildId: parsed.DISCORD_GUILD_ID ?? "",
+    discordGuildIds,
     enableMessageContentIntent,
     enableGuildMembersIntent,
-    roleAuditChannelId,
     enablePresenceIntent,
+    roleAuditChannelId,
   };
 }
