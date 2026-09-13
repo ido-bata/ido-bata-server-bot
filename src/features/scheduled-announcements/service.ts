@@ -55,6 +55,11 @@ export type ScheduledAnnouncementsService = {
 
 const RETRY_DELAY_MS = 5_000;
 const MAX_RETRY_ATTEMPTS = 2;
+// Node clamps `setTimeout` delays above 2^31-1 ms (~24.8 days) and runs them
+// immediately, which would fire a long-horizon one-shot early. Re-arm the
+// scheduler at this cadence so very-future fires still wait correctly.
+// Weekly cadence tops out at 7 days, so only one-shot dates are affected.
+const MAX_SET_TIMEOUT_DELAY_MS = 24 * 60 * 60 * 1000;
 
 export function createScheduledAnnouncementsService(
   client: Client,
@@ -148,13 +153,25 @@ export function createScheduledAnnouncementsService(
       return;
     }
 
-    const delayMs = Math.max(0, next.fireAt.getTime() - now.getTime());
+    const rawDelayMs = next.fireAt.getTime() - now.getTime();
+    const delayMs = Math.max(0, rawDelayMs);
+    const safeDelayMs = Math.min(delayMs, MAX_SET_TIMEOUT_DELAY_MS);
     logger.info(
       `Next entry ${next.entry.id} scheduled for ${next.fireAt.toISOString()} (in ${Math.round(delayMs / 1000)}s)`,
     );
+    if (safeDelayMs < delayMs) {
+      logger.info(
+        `Re-arming timer in ${Math.round(safeDelayMs / 1000)}s; long-horizon fire will be re-evaluated on tick to avoid setTimeout overflow.`,
+      );
+    }
     timer = setTimeout(() => {
+      if (safeDelayMs < delayMs) {
+        // Long-horizon fire not yet reached; just re-schedule.
+        scheduleNext();
+        return;
+      }
       void fire(next).finally(scheduleNext);
-    }, delayMs);
+    }, safeDelayMs);
   }
 
   async function fire(target: ScheduledFire): Promise<void> {

@@ -589,4 +589,69 @@ describe("scheduled-announcements service", () => {
 
     service.stop();
   });
+
+  it("does not fire a long-horizon one-shot before its scheduled time", async () => {
+    // oneShotDate ~60 days in the future — well above Node's 2^31-1 ms
+    // setTimeout ceiling. The scheduler must arm a safe timer (re-arming
+    // periodically) so the fire doesn't happen early.
+    const farFuture = new Date("2026-06-01T00:00:00Z");
+    const oneShotDate = farFuture.toISOString().slice(0, 10);
+
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        entries: [
+          {
+            id: "oneshot-far",
+            channelId: "channel-1",
+            message: "遠未来の告知",
+            oneShotDate,
+            hour: 9,
+            minute: 0,
+            enabled: true,
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const send = vi.fn(async () => undefined);
+    const client = { channels: { fetch: vi.fn() } } as unknown as Parameters<
+      typeof createScheduledAnnouncementsService
+    >[0];
+    const resolver = vi.fn(async () => makeSendable(send)) as unknown as ChannelResolver;
+
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
+    const service = createScheduledAnnouncementsService(client, {
+      loadOptions: { filePath },
+      resolveChannel: resolver,
+    });
+
+    service.start();
+
+    // Sanity check: at the anchor, the next fire is the far-future oneShot.
+    expect(service.getNextFire()?.entry.id).toBe("oneshot-far");
+
+    // Advance ~60 days (the natural delay) — the fire should NOT happen
+    // because the clamped timer must re-arm before reaching the fire time.
+    await vi.advanceTimersByTimeAsync(60 * 86_400_000);
+
+    expect(send).not.toHaveBeenCalled();
+    // The scheduler should never ask setTimeout for a delay above the safe
+    // ceiling of ~1 day. (Node's real ceiling is 2^31-1 ms = ~24.8 days.)
+    const maxDelayArg = Math.max(...setTimeoutSpy.mock.calls.map((args) => Number(args[1] ?? 0)));
+    expect(maxDelayArg).toBeLessThanOrEqual(86_400_000);
+
+    // Advance the rest of the way (about 2 minutes past the fire time) so
+    // the re-arming loop lands on the actual fire instant.
+    await vi.advanceTimersByTimeAsync(120_000);
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith("遠未来の告知");
+
+    setTimeoutSpy.mockRestore();
+    service.stop();
+  });
 });
