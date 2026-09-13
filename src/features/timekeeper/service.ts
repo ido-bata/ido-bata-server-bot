@@ -383,6 +383,8 @@ async function prepareStageSpeaker(voiceChannel: VoiceBasedChannel, client: Clie
   await logVoiceStateSnapshot(botMember, voiceChannel, "after-stage-prepare");
 }
 
+const MAX_STAGE_RECONNECT_ATTEMPTS = 3;
+
 async function connectForPlayback(voiceChannel: VoiceBasedChannel, client: Client) {
   let connection = await joinAndPrepare(voiceChannel, client);
 
@@ -390,14 +392,29 @@ async function connectForPlayback(voiceChannel: VoiceBasedChannel, client: Clien
     return connection;
   }
 
-  // Stage channels can fail to relay audio immediately after the first join.
-  // Reconnecting after unsuppressing the bot is a practical workaround.
-  console.log("Reconnecting stage channel once before playback.");
-  connection.destroy();
-  await delay(1_500);
+  for (let attempt = 1; attempt <= MAX_STAGE_RECONNECT_ATTEMPTS; attempt++) {
+    console.log(
+      `[Timekeeper] Stage channel reconnect attempt ${attempt}/${MAX_STAGE_RECONNECT_ATTEMPTS}`,
+    );
+    connection.destroy();
+    await delay(1_500);
 
-  connection = await joinAndPrepare(voiceChannel, client);
-  return connection;
+    try {
+      connection = await joinAndPrepare(voiceChannel, client);
+      console.log(`[Timekeeper] Stage channel reconnected successfully on attempt ${attempt}`);
+      return connection;
+    } catch (error) {
+      console.error(`[Timekeeper] Stage channel reconnect attempt ${attempt} failed:`, error);
+      if (attempt === MAX_STAGE_RECONNECT_ATTEMPTS) {
+        throw new Error(
+          `Failed to connect to stage channel after ${MAX_STAGE_RECONNECT_ATTEMPTS} attempts`,
+          { cause: error },
+        );
+      }
+    }
+  }
+
+  throw new Error("Unexpected: stage reconnect loop exited without return");
 }
 
 async function joinAndPrepare(voiceChannel: VoiceBasedChannel, client: Client) {
@@ -409,7 +426,15 @@ async function joinAndPrepare(voiceChannel: VoiceBasedChannel, client: Client) {
     selfMute: false,
   });
 
-  await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+  const timeoutMs = Number(process.env.VOICE_CONNECTION_TIMEOUT_MS) || 30_000;
+  try {
+    await entersState(connection, VoiceConnectionStatus.Ready, timeoutMs);
+  } catch (error) {
+    console.error(`[Timekeeper] Voice connection timed out after ${timeoutMs}ms, destroying...`);
+    connection.destroy();
+    throw new Error(`Voice connection timed out after ${timeoutMs}ms`, { cause: error });
+  }
+
   await prepareStageSpeaker(voiceChannel, client);
   await delay(1_000);
 
