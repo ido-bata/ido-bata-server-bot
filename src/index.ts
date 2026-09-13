@@ -4,6 +4,8 @@ import { Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
+import { memberAuditConfig } from "./features/member-audit/config.js";
+import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 
@@ -18,6 +20,16 @@ async function main(): Promise<void> {
   });
 
   registerReactionRoleHandlers(client);
+  registerMemberAuditHandlers(client, {
+    config: memberAuditConfig,
+    sendMessage: async (channelId, content) => {
+      const channel = await client.channels.fetch(channelId);
+      if (!channel || !("send" in channel) || typeof channel.send !== "function") {
+        throw new Error(`member-audit: channel ${channelId} is not a text channel`);
+      }
+      await channel.send(content);
+    },
+  });
   registerTimekeeper(client);
 
   await client.login(config.discordToken);
