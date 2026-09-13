@@ -276,9 +276,7 @@ if (process.env.GITHUB_WEBHOOK_SECRET) {
       console.warn(`[multi-guild] ${warning}`);
     }
     if (migration.added.length > 0) {
-      console.log(
-        `[multi-guild] Migrated guild configs: ${migration.added.join(", ")}`,
-      );
+      console.log(`[multi-guild] Migrated guild configs: ${migration.added.join(", ")}`);
     }
   }
 

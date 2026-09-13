@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
-
-import { createReactionRoleListener } from "../src/features/reaction-roles/handler.js";
 import { createGuildRegistry } from "../src/features/multi-guild/registry.js";
 import { createFileConfigStore } from "../src/features/multi-guild/store.js";
+import { createReactionRoleListener } from "../src/features/reaction-roles/handler.js";
 import { createMemoryFs } from "./multi-guild/memory-fs.js";
 
 function makeStore() {

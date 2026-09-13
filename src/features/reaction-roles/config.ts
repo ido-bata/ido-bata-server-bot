@@ -93,9 +93,7 @@ export function findReactionRoleRule(
     return null;
   }
 
-  return (
-    rules.find((rule) => rule.messageId === messageId && rule.emoji === emojiKey) ?? null
-  );
+  return rules.find((rule) => rule.messageId === messageId && rule.emoji === emojiKey) ?? null;
 }
 
 export function findReactionRoleRuleByRoleId(roleId: string): ReactionRoleRule | null {

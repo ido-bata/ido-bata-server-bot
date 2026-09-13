@@ -13,13 +13,10 @@ const configSchema = z
     // the bot forwards a structured entry to the channel after each command.
     ROLE_AUDIT_CHANNEL_ID: z.string().optional(),
   })
-  .refine(
-    (env) => parseGuildList(env.DISCORD_GUILD_ID, env.DISCORD_GUILD_IDS).length > 0,
-    {
-      message:
-        "At least one guild id is required: set DISCORD_GUILD_ID (legacy) or DISCORD_GUILD_IDS (comma-separated).",
-    },
-  );
+  .refine((env) => parseGuildList(env.DISCORD_GUILD_ID, env.DISCORD_GUILD_IDS).length > 0, {
+    message:
+      "At least one guild id is required: set DISCORD_GUILD_ID (legacy) or DISCORD_GUILD_IDS (comma-separated).",
+  });
 
 export type BotConfig = {
   discordToken: string;

@@ -32,10 +32,6 @@ export const guildConfigSchema = z.object({
   customEmojis: z.array(emojiSchema).default([]),
 });
 
-export type ReactionRoleRule = z.infer<typeof reactionRoleRuleSchema>;
-export type TimekeeperPhase = z.infer<typeof timekeeperPhaseSchema>;
-export type TimekeeperSettings = z.infer<typeof timekeeperSchema>;
-export type GuildEmoji = z.infer<typeof emojiSchema>;
 export type GuildConfig = z.infer<typeof guildConfigSchema>;
 
 export function createDefaultGuildConfig(guildId: string): GuildConfig {

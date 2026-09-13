@@ -6,13 +6,12 @@ import type {
   User,
 } from "discord.js";
 import { Events } from "discord.js";
-
-import type { CategoryRule } from "../role-category-menu/index.js";
 import type { GuildListener } from "../multi-guild/listener.js";
+import type { CategoryRule } from "../role-category-menu/index.js";
 import {
+  type EmojiLike,
   findReactionRoleMatch,
   findReactionRoleRule,
-  type EmojiLike,
   type ReactionRoleRule,
 } from "./config.js";
 

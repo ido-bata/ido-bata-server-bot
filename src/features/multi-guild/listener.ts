@@ -19,11 +19,3 @@ export type GuildListener = {
   onMount?(ctx: GuildContext): void | Promise<void>;
   onUnmount?(ctx: Pick<GuildContext, "guildId">): void | Promise<void>;
 };
-
-export type ListenerRegistration = {
-  id: string;
-  mount: (ctx: GuildContext) => Promise<void>;
-  unmount: (ctx: Pick<GuildContext, "guildId">) => Promise<void>;
-};
-
-export type ListenerFactory = (registration: ListenerRegistration) => GuildListener;
