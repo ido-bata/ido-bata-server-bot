@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import { performRoleAssignment, replyForResult } from "../src/features/role-slash/commands.js";
 import { createRoleSlashCommandRegistry } from "../src/features/role-slash/registry.js";
-import type { RoleAction, RoleAuditEntry, RoleManagerLike } from "../src/features/role-slash/types.js";
+import type {
+  RoleAction,
+  RoleAuditEntry,
+  RoleManagerLike,
+} from "../src/features/role-slash/types.js";
 
 function createRoleManager() {
   const add = vi.fn(async (roleId: string) => {
@@ -167,33 +171,21 @@ describe("role-slash commands", () => {
 
 describe("replyForResult", () => {
   it("renders an ephemeral success message for assign", () => {
-    const reply = replyForResult(
-      { ok: true, action: "assign", roleId: "role-1" },
-      "role-1",
-    );
+    const reply = replyForResult({ ok: true, action: "assign", roleId: "role-1" }, "role-1");
     expect(reply.ephemeral).toBe(true);
     expect(reply.content).toContain("<@&role-1>");
     expect(reply.content).toContain("付与");
   });
 
   it("renders an ephemeral failure message for not_assignable", () => {
-    const reply = replyForResult(
-      { ok: false, reason: "not_assignable" },
-      "role-1",
-    );
+    const reply = replyForResult({ ok: false, reason: "not_assignable" }, "role-1");
     expect(reply.ephemeral).toBe(true);
     expect(reply.content).toMatch(/含まれていません/);
   });
 
   it("renders no_change distinctly from not_assignable", () => {
-    const noChange = replyForResult(
-      { ok: false, reason: "no_change" },
-      "role-1",
-    );
-    const notAssignable = replyForResult(
-      { ok: false, reason: "not_assignable" },
-      "role-1",
-    );
+    const noChange = replyForResult({ ok: false, reason: "no_change" }, "role-1");
+    const notAssignable = replyForResult({ ok: false, reason: "not_assignable" }, "role-1");
     expect(noChange.content).not.toBe(notAssignable.content);
   });
 });
@@ -207,9 +199,18 @@ describe("role slash registry", () => {
     expect(role?.description).toMatch(/リアクションロール/);
 
     const payload = role?.buildPayload();
-    const json = payload && typeof (payload as { toJSON?: () => unknown }).toJSON === "function"
-      ? (payload as { toJSON: () => { name: string; description: string; options?: Array<{ name: string }> } }).toJSON()
-      : (payload as { name: string; description: string; options?: Array<{ name: string }> });
+    const json =
+      payload && typeof (payload as { toJSON?: () => unknown }).toJSON === "function"
+        ? (
+            payload as {
+              toJSON: () => {
+                name: string;
+                description: string;
+                options?: Array<{ name: string }>;
+              };
+            }
+          ).toJSON()
+        : (payload as { name: string; description: string; options?: Array<{ name: string }> });
 
     expect(json.name).toBe("role");
     const subNames = json.options?.map((option) => option.name) ?? [];

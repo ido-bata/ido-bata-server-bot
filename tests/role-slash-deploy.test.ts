@@ -1,7 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
 import { SlashCommandBuilder } from "discord.js";
+import { describe, expect, it, vi } from "vitest";
 
-import { deployRoleSlashCommands, toApplicationCommandPayload } from "../src/features/role-slash/deploy.js";
+import {
+  deployRoleSlashCommands,
+  toApplicationCommandPayload,
+} from "../src/features/role-slash/deploy.js";
 import { createRoleSlashCommandRegistry } from "../src/features/role-slash/registry.js";
 
 type PutCall = [(...args: unknown[]) => unknown, { body: unknown[] }];
@@ -51,9 +54,7 @@ describe("role-slash deploy", () => {
   });
 
   it("converts SlashCommandBuilder to JSON", () => {
-    const builder = new SlashCommandBuilder()
-      .setName("test")
-      .setDescription("Test command");
+    const builder = new SlashCommandBuilder().setName("test").setDescription("Test command");
     const payload = toApplicationCommandPayload(builder);
     expect(payload.name).toBe("test");
     expect(payload.description).toBe("Test command");

@@ -87,7 +87,14 @@ export function findReactionRoleRule(messageId: string, emoji: EmojiLike): React
   );
 }
 
-<<<<<<< HEAD
+export function findReactionRoleRuleByRoleId(roleId: string): ReactionRoleRule | null {
+  return reactionRoleRules.find((rule) => rule.roleId === roleId) ?? null;
+}
+
+export function isSlashAssignable(rule: ReactionRoleRule | null): boolean {
+  return Boolean(rule?.assignableViaSlash);
+}
+
 // Eagerly validate configured categories at module load. Throwing here means
 // `bun run start` / `bun run dev` fails fast on bad config rather than at
 // first reaction event.
@@ -101,12 +108,3 @@ for (const rule of reactionRoleCategories) {
     );
   }
 }
-=======
-export function findReactionRoleRuleByRoleId(roleId: string): ReactionRoleRule | null {
-  return reactionRoleRules.find((rule) => rule.roleId === roleId) ?? null;
-}
-
-export function isSlashAssignable(rule: ReactionRoleRule | null): boolean {
-  return Boolean(rule?.assignableViaSlash);
-}
->>>>>>> 3d7341a (feat(bot): add /role assign and /role remove slash commands)

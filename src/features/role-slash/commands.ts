@@ -81,7 +81,10 @@ export async function runRoleAssignment(
   return performRoleAssignment(action, ctx, deps);
 }
 
-export function replyForResult(result: RoleAssignmentResult, roleId: string): {
+export function replyForResult(
+  result: RoleAssignmentResult,
+  roleId: string,
+): {
   content: string;
   ephemeral: boolean;
 } {
@@ -161,7 +164,7 @@ type RoleOptionReader = {
 function readRoleOptionId(interaction: RoleOptionReader): string | null {
   const option = interaction.options.get(ROLE_OPTION_NAME, true);
 
-  if (!option || !option.value) {
+  if (!option?.value) {
     return null;
   }
 
@@ -169,8 +172,6 @@ function readRoleOptionId(interaction: RoleOptionReader): string | null {
   // Role. We just forward it.
   return option.value;
 }
-
-export const ROLE_OPTION = ROLE_OPTION_NAME;
 
 export const roleCommand = {
   name: "role",

@@ -13,9 +13,9 @@ export function formatAuditEntry(entry: RoleAuditEntry): string {
 
 // Console logger used when no audit channel is configured. Suitable for
 // staging and unit tests.
-export function createConsoleAuditLogger(logger: {
-  log: (message: string) => void;
-} = console): AuditLogger {
+export function createConsoleAuditLogger(
+  logger: { log: (message: string) => void } = console,
+): AuditLogger {
   return (entry) => {
     logger.log(formatAuditEntry(entry));
   };

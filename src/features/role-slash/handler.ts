@@ -1,18 +1,11 @@
-import type { Client, ChatInputCommandInteraction } from "discord.js";
+import type { ChatInputCommandInteraction, Client } from "discord.js";
 import { Events } from "discord.js";
 
-import {
-  findReactionRoleRuleByRoleId,
-  isSlashAssignable,
-} from "../reaction-roles/config.js";
+import { findReactionRoleRuleByRoleId, isSlashAssignable } from "../reaction-roles/config.js";
 import { createChannelAuditLogger } from "./audit.js";
-import { runRoleAssignment, replyForResult } from "./commands.js";
+import { replyForResult, runRoleAssignment } from "./commands.js";
 import { createRoleSlashCommandRegistry, type SlashCommandRegistry } from "./registry.js";
-import type {
-  RoleAction,
-  RoleAssignmentDependencies,
-  RoleManagerLike,
-} from "./types.js";
+import type { RoleAction, RoleAssignmentDependencies, RoleManagerLike } from "./types.js";
 
 type InteractionLike = {
   isChatInputCommand: () => boolean;
@@ -143,11 +136,7 @@ export function registerRoleSlashHandlers(
 
   // Production `hasRole` check: reuses the guild member fetch so we avoid
   // issuing a second API call when the member is already cached.
-  const hasRole = async (
-    guildId: string,
-    userId: string,
-    roleId: string,
-  ): Promise<boolean> => {
+  const hasRole = async (guildId: string, userId: string, roleId: string): Promise<boolean> => {
     const guild = client.guilds.cache.get(guildId);
     if (!guild) {
       return false;

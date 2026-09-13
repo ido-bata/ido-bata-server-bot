@@ -15,11 +15,8 @@ describe("readConfig", () => {
       discordClientId: "client-id",
       discordGuildId: "guild-id",
       enableMessageContentIntent: false,
-<<<<<<< HEAD
       enableGuildMembersIntent: false,
-=======
       roleAuditChannelId: null,
->>>>>>> 3d7341a (feat(bot): add /role assign and /role remove slash commands)
     });
   });
 
@@ -34,26 +31,26 @@ describe("readConfig", () => {
     expect(config.enableMessageContentIntent).toBe(true);
   });
 
-<<<<<<< HEAD
   it("enables guild members intent only when explicitly configured", () => {
-=======
-  it("captures the role audit channel id when provided", () => {
->>>>>>> 3d7341a (feat(bot): add /role assign and /role remove slash commands)
     const config = readConfig({
       DISCORD_TOKEN: "token",
       DISCORD_CLIENT_ID: "client-id",
       DISCORD_GUILD_ID: "guild-id",
-<<<<<<< HEAD
       DISCORD_ENABLE_GUILD_MEMBERS: "true",
     });
 
     expect(config.enableGuildMembersIntent).toBe(true);
-=======
+  });
+
+  it("captures the role audit channel id when provided", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_ID: "guild-id",
       ROLE_AUDIT_CHANNEL_ID: "audit-channel-1",
     });
 
     expect(config.roleAuditChannelId).toBe("audit-channel-1");
->>>>>>> 3d7341a (feat(bot): add /role assign and /role remove slash commands)
   });
 
   it("throws when a required variable is missing", () => {

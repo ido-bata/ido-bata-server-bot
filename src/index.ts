@@ -9,8 +9,8 @@ import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { deployRoleSlashCommands } from "./features/role-slash/deploy.js";
-import { createRoleSlashCommandRegistry } from "./features/role-slash/registry.js";
 import { registerRoleSlashHandlers } from "./features/role-slash/handler.js";
+import { createRoleSlashCommandRegistry } from "./features/role-slash/registry.js";
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 
@@ -42,7 +42,7 @@ async function main(): Promise<void> {
       void readyClient.channels
         .fetch(config.roleAuditChannelId)
         .then(async (channel) => {
-          if (channel && channel.isTextBased() && "send" in channel) {
+          if (channel?.isTextBased() && "send" in channel) {
             await (channel as TextChannel).send(
               "role slash commands registered (/role assign, /role remove).",
             );

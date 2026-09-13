@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createRoleSlashHandler } from "../src/features/role-slash/handler.js";
 import type { RoleManagerLike } from "../src/features/role-slash/types.js";

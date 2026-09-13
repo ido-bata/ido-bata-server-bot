@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createChannelAuditLogger,
@@ -74,13 +74,9 @@ describe("role-slash audit", () => {
   });
 
   it("posts to the channel when configured and channel is text-based", async () => {
-    const send = vi.fn<(message: string) => Promise<void>>(
-      async () => undefined,
-    );
+    const send = vi.fn<(message: string) => Promise<void>>(async () => undefined);
     const channel = { isTextBased: () => true, send };
-    const fetchChannel = vi.fn<(id: string) => Promise<typeof channel>>(
-      async () => channel,
-    );
+    const fetchChannel = vi.fn<(id: string) => Promise<typeof channel>>(async () => channel);
     const factory = createChannelAuditLogger({ fetchChannel });
     const audit = factory("channel-1");
 
@@ -123,9 +119,7 @@ describe("role-slash audit", () => {
   it("silently no-ops when channel is not text based", async () => {
     const send = vi.fn<(message: string) => Promise<void>>();
     const channel = { isTextBased: () => false, send };
-    const fetchChannel = vi.fn<(id: string) => Promise<typeof channel>>(
-      async () => channel,
-    );
+    const fetchChannel = vi.fn<(id: string) => Promise<typeof channel>>(async () => channel);
     const factory = createChannelAuditLogger({ fetchChannel });
     const audit = factory("channel-1");
 
