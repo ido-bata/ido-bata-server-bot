@@ -186,7 +186,7 @@ describe("poll handler", () => {
     await handler.handleInteraction(buttonInteraction);
 
     const edited = buttonInteraction.__getEdited();
-    expect(buttonInteraction.message.edit).toHaveBeenCalled();
+    expect(buttonInteraction.message?.edit).toHaveBeenCalled();
     expect(edited.embeds).toBeDefined();
     expect(buttonInteraction.reply).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -298,9 +298,13 @@ describe("poll handler", () => {
   });
 
   it("closes a poll when the creator runs /poll close", async () => {
+    const fetchPollMessage = vi.fn(async () => ({
+      edit: vi.fn(async () => undefined),
+    }));
     const handler = newHandler({
       now: () => "2026-09-13T12:00:00.000Z",
       generateId: () => "poll-id",
+      fetchPollMessage,
     });
 
     const createInteraction = makeInteraction({
@@ -321,10 +325,48 @@ describe("poll handler", () => {
     });
     await handler.handleInteraction(closeInteraction);
 
-    expect(closeInteraction.message.edit).toHaveBeenCalled();
+    expect(fetchPollMessage).toHaveBeenCalledWith("channel-1", "message-1");
+    const editMock = await fetchPollMessage.mock.results[0]?.value;
+    expect(editMock.edit).toHaveBeenCalled();
     const poll = handler.loadState().polls[0];
     expect(poll?.closed).toBe(true);
     expect(poll?.closedAt).toBe("2026-09-13T12:00:00.000Z");
+  });
+
+  it("falls back to state-only close when fetchPollMessage cannot resolve the message", async () => {
+    const fetchPollMessage = vi.fn(async () => null);
+    const handler = newHandler({
+      now: () => "2026-09-13T12:00:00.000Z",
+      generateId: () => "poll-id",
+      fetchPollMessage,
+    });
+
+    const createInteraction = makeInteraction({
+      commandName: POLL_COMMAND_NAME,
+      userId: "creator-1",
+      stringValues: {
+        question: "好きな果物は?",
+        options: "りんご\nみかん",
+      },
+    });
+    await handler.handleInteraction(createInteraction);
+
+    const closeInteraction = makeInteraction({
+      commandName: POLL_COMMAND_NAME,
+      userId: "creator-1",
+      subcommand: POLL_SUBCOMMAND_CLOSE,
+      stringValues: { message_id: "message-1" },
+    });
+    await handler.handleInteraction(closeInteraction);
+
+    expect(fetchPollMessage).toHaveBeenCalledWith("channel-1", "message-1");
+    expect(handler.loadState().polls[0]?.closed).toBe(true);
+    expect(closeInteraction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringMatching(/元のメッセージを更新できませんでした/),
+        ephemeral: true,
+      }),
+    );
   });
 
   it("rejects /poll close from a non-creator", async () => {

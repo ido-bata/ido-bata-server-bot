@@ -27,6 +27,14 @@ type ReplyOptions = {
   ephemeral?: boolean;
 };
 
+// Minimal shape of a poll message that the handler can edit. Decoupling the
+// Discord.js `Message` type makes `handleClose` testable without spinning up a
+// real REST connection — the production wiring in `registerPollHandlers`
+// resolves this via `client.channels.cache.get(...)?.messages.fetch(...)`.
+export type PollMessageTarget = {
+  edit: (options: { embeds?: unknown[]; components?: unknown[] }) => Promise<unknown>;
+};
+
 export type PollInteractionLike = {
   isChatInputCommand: () => boolean;
   isButton: () => boolean;
@@ -43,9 +51,11 @@ export type PollInteractionLike = {
   guildId: string | null;
   user: { id: string };
   customId: string;
-  message: {
+  // Only present on ButtonInteractions; chat-input commands (e.g. `/poll close`)
+  // do not carry a target message, so it is optional here.
+  message?: {
     id: string;
-    edit: (options: { embeds: unknown[]; components?: unknown[] }) => Promise<unknown>;
+    edit: (options: { embeds?: unknown[]; components?: unknown[] }) => Promise<unknown>;
   };
   reply: (options: ReplyOptions) => Promise<unknown>;
   update: (options: ReplyOptions) => Promise<unknown>;
@@ -55,6 +65,11 @@ export type PollHandlerDependencies = {
   store?: PollStore;
   now?: () => string;
   generateId?: () => string;
+  // Resolves the original Poll message so chat-input commands (which lack
+  // `interaction.message`) can still update the embed/components. Returning
+  // `null` means the message is unavailable; the close flow degrades to
+  // state-only and reports that to the user.
+  fetchPollMessage?: (channelId: string, messageId: string) => Promise<PollMessageTarget | null>;
 };
 
 export type PollHandler = {
@@ -68,6 +83,7 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
   const store = deps.store ?? createFilePollStore("data/polls.json");
   const now = deps.now ?? (() => new Date().toISOString());
   const generateId = deps.generateId ?? (() => randomUUID());
+  const fetchPollMessage = deps.fetchPollMessage;
 
   function loadState(): PollStateFile {
     return store.load();
@@ -160,11 +176,23 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
     const closed: Poll = { ...poll, closed: true, closedAt: now() };
     saveState(upsertPoll(state, closed));
 
-    await interaction.message.edit({
-      embeds: [buildPollEmbed(closed)],
-    });
+    // Chat-input commands do not carry `interaction.message`, so resolve the
+    // Poll's saved channel/message via the DI seam and edit it directly. If
+    // the message is no longer reachable (deleted, missing permission, etc.)
+    // we keep the state change and surface a warning to the user.
+    const pollMessage = await fetchPollMessage?.(poll.channelId, poll.messageId);
+    if (pollMessage) {
+      await pollMessage.edit({
+        embeds: [buildPollEmbed(closed)],
+      });
+    }
 
-    await interaction.reply({ content: "Poll を終了しました。", ephemeral: true });
+    await interaction.reply({
+      content: pollMessage
+        ? "Poll を終了しました。"
+        : "Poll を終了しました (元のメッセージを更新できませんでした)。",
+      ephemeral: true,
+    });
   }
 
   async function handleVoteButton(
@@ -204,7 +232,18 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
 
     saveState(upsertPoll(state, result.next));
 
-    await interaction.message.edit({
+    // ButtonInteraction.message is non-null in real discord.js; the guard
+    // defends against malformed mocks and the type-narrowed optional.
+    const targetMessage = interaction.message;
+    if (!targetMessage) {
+      await interaction.reply({
+        content: "Poll メッセージを取得できませんでした。",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await targetMessage.edit({
       embeds: [buildPollEmbed(result.next)],
       components: buildPollMessageComponents(result.next).rows,
     });
@@ -244,7 +283,18 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
 
     saveState(upsertPoll(state, result.next));
 
-    await interaction.message.edit({
+    // ButtonInteraction.message is non-null in real discord.js; the guard
+    // defends against malformed mocks and the type-narrowed optional.
+    const targetMessage = interaction.message;
+    if (!targetMessage) {
+      await interaction.reply({
+        content: "Poll メッセージを取得できませんでした。",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await targetMessage.edit({
       embeds: [buildPollEmbed(result.next)],
       components: buildPollMessageComponents(result.next).rows,
     });
@@ -385,7 +435,39 @@ export function registerPollHandlers(
   client: Client,
   deps: PollHandlerDependencies = {},
 ): PollHandler {
-  const handler = createPollHandler(deps);
+  const fetchPollMessage =
+    deps.fetchPollMessage ??
+    (async (channelId: string, messageId: string): Promise<PollMessageTarget | null> => {
+      try {
+        const channel = client.channels.cache.get(channelId);
+        if (!channel) {
+          return null;
+        }
+        // Only text-based channels expose `messages.fetch`. We narrow via the
+        // duck-typed method check rather than `isTextBased()` so this still
+        // type-checks when the @types/discord.js narrowing rules change.
+        if (typeof (channel as { messages?: { fetch?: unknown } }).messages?.fetch !== "function") {
+          return null;
+        }
+        const fetched = await (
+          channel as { messages: { fetch: (id: string) => Promise<unknown> } }
+        ).messages.fetch(messageId);
+        if (!fetched) {
+          return null;
+        }
+        return {
+          edit: (options) =>
+            (fetched as { edit: (opts: unknown) => Promise<unknown> }).edit(options),
+        };
+      } catch (error) {
+        console.warn(
+          `[poll] failed to resolve poll message ${channelId}/${messageId}: ${(error as Error).message}`,
+        );
+        return null;
+      }
+    });
+
+  const handler = createPollHandler({ ...deps, fetchPollMessage });
 
   client.on(Events.InteractionCreate, (interaction) => {
     void handler.handleInteraction(interaction).catch((error: unknown) => {
