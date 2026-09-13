@@ -3,10 +3,13 @@ import { dirname } from "node:path";
 
 import { z } from "zod";
 
-export const MAX_POLL_OPTIONS = 10;
-export const MIN_POLL_OPTIONS = 2;
+// Internal: validation bounds for poll options. Kept module-private because
+// no external consumer imports them; if a future migration tool needs them,
+// re-export then.
+const MAX_POLL_OPTIONS = 10;
+const MIN_POLL_OPTIONS = 2;
 
-export const pollOptionLabelSchema = z
+const pollOptionLabelSchema = z
   .string()
   .trim()
   .min(1, "Option label must not be empty")
@@ -27,7 +30,10 @@ export const pollQuestionSchema = z
   .min(1, "Question must not be empty")
   .max(200, "Question must be 200 characters or fewer");
 
-export const pollSchema = z
+// Internal: full Poll validation schema. Used by pollStateFileSchema below
+// and exposed via the `Poll` type only; the runtime schema is not part of
+// the public surface.
+const pollSchema = z
   .object({
     id: z.string().min(1),
     guildId: z.string().min(1),

@@ -3,9 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildPollButtonCustomId, buildPollClearCustomId } from "../src/features/poll/build.js";
 import {
-  buildPollButtonCustomId,
-  buildPollClearCustomId,
   createPollHandler,
   POLL_COMMAND_NAME,
   POLL_SUBCOMMAND_CLOSE,

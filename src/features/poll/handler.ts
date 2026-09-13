@@ -31,7 +31,7 @@ type ReplyOptions = {
 // Discord.js `Message` type makes `handleClose` testable without spinning up a
 // real REST connection — the production wiring in `registerPollHandlers`
 // resolves this via `client.channels.cache.get(...)?.messages.fetch(...)`.
-export type PollMessageTarget = {
+type PollMessageTarget = {
   edit: (options: { embeds?: unknown[]; components?: unknown[] }) => Promise<unknown>;
 };
 
@@ -382,7 +382,10 @@ export async function deployPollCommands(
   return { registered: payload.length };
 }
 
-export function buildPollCommandPayload(): Array<Record<string, unknown>> {
+// Internal-only: shapes the JSON body for the REST registration call. Kept as
+// a separate function so the payload is easy to unit-test, but it has no
+// public consumers so it is not re-exported.
+function buildPollCommandPayload(): Array<Record<string, unknown>> {
   return [
     {
       name: POLL_COMMAND_NAME,
@@ -486,31 +489,3 @@ export function parseOptionsString(raw: string): string[] {
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
 }
-
-export {
-  applyVote,
-  buildTallyRows,
-  clearVote,
-  type PollTally,
-  type PollTallyRow,
-  tallyPoll,
-} from "./aggregate.js";
-export type { PollEmbedPayload } from "./build.js";
-// Re-exports to make the package surface discoverable from one entrypoint.
-export {
-  buildPollButtonCustomId,
-  buildPollClearCustomId,
-  buildPollEmbed,
-  buildPollMessageComponents,
-  parsePollButtonCustomId,
-} from "./build.js";
-export {
-  createFilePollStore,
-  MAX_POLL_OPTIONS,
-  MIN_POLL_OPTIONS,
-  type Poll,
-  type PollStateFile,
-  type PollStore,
-  pollOptionsSchema,
-  pollQuestionSchema,
-} from "./state.js";
