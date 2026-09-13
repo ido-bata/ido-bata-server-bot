@@ -3,14 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import { createReactionRoleHandler } from "../src/features/reaction-roles/handler.js";
 
 describe("reaction role handler", () => {
-  it("adds a role when a matching reaction is added", async () => {
+  it("adds a role when a matching single-rule reaction is added", async () => {
     const addRole = vi.fn(async () => undefined);
     const removeRole = vi.fn(async () => undefined);
     const handler = createReactionRoleHandler({
       findRule: () => ({
-        messageId: "message-1",
-        emoji: "🔥",
         roleId: "role-fire",
+        category: null,
       }),
       withMemberRoleManager: async (_guildId, _userId, run) =>
         run({ add: addRole, remove: removeRole }),
@@ -27,14 +26,13 @@ describe("reaction role handler", () => {
     expect(removeRole).not.toHaveBeenCalled();
   });
 
-  it("removes a role when a matching reaction is removed", async () => {
+  it("removes a role when a matching single-rule reaction is removed", async () => {
     const addRole = vi.fn(async () => undefined);
     const removeRole = vi.fn(async () => undefined);
     const handler = createReactionRoleHandler({
       findRule: () => ({
-        messageId: "message-1",
-        emoji: "🔥",
         roleId: "role-fire",
+        category: null,
       }),
       withMemberRoleManager: async (_guildId, _userId, run) =>
         run({ add: addRole, remove: removeRole }),
@@ -66,5 +64,76 @@ describe("reaction role handler", () => {
     });
 
     expect(withMemberRoleManager).not.toHaveBeenCalled();
+  });
+
+  it("applies the role mapped by a category rule", async () => {
+    const addRole = vi.fn(async () => undefined);
+    const removeRole = vi.fn(async () => undefined);
+    const category = {
+      messageId: "message-cat",
+      description: "Pick your interests",
+      emojis: [
+        { emoji: "🎮", roleId: "role-games" },
+        { emoji: "🎵", roleId: "role-music" },
+      ],
+    };
+    const handler = createReactionRoleHandler({
+      findRule: () => ({ roleId: "role-games", category }),
+      withMemberRoleManager: async (_guildId, _userId, run) =>
+        run({ add: addRole, remove: removeRole }),
+    });
+
+    await handler.onReactionAdd({
+      messageId: "message-cat",
+      guildId: "guild-1",
+      userId: "user-1",
+      emoji: { name: "🎮", id: null },
+    });
+
+    expect(addRole).toHaveBeenCalledTimes(1);
+    expect(addRole).toHaveBeenCalledWith("role-games");
+  });
+
+  it("applies distinct roles when a member reacts to multiple category emoji", async () => {
+    const addRole = vi.fn(async () => undefined);
+    const removeRole = vi.fn(async () => undefined);
+    const memberRoleManager = {
+      add: addRole,
+      remove: removeRole,
+    };
+    const category = {
+      messageId: "message-cat",
+      description: "Pick your interests",
+      emojis: [
+        { emoji: "🎮", roleId: "role-games" },
+        { emoji: "🎵", roleId: "role-music" },
+        { emoji: "📚", roleId: "role-books" },
+      ],
+    };
+    const findRule = vi.fn(
+      (_messageId: string, emoji: { name: string | null; id: string | null }) => {
+        const entry = category.emojis.find((e) => e.emoji === emoji.name);
+        return entry ? { roleId: entry.roleId, category } : null;
+      },
+    );
+    const handler = createReactionRoleHandler({
+      findRule,
+      withMemberRoleManager: async (_guildId, _userId, run) => run(memberRoleManager),
+    });
+
+    // Simulate a member pressing 3 distinct emojis on the same category message.
+    for (const emojiName of ["🎮", "🎵", "📚"]) {
+      await handler.onReactionAdd({
+        messageId: "message-cat",
+        guildId: "guild-1",
+        userId: "user-1",
+        emoji: { name: emojiName, id: null },
+      });
+    }
+
+    expect(addRole).toHaveBeenNthCalledWith(1, "role-games");
+    expect(addRole).toHaveBeenNthCalledWith(2, "role-music");
+    expect(addRole).toHaveBeenNthCalledWith(3, "role-books");
+    expect(findRule).toHaveBeenCalledTimes(3);
   });
 });
