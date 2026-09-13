@@ -1,17 +1,25 @@
 import { z } from "zod";
 
-const configSchema = z.object({
-  DISCORD_TOKEN: z.string().min(1),
-  DISCORD_CLIENT_ID: z.string().min(1),
-  // Legacy single-guild env (deprecated). Either DISCORD_GUILD_ID or
-  // DISCORD_GUILD_IDS must be supplied; both is fine — IDs are unioned.
-  DISCORD_GUILD_ID: z.string().optional(),
-  // Comma-separated list of guild ids this process should connect to.
-  DISCORD_GUILD_IDS: z.string().optional(),
-  // Optional: audit log channel for `/role` slash command usage. When set,
-  // the bot forwards a structured entry to the channel after each command.
-  ROLE_AUDIT_CHANNEL_ID: z.string().optional(),
-});
+const configSchema = z
+  .object({
+    DISCORD_TOKEN: z.string().min(1),
+    DISCORD_CLIENT_ID: z.string().min(1),
+    // Legacy single-guild env (deprecated). Either DISCORD_GUILD_ID or
+    // DISCORD_GUILD_IDS must be supplied; both is fine — IDs are unioned.
+    DISCORD_GUILD_ID: z.string().optional(),
+    // Comma-separated list of guild ids this process should connect to.
+    DISCORD_GUILD_IDS: z.string().optional(),
+    // Optional: audit log channel for `/role` slash command usage. When set,
+    // the bot forwards a structured entry to the channel after each command.
+    ROLE_AUDIT_CHANNEL_ID: z.string().optional(),
+  })
+  .refine(
+    (env) => parseGuildList(env.DISCORD_GUILD_ID, env.DISCORD_GUILD_IDS).length > 0,
+    {
+      message:
+        "At least one guild id is required: set DISCORD_GUILD_ID (legacy) or DISCORD_GUILD_IDS (comma-separated).",
+    },
+  );
 
 export type BotConfig = {
   discordToken: string;
@@ -36,8 +44,11 @@ function parseGuildList(guildId?: string, guildIds?: string): string[] {
       }
     }
   }
-  if (guildId && guildId.length > 0) {
-    set.add(guildId);
+  if (guildId) {
+    const trimmed = guildId.trim();
+    if (trimmed.length > 0) {
+      set.add(trimmed);
+    }
   }
   return [...set];
 }
@@ -49,11 +60,6 @@ export function readConfig(env: NodeJS.ProcessEnv): BotConfig {
   const enablePresenceIntent = env.DISCORD_ENABLE_PRESENCE === "true";
   const roleAuditChannelId = parsed.ROLE_AUDIT_CHANNEL_ID?.trim() || null;
   const discordGuildIds = parseGuildList(parsed.DISCORD_GUILD_ID, parsed.DISCORD_GUILD_IDS);
-  if (discordGuildIds.length === 0) {
-    throw new Error(
-      "At least one Discord guild id is required: set DISCORD_GUILD_ID or DISCORD_GUILD_IDS.",
-    );
-  }
 
   return {
     discordToken: parsed.DISCORD_TOKEN,

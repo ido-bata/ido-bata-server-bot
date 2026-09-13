@@ -23,6 +23,8 @@ import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { messageAuditConfig } from "./features/message-audit/config.js";
 import { registerMessageAuditHandlers } from "./features/message-audit/handler.js";
+import { bootstrapMultiGuild } from "./features/multi-guild/bootstrap.js";
+import { migrateLegacyEnvToGuildConfigs } from "./features/multi-guild/migration.js";
 import { deployPollCommands, registerPollHandlers } from "./features/poll/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerReminder } from "./features/reminder/service.js";
@@ -252,7 +254,7 @@ async function main(): Promise<void> {
     icalService.stopScheduler();
   });
 
-  if (process.env.GITHUB_WEBHOOK_SECRET) {
+if (process.env.GITHUB_WEBHOOK_SECRET) {
     try {
       await registerGitHubWebhook(client);
     } catch (error) {
@@ -260,6 +262,24 @@ async function main(): Promise<void> {
     }
   } else {
     console.log("GitHub webhook server is disabled (set GITHUB_WEBHOOK_SECRET to enable).");
+  }
+
+  // Multi-guild bootstrap is opt-in: set MULTI_GUILD_ENABLE=true to migrate
+  // legacy env-based config into per-guild JSON files and mount guild
+  // listeners via the registry. Existing single-guild features continue to
+  // work without this flag — the registry/feature integration is staged
+  // across subsequent PRs.
+  if (process.env.MULTI_GUILD_ENABLE === "true") {
+    const { store } = bootstrapMultiGuild();
+    const migration = await migrateLegacyEnvToGuildConfigs(process.env, store);
+    for (const warning of migration.warnings) {
+      console.warn(`[multi-guild] ${warning}`);
+    }
+    if (migration.added.length > 0) {
+      console.log(
+        `[multi-guild] Migrated guild configs: ${migration.added.join(", ")}`,
+      );
+    }
   }
 
   await client.login(config.discordToken);
