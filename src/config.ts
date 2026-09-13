@@ -11,16 +11,19 @@ export type BotConfig = {
   discordClientId: string;
   discordGuildId: string;
   enableMessageContentIntent: boolean;
+  enablePresenceIntent: boolean;
 };
 
 export function readConfig(env: NodeJS.ProcessEnv): BotConfig {
   const parsed = configSchema.parse(env);
   const enableMessageContentIntent = env.DISCORD_ENABLE_MESSAGE_CONTENT === "true";
+  const enablePresenceIntent = env.DISCORD_ENABLE_PRESENCE === "true";
 
   return {
     discordToken: parsed.DISCORD_TOKEN,
     discordClientId: parsed.DISCORD_CLIENT_ID,
     discordGuildId: parsed.DISCORD_GUILD_ID,
     enableMessageContentIntent,
+    enablePresenceIntent,
   };
 }

@@ -20,7 +20,7 @@ src/index.ts
 
 - `src/index.ts` — composition root
 - `src/config.ts` — Zod-validated env → `BotConfig`
-- `src/bot/create-discord-client.ts` — constructs `Client` with intents (`Guilds`, `GuildMessages`, `GuildMessageReactions`, `GuildVoiceStates`; adds `MessageContent` only when enabled)
+- `src/bot/create-discord-client.ts` — constructs `Client` with intents (`Guilds`, `GuildMessages`, `GuildMessageReactions`, `GuildVoiceStates`; adds `MessageContent` and `GuildPresences` only when explicitly enabled via env)
 - `src/features/reaction-roles/` — `config.ts` holds the rule list; `handler.ts` registers `MessageReactionAdd`/`Remove` listeners. Uses a DI seam (`HandlerDependencies`) so the role-lookup and member-fetch logic can be replaced in tests
 - `src/features/timekeeper/` — daily pomodoro-style scheduler. Submodules:
   - `config.ts` — JST start time, channel IDs, phase list
@@ -32,6 +32,14 @@ src/index.ts
   - `engagement.ts` — check-in buttons, attendance persistence (`data/timekeeper-history.json`), Wikipedia-powered fortune summary at session end
   - `wikipedia.ts` — fetches a random JA Wikipedia topic with a hardcoded fallback
   - `voice-debug.ts` — structured JSON logging around `@discordjs/voice` (errors only by default; state-change handlers are commented out)
+- `src/features/spotify/` — opt-in Now Playing display. Submodules:
+  - `config.ts` — env-driven (`DISCORD_ENABLE_SPOTIFY`, `SPOTIFY_VISIBILITY`, `SPOTIFY_CHANNEL_ID`, `SPOTIFY_STALE_AFTER_MS`); `visibility: "self"` DMs the listener, `"public"` posts into a configured channel
+  - `activity.ts` — `parseSpotifyActivity`, `isSpotifyActivity`; identifies the Spotify `Listening` activity regardless of whether Discord labels it by `name` or `applicationId`
+  - `formatter.ts` — `formatNowPlayingEmbed`, `formatStoppedEmbed`; pure functions producing the embed title/description shown in Discord
+  - `state.ts` — `NowPlayingStore` keeps per-listener `{track, embedMessageId, lastUpdatedAt}` and prunes stale entries on demand
+  - `handler.ts` — `createSpotifyNowPlayingHandler(deps)` factory; DI seams (`sendEmbed` / `editEmbed` / `deleteEmbed` / `now`) so the lifecycle is unit-testable without Discord
+  - `service.ts` — `registerSpotifyNowPlaying(client, config)` wires `Events.PresenceUpdate` + a 60 s `setInterval` prune; logs and no-ops if the feature is not configured
+- `src/scripts/stage-audio-smoke.ts` — joins the configured voice channel, plays the first timeline clip, then exits
 - `src/scripts/stage-audio-smoke.ts` — joins the configured voice channel, plays the first timeline clip, then exits
 - `tests/` — vitest specs that mirror `src/` layout (`config.test.ts`, `timekeeper-timeline.test.ts`, `timekeeper-engagement.test.ts`, etc.)
 
