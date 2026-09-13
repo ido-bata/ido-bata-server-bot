@@ -25,8 +25,11 @@ export const reactionRoleRules: ReactionRoleRule[] = [
  * Category groups let a single message expose multiple emoji → role pairs.
  * Each entry is validated at module load — invalid rules throw so the bot
  * refuses to start with a broken config.
+ *
+ * Module-local: operators add entries by editing this file directly. The
+ * `findReactionRoleMatch` lookup is the public API consumers should use.
  */
-export const reactionRoleCategories: CategoryRule[] = [];
+const reactionRoleCategories: CategoryRule[] = [];
 
 export function toEmojiKey(emoji: EmojiLike): string | null {
   if (emoji.id) {

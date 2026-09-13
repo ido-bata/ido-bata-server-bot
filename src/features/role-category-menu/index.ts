@@ -8,7 +8,7 @@
 
 export const DISCORD_MAX_REACTIONS_PER_MESSAGE = 20;
 
-export type CategoryEmojiEntry = {
+type CategoryEmojiEntry = {
   /** Emoji key in the same shape produced by `toEmojiKey` (unicode name or custom id). */
   emoji: string;
   /** Role granted when a member reacts with `emoji`. */

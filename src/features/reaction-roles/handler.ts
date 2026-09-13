@@ -22,7 +22,7 @@ type ReactionRoleEvent = {
   userId: string;
 };
 
-export type ReactionRoleMatch = {
+type ReactionRoleMatch = {
   roleId: string;
   category: CategoryRule | null;
 };
