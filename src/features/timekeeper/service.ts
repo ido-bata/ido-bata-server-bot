@@ -59,6 +59,144 @@ type AnnouncementPlaybackResult = {
 let activeSession: TimekeeperSessionEngagement | null = null;
 let activeTimeline: TimekeeperTimelineEvent[] = [];
 let activeClock: SessionClock | null = null;
+let activePaused = false;
+let activeSkipResolver: (() => void) | null = null;
+let pendingScheduledStartAt: Date | null = null;
+let skipFlag = false;
+
+/**
+ * Snapshot of the currently running (or just-scheduled) timekeeper session.
+ *
+ * `pendingStartAt` is the daily start time of the next session we have
+ * scheduled, even when no session is currently in-flight. `activeSessionId`
+ * is non-null only while `runSession` is actively executing.
+ */
+export type TimekeeperSessionSnapshot = {
+  activeSessionId: string | null;
+  pendingStartAt: Date | null;
+  paused: boolean;
+};
+
+/**
+ * Public, read-only view of the timekeeper runtime state. Used by the
+ * `/timekeeper` slash command module so it can render reply content
+ * without needing to reach into private module state.
+ */
+export function getTimekeeperSessionSnapshot(): TimekeeperSessionSnapshot {
+  return {
+    activeSessionId: activeSession?.id ?? null,
+    pendingStartAt: pendingScheduledStartAt,
+    paused: activePaused,
+  };
+}
+
+/**
+ * Whether a session is currently in-flight. Returned as a plain boolean
+ * for the slash-command module's DI seam. `false` when only a future session
+ * is scheduled but not yet running.
+ */
+export function isTimekeeperSessionActive(): boolean {
+  return activeSession !== null;
+}
+
+/**
+ * Whether the currently running session is paused (phase-ending-soon events
+ * are suppressed). Always `false` when no session is active.
+ */
+export function isTimekeeperSessionPaused(): boolean {
+  return activePaused && activeSession !== null;
+}
+
+/**
+ * Pause the currently-running session. Returns `true` if a session was
+ * active and was paused; `false` if no session is running.
+ *
+ * Paused sessions skip `phase-ending-soon` events but otherwise continue
+ * their loop. Exported for the `/timekeeper pause` slash command.
+ */
+export function pauseTimekeeperSession(): boolean {
+  if (!activeSession) {
+    return false;
+  }
+  if (!activePaused) {
+    activePaused = true;
+    console.log("[Timekeeper] Session paused");
+  }
+  return true;
+}
+
+/**
+ * Resume a paused session. Returns `true` if a session was paused and is
+ * now running again, `false` if no session is active or it was not paused.
+ */
+export function resumeTimekeeperSession(): boolean {
+  if (!activeSession || !activePaused) {
+    return false;
+  }
+  activePaused = false;
+  console.log("[Timekeeper] Session resumed");
+  return true;
+}
+
+/**
+ * Request the currently-running session to skip its current wait, advancing
+ * to the next timeline event. Returns `true` when an active session picked
+ * up the request; `false` otherwise.
+ *
+ * The skip is delivered through a one-shot resolver registered by the
+ * session loop right before it awaits `delay()`. If the loop is not
+ * currently awaiting (e.g. between events), the resolver is still pending
+ * and will fire as soon as it is re-armed.
+ */
+export function requestTimekeeperSkip(): boolean {
+  if (!activeSession) {
+    return false;
+  }
+  if (activeSkipResolver) {
+    const resolve = activeSkipResolver;
+    activeSkipResolver = null;
+    resolve();
+  } else {
+    skipFlag = true;
+  }
+  return true;
+}
+
+/**
+ * Wait for `ms` milliseconds, or until `/timekeeper skip` is invoked.
+ *
+ * Used in place of a bare `delay()` so that a moderator's `/timekeeper skip`
+ * can interrupt a multi-minute wait between events.
+ */
+export function awaitInterruptibleDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    if (skipFlag) {
+      skipFlag = false;
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      activeSkipResolver = null;
+      resolve();
+    }, ms);
+    activeSkipResolver = () => {
+      clearTimeout(timer);
+      activeSkipResolver = null;
+      resolve();
+    };
+  });
+}
+
+/** Test-only: reset all module-level state. Not exported from index.ts. */
+export function __resetTimekeeperRuntimeState(): void {
+  activeSession = null;
+  activeTimeline = [];
+  activeClock = null;
+  activePaused = false;
+  activeSkipResolver = null;
+  pendingScheduledStartAt = null;
+  skipFlag = false;
+}
 
 export function registerTimekeeper(client: Client): void {
   client.on(Events.InteractionCreate, async (interaction) => {
@@ -127,6 +265,7 @@ function scheduleNextSession(client: Client, config: TimekeeperConfig): void {
     console.warn(
       "Timekeeper is disabled. Set voiceChannelId and textChannelId in timekeeper config.",
     );
+    pendingScheduledStartAt = null;
     return;
   }
 
@@ -138,6 +277,7 @@ function scheduleNextSession(client: Client, config: TimekeeperConfig): void {
   );
   const preparationStartAt = getTimekeeperPreparationStartAt(nextStartAt);
   const delayMs = Math.max(0, preparationStartAt.getTime() - Date.now());
+  pendingScheduledStartAt = nextStartAt;
 
   console.log(
     `Next timekeeper session scheduled for ${nextStartAt.toISOString()} (preparation starts at ${preparationStartAt.toISOString()})`,
@@ -149,6 +289,7 @@ function scheduleNextSession(client: Client, config: TimekeeperConfig): void {
         console.error("Timekeeper session failed", error);
       })
       .finally(() => {
+        pendingScheduledStartAt = null;
         scheduleNextSession(client, config);
       });
   }, delayMs);
@@ -230,7 +371,17 @@ async function runSession(client: Client, config: TimekeeperConfig, startAt: Dat
     );
 
     if (waitMs > 0) {
-      await delay(waitMs);
+      await awaitInterruptibleDelay(waitMs);
+    }
+
+    // A moderator-issued `/timekeeper skip` interrupts the wait above. If
+    // the skip landed between this event's `at` and the next event's `at`,
+    // treat that as a no-op for *this* iteration; the next loop iteration
+    // will fire its event on schedule from its own `getDelayFor` call.
+
+    if (isTimekeeperSessionPaused() && event.kind === "phase-ending-soon") {
+      console.log(`[Timekeeper] Suppressing paused phase-ending-soon: order=${event.order}`);
+      continue;
     }
 
     const firedAtMs = Date.now();
@@ -277,6 +428,9 @@ async function runSession(client: Client, config: TimekeeperConfig, startAt: Dat
   activeSession = null;
   activeTimeline = [];
   activeClock = null;
+  activePaused = false;
+  activeSkipResolver = null;
+  skipFlag = false;
   connection.destroy();
 }
 
