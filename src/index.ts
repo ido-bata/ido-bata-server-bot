@@ -17,6 +17,7 @@ import {
   type GameActivityMessageTarget,
   registerGameActivity,
 } from "./features/game-activity/handler.js";
+import { registerGitHubWebhook } from "./features/github-webhook/index.js";
 import { registerHealthMetrics } from "./features/health-metrics/index.js";
 import { registerIcalCalendar } from "./features/ical-calendar/index.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
@@ -251,6 +252,18 @@ async function main(): Promise<void> {
   process.on("beforeExit", () => {
     icalService.stopScheduler();
   });
+
+  if (process.env.GITHUB_WEBHOOK_SECRET) {
+    try {
+      await registerGitHubWebhook(client);
+    } catch (error) {
+      console.error("Failed to start GitHub webhook server", error);
+    }
+  } else {
+    console.log(
+      "GitHub webhook server is disabled (set GITHUB_WEBHOOK_SECRET to enable).",
+    );
+  }
 
   await client.login(config.discordToken);
 }
