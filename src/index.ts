@@ -8,15 +8,10 @@ import { readConfig } from "./config.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
-<<<<<<< HEAD
-import { registerShutdownHandler } from "./features/shutdown/handler.js";
-=======
 import { deployRoleSlashCommands } from "./features/role-slash/deploy.js";
-import {
-  createRoleSlashCommandRegistry,
-} from "./features/role-slash/registry.js";
+import { createRoleSlashCommandRegistry } from "./features/role-slash/registry.js";
 import { registerRoleSlashHandlers } from "./features/role-slash/handler.js";
->>>>>>> 3d7341a (feat(bot): add /role assign and /role remove slash commands)
+import { registerShutdownHandler } from "./features/shutdown/handler.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 
 async function main(): Promise<void> {
@@ -60,7 +55,6 @@ async function main(): Promise<void> {
   });
 
   registerReactionRoleHandlers(client);
-<<<<<<< HEAD
   registerMemberAuditHandlers(client, {
     config: memberAuditConfig,
     sendMessage: async (channelId, content) => {
@@ -71,9 +65,9 @@ async function main(): Promise<void> {
       await channel.send(content);
     },
   });
-=======
-  registerRoleSlashHandlers(client);
->>>>>>> 3d7341a (feat(bot): add /role assign and /role remove slash commands)
+  registerRoleSlashHandlers(client, {
+    roleAuditChannelId: config.roleAuditChannelId,
+  });
   registerTimekeeper(client);
   registerShutdownHandler(client);
 

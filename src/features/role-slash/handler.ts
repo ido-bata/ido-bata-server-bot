@@ -1,9 +1,18 @@
 import type { Client, ChatInputCommandInteraction } from "discord.js";
 import { Events } from "discord.js";
 
+import {
+  findReactionRoleRuleByRoleId,
+  isSlashAssignable,
+} from "../reaction-roles/config.js";
+import { createChannelAuditLogger } from "./audit.js";
 import { runRoleAssignment, replyForResult } from "./commands.js";
 import { createRoleSlashCommandRegistry, type SlashCommandRegistry } from "./registry.js";
-import type { RoleAction, RoleAssignmentDependencies } from "./types.js";
+import type {
+  RoleAction,
+  RoleAssignmentDependencies,
+  RoleManagerLike,
+} from "./types.js";
 
 type InteractionLike = {
   isChatInputCommand: () => boolean;
@@ -91,8 +100,68 @@ export function createRoleSlashHandler(deps: HandlerDependencies = {}) {
   };
 }
 
-export function registerRoleSlashHandlers(client: Client): void {
-  const handler = createRoleSlashHandler();
+export type RegisterRoleSlashHandlersDeps = {
+  // Channel id for the audit log sink. When null/undefined the audit logger
+  // falls back to console output (suitable for local dev and tests).
+  roleAuditChannelId?: string | null;
+};
+
+export function registerRoleSlashHandlers(
+  client: Client,
+  deps: RegisterRoleSlashHandlersDeps = {},
+): void {
+  // Audit sink: posts structured entries to the configured channel when set,
+  // otherwise falls back to console. Mirrors the role assignment result so
+  // operators can audit who triggered `/role assign` / `/role remove`.
+  const auditLogger = createChannelAuditLogger({
+    fetchChannel: async (channelId) => client.channels.fetch(channelId),
+    logger: console,
+  })(deps.roleAuditChannelId ?? null);
+
+  // Find a rule by roleId and only return it when `assignableViaSlash` is
+  // true. Rules without the flag keep their reaction-only behaviour.
+  const findRuleByRoleId = (roleId: string) => {
+    const rule = findReactionRoleRuleByRoleId(roleId);
+    return isSlashAssignable(rule) ? rule : null;
+  };
+
+  // Production member role manager: fetches the guild member and hands the
+  // discord.js RoleManager to the run callback. Returns undefined when the
+  // guild is not in the cache so the handler can reply `role_not_found`.
+  const withMemberRoleManager = async <T>(
+    guildId: string,
+    userId: string,
+    run: (roles: RoleManagerLike) => Promise<T>,
+  ): Promise<T | undefined> => {
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) {
+      return undefined;
+    }
+    const member = await guild.members.fetch(userId);
+    return run(member.roles as unknown as RoleManagerLike);
+  };
+
+  // Production `hasRole` check: reuses the guild member fetch so we avoid
+  // issuing a second API call when the member is already cached.
+  const hasRole = async (
+    guildId: string,
+    userId: string,
+    roleId: string,
+  ): Promise<boolean> => {
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) {
+      return false;
+    }
+    const member = await guild.members.fetch(userId);
+    return member.roles.cache.has(roleId);
+  };
+
+  const handler = createRoleSlashHandler({
+    findRuleByRoleId,
+    withMemberRoleManager,
+    hasRole,
+    audit: auditLogger,
+  });
 
   client.on(Events.InteractionCreate, async (interaction) => {
     await handler.handleInteraction(interaction);
