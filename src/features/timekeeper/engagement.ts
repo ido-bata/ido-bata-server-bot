@@ -4,10 +4,15 @@ import { dirname, join } from "node:path";
 import type { TimekeeperEventKind } from "./timeline.js";
 import { fetchRandomWikipediaTopic, type WikipediaTopic } from "./wikipedia.js";
 
+export type TimekeeperSessionStatus = "active" | "cancelled" | "completed" | "interrupted";
+
 export type TimekeeperSessionEngagement = {
   attendanceDatesByUserId: Map<string, Set<string>>;
   checkInsByUserId: Map<string, Set<number>>;
+  endedAt?: string;
   id: string;
+  startedAt: string;
+  status: TimekeeperSessionStatus;
 };
 
 type PersistedAttendance = Record<string, string[]>;
@@ -23,6 +28,8 @@ export function createSessionEngagement(id: string): TimekeeperSessionEngagement
     attendanceDatesByUserId: loadAttendanceHistory(),
     id,
     checkInsByUserId: new Map(),
+    startedAt: new Date().toISOString(),
+    status: "active",
   };
 }
 

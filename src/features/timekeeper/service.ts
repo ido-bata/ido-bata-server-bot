@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-
+import type { VoiceConnection } from "@discordjs/voice";
 import {
   AudioPlayerStatus,
   createAudioPlayer,
@@ -23,6 +23,7 @@ import {
   persistSessionAttendance,
   recordCheckIn,
   type TimekeeperSessionEngagement,
+  type TimekeeperSessionStatus,
 } from "./engagement.js";
 import type { PlaybackTimeouts } from "./playback-budget.js";
 import { resolvePlaybackTimeouts } from "./playback-budget.js";
@@ -59,6 +60,8 @@ type AnnouncementPlaybackResult = {
 let activeSession: TimekeeperSessionEngagement | null = null;
 let activeTimeline: TimekeeperTimelineEvent[] = [];
 let activeClock: SessionClock | null = null;
+let activeConnection: VoiceConnection | null = null;
+let pendingScheduleTimeout: NodeJS.Timeout | null = null;
 
 export function registerTimekeeper(client: Client): void {
   client.on(Events.InteractionCreate, async (interaction) => {
@@ -143,7 +146,8 @@ function scheduleNextSession(client: Client, config: TimekeeperConfig): void {
     `Next timekeeper session scheduled for ${nextStartAt.toISOString()} (preparation starts at ${preparationStartAt.toISOString()})`,
   );
 
-  setTimeout(() => {
+  pendingScheduleTimeout = setTimeout(() => {
+    pendingScheduleTimeout = null;
     void runSession(client, config, nextStartAt)
       .catch((error: unknown) => {
         console.error("Timekeeper session failed", error);
@@ -176,6 +180,7 @@ async function runSession(client: Client, config: TimekeeperConfig, startAt: Dat
   }
 
   const connection = await connectForPlayback(voiceChannel, client);
+  activeConnection = connection;
 
   const player = createAudioPlayer({
     behaviors: {
@@ -274,9 +279,14 @@ async function runSession(client: Client, config: TimekeeperConfig, startAt: Dat
       await textChannel.send(summary);
     }
   }
+  if (activeSession) {
+    activeSession.status = "completed";
+    activeSession.endedAt = new Date().toISOString();
+  }
   activeSession = null;
   activeTimeline = [];
   activeClock = null;
+  activeConnection = null;
   connection.destroy();
 }
 
@@ -569,4 +579,57 @@ async function postMissedProgressMessages(
       components: effectiveNow < (event.endAt ?? event.at) ? buildCheckInComponents(event) : [],
     });
   }
+}
+
+export type CancelSessionResult = {
+  persisted: boolean;
+  reason: TimekeeperSessionStatus;
+  sessionId: string | null;
+};
+
+/**
+ * Cancel any in-flight timekeeper session, persist partial attendance so we do
+ * not silently drop check-ins that the bot already recorded, and tear down the
+ * active voice connection. Idempotent — safe to call repeatedly and from the
+ * shutdown handler.
+ */
+export function cancelActiveSession(reason: "cancelled" | "interrupted"): CancelSessionResult {
+  if (!activeSession) {
+    return { persisted: false, reason, sessionId: null };
+  }
+
+  const sessionId = activeSession.id;
+  activeSession.status = reason;
+  activeSession.endedAt = new Date().toISOString();
+
+  try {
+    persistSessionAttendance(activeSession, formatSessionDate(new Date(activeSession.startedAt)));
+  } catch (error) {
+    console.error("[timekeeper] Failed to persist cancelled session attendance", error);
+  }
+
+  activeSession = null;
+  activeTimeline = [];
+  activeClock = null;
+
+  if (activeConnection) {
+    try {
+      activeConnection.destroy();
+    } catch (error) {
+      console.error("[timekeeper] Failed to destroy active voice connection", error);
+    }
+    activeConnection = null;
+  }
+
+  return { persisted: true, reason, sessionId };
+}
+
+export function clearPendingSchedule(): boolean {
+  if (!pendingScheduleTimeout) {
+    return false;
+  }
+
+  clearTimeout(pendingScheduleTimeout);
+  pendingScheduleTimeout = null;
+  return true;
 }
