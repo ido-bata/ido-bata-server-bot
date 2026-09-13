@@ -4,6 +4,7 @@ import { Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
+import { registerErrorForwarder } from "./features/error-forwarder/service.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 
@@ -17,6 +18,7 @@ async function main(): Promise<void> {
     console.log(`Logged in as ${readyClient.user.tag}`);
   });
 
+  registerErrorForwarder(client);
   registerReactionRoleHandlers(client);
   registerTimekeeper(client);
 
