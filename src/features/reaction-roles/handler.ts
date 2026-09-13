@@ -7,7 +7,8 @@ import type {
 } from "discord.js";
 import { Events } from "discord.js";
 
-import { type EmojiLike, findReactionRoleRule, type ReactionRoleRule } from "./config.js";
+import type { CategoryRule } from "../role-category-menu/index.js";
+import { type EmojiLike, findReactionRoleMatch } from "./config.js";
 
 type RoleManagerLike = {
   add: (roleId: string) => Promise<unknown>;
@@ -21,8 +22,17 @@ type ReactionRoleEvent = {
   userId: string;
 };
 
+export type ReactionRoleMatch = {
+  roleId: string;
+  category: CategoryRule | null;
+};
+
 type HandlerDependencies = {
-  findRule?: (messageId: string, emoji: EmojiLike) => ReactionRoleRule | null;
+  /**
+   * Lookup seam. Defaults to `findReactionRoleMatch`, which honors both
+   * single-role rules and category rules. Tests can supply a stub here.
+   */
+  findRule?: (messageId: string, emoji: EmojiLike) => ReactionRoleMatch | null;
   withMemberRoleManager?: <T>(
     guildId: string,
     userId: string,
@@ -31,18 +41,21 @@ type HandlerDependencies = {
 };
 
 export function createReactionRoleHandler(deps: HandlerDependencies = {}) {
-  const findRule = deps.findRule ?? findReactionRoleRule;
+  const findRule = deps.findRule ?? findReactionRoleMatch;
   const withMemberRoleManager = deps.withMemberRoleManager;
 
   async function apply(event: ReactionRoleEvent, action: "add" | "remove") {
-    const rule = findRule(event.messageId, event.emoji);
-
-    if (!rule || !withMemberRoleManager) {
+    const match = findRule(event.messageId, event.emoji);
+    if (!match || !withMemberRoleManager) {
       return;
     }
 
+    // Single fetch of the member's role manager per reaction event. When a
+    // member presses multiple emojis on a category message, each reaction
+    // event reuses this seam so the resulting role add/remove operations
+    // happen against the same member snapshot.
     await withMemberRoleManager(event.guildId, event.userId, async (roles) => {
-      await roles[action](rule.roleId);
+      await roles[action](match.roleId);
     });
   }
 
