@@ -6,6 +6,7 @@ import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
+import { registerTimekeeperCommandHandlers } from "./features/timekeeper-commands/handler.js";
 
 async function main(): Promise<void> {
   const config = readConfig(process.env);
@@ -19,6 +20,7 @@ async function main(): Promise<void> {
 
   registerReactionRoleHandlers(client);
   registerTimekeeper(client);
+  registerTimekeeperCommandHandlers(client);
 
   await client.login(config.discordToken);
 }
