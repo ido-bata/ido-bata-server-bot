@@ -40,7 +40,10 @@ type InteractionLike = {
   commandName: string;
   user: { id: string };
   options: {
-    getSubcommand: (name: string) => boolean;
+    // Matches discord.js's `getSubcommand(required?: true)`. The boolean
+    // flag only marks the subcommand as required; it never influences the
+    // returned name.
+    getSubcommand: (required?: boolean) => string;
     getString: (name: string) => string | null;
   };
   reply: (options: { content: string; ephemeral?: boolean }) => Promise<unknown>;
@@ -75,8 +78,14 @@ async function dispatchBirthdayInteraction(
   deps: BirthdayCommandDeps,
 ): Promise<void> {
   const resolveDate = deps.resolveDateOption ?? defaultResolveDate;
+  // `getSubcommand()` returns the active subcommand name. We compare with
+  // `===` instead of treating the return value as a truthy predicate —
+  // `getSubcommand("set")` would always be truthy because the argument is a
+  // required option, so it would route `/birthday remove` into the set
+  // branch.
+  const sub = interaction.options.getSubcommand();
 
-  if (interaction.options.getSubcommand("set")) {
+  if (sub === "set") {
     const raw = resolveDate(interaction);
 
     if (raw === null) {
@@ -106,7 +115,7 @@ async function dispatchBirthdayInteraction(
     return;
   }
 
-  if (interaction.options.getSubcommand("remove")) {
+  if (sub === "remove") {
     const result = await deps.handler.removeBirthday(interaction.user.id);
     await interaction.reply({
       content: result.removed

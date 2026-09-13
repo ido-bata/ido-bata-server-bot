@@ -16,7 +16,7 @@ import {
   type BirthdayRoleHandler,
   type HandlerDependencies,
 } from "./handler.js";
-import { getNextTickAfter } from "./schedule.js";
+import { getNextTickAfter, type SchedulePhase } from "./schedule.js";
 
 type ServiceOptions = {
   config?: BirthdayRoleConfig;
@@ -86,8 +86,13 @@ function scheduleDailyLoop(
   client: Client,
   service: BirthdayRoleService,
   now: () => Date,
+  // Track which phase ran previously so the loop alternates between
+  // `assign` (grant today's Birthday role) and `remove` (drop yesterday's).
+  // The default of `"remove"` makes the very first tick an `assign`, which
+  // is what the bot must do on boot when a birthday is already in progress.
+  previousPhase: SchedulePhase = "remove",
 ): void {
-  const tick = getNextTickAfter(now());
+  const tick = getNextTickAfter(now(), previousPhase);
   const delayMs = Math.max(0, tick.at.getTime() - now().getTime());
 
   console.log(
@@ -97,8 +102,8 @@ function scheduleDailyLoop(
   );
 
   setTimeout(() => {
-    void safeRun(client, service, "assign").finally(() => {
-      scheduleDailyLoop(client, service, now);
+    void safeRun(client, service, tick.phase).finally(() => {
+      scheduleDailyLoop(client, service, now, tick.phase);
     });
   }, delayMs);
 }

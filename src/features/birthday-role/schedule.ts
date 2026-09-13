@@ -17,9 +17,17 @@ export type DailyTick = {
   at: Date;
 };
 
-export function getNextTickAfter(now: Date): DailyTick {
+export function getNextTickAfter(
+  now: Date,
+  previousPhase: SchedulePhase = "remove",
+): DailyTick {
   const at = getNextJstMidnightUtc(now);
-  return { phase: "assign", at };
+  // Alternate assign -> remove -> assign so that the role applied at JST
+  // midnight is dropped again the following midnight. The default
+  // `previousPhase = "remove"` keeps the first call of the day returning
+  // "assign", matching the boot-up behaviour callers expect.
+  const phase: SchedulePhase = previousPhase === "assign" ? "remove" : "assign";
+  return { phase, at };
 }
 
 // Lists all members whose birthday matches today in JST. Leap-year handling

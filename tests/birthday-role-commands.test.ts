@@ -18,7 +18,7 @@ type Interaction = {
   commandName: string;
   user: { id: string };
   options: {
-    getSubcommand: (name: string) => boolean;
+    getSubcommand: () => string;
     getString: (name: string) => string | null;
   };
   reply: ReturnType<typeof vi.fn>;
@@ -33,7 +33,9 @@ function makeInteraction(
     commandName,
     user: { id: userId },
     options: {
-      getSubcommand: (name: string) => name === options.subcommand,
+      // Mirrors discord.js: `getSubcommand()` returns the active subcommand
+      // name with no influence from any argument we might pass.
+      getSubcommand: () => options.subcommand,
       getString: (name: string) => (name === "date" ? options.date ?? null : null),
     },
     reply: vi.fn(async () => undefined),

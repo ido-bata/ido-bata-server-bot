@@ -15,6 +15,18 @@ describe("birthday-role schedule", () => {
     expect(tick.at.toISOString()).toBe("2026-04-02T15:00:00.000Z");
   });
 
+  it("schedules a remove tick the midnight after an assign tick", () => {
+    const tick = getNextTickAfter(new Date("2026-04-01T10:00:00Z"), "assign");
+    expect(tick.phase).toBe("remove");
+    expect(tick.at.toISOString()).toBe("2026-04-01T15:00:00.000Z");
+  });
+
+  it("schedules an assign tick the midnight after a remove tick", () => {
+    const tick = getNextTickAfter(new Date("2026-04-01T10:00:00Z"), "remove");
+    expect(tick.phase).toBe("assign");
+    expect(tick.at.toISOString()).toBe("2026-04-01T15:00:00.000Z");
+  });
+
   it("selects members whose stored date matches today in JST", () => {
     const matches = selectTodaysBirthdays(
       [
