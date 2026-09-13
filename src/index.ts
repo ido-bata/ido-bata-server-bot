@@ -6,6 +6,8 @@ import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
+import { messageAuditConfig } from "./features/message-audit/config.js";
+import { registerMessageAuditHandlers } from "./features/message-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
@@ -28,6 +30,16 @@ async function main(): Promise<void> {
       const channel = await client.channels.fetch(channelId);
       if (!channel || !("send" in channel) || typeof channel.send !== "function") {
         throw new Error(`member-audit: channel ${channelId} is not a text channel`);
+      }
+      await channel.send(content);
+    },
+  });
+  registerMessageAuditHandlers(client, {
+    config: messageAuditConfig,
+    sendMessage: async (channelId, content) => {
+      const channel = await client.channels.fetch(channelId);
+      if (!channel || !("send" in channel) || typeof channel.send !== "function") {
+        throw new Error(`message-audit: channel ${channelId} is not a text channel`);
       }
       await channel.send(content);
     },
