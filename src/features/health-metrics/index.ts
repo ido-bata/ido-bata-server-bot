@@ -2,12 +2,9 @@ import type { Client } from "discord.js";
 import { Events } from "discord.js";
 
 import { getActiveTimekeeperSessionCount } from "../timekeeper/service.js";
-import { readHealthMetricsConfig, type HealthMetricsConfig } from "./config.js";
+import { type HealthMetricsConfig, readHealthMetricsConfig } from "./config.js";
 import { MetricsRegistry } from "./metrics.js";
-import {
-  createHealthMetricsServer,
-  type HealthMetricsServerHandle,
-} from "./server.js";
+import { createHealthMetricsServer, type HealthMetricsServerHandle } from "./server.js";
 
 export type RegisterHealthMetricsOptions = {
   /** Override the parsed HEALTH_PORT/HEALTH_HOST config. */

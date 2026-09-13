@@ -24,7 +24,8 @@ export function readHealthMetricsConfig(
   options: ReadHealthMetricsConfigOptions = {},
 ): HealthMetricsConfig {
   const portRaw = env.HEALTH_PORT;
-  const port = portRaw === undefined ? options.defaultPort ?? DEFAULT_PORT : Number.parseInt(portRaw, 10);
+  const port =
+    portRaw === undefined ? (options.defaultPort ?? DEFAULT_PORT) : Number.parseInt(portRaw, 10);
 
   if (!Number.isFinite(port) || !Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`Invalid HEALTH_PORT: ${portRaw ?? ""}`);

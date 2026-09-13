@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  escapeLabelValue,
-  MetricsRegistry,
-} from "../src/features/health-metrics/metrics.js";
+import { escapeLabelValue, MetricsRegistry } from "../src/features/health-metrics/metrics.js";
 
 describe("MetricsRegistry", () => {
   it("uses the injected uptime provider when supplied", () => {

@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
+import { MetricsRegistry } from "../src/features/health-metrics/metrics.js";
 import {
   createHealthMetricsServer,
   type HealthMetricsServerHandle,
 } from "../src/features/health-metrics/server.js";
-import { MetricsRegistry } from "../src/features/health-metrics/metrics.js";
 
 const HOST = "127.0.0.1";
 const EPHEMERAL_PORT = 0;
-const FAKE_TOKEN = "MTIzNDU2Nzg5MC5hYmNkZWYuMTIzNDU2Nzg5MA.GhIjKl.MnOpQrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx";
+const FAKE_TOKEN =
+  "MTIzNDU2Nzg5MC5hYmNkZWYuMTIzNDU2Nzg5MA.GhIjKl.MnOpQrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx";
 
 type TestHandle = {
   server: HealthMetricsServerHandle;
@@ -147,9 +147,7 @@ describe("health-metrics HTTP server", () => {
       process.env.DISCORD_TOKEN = FAKE_TOKEN;
       handle = await startServer(() => 0);
 
-      const body = await fetch(`http://${HOST}:${handle.server.port}/health`).then((r) =>
-        r.json(),
-      );
+      const body = await fetch(`http://${HOST}:${handle.server.port}/health`).then((r) => r.json());
       const rendered = JSON.stringify(body);
       expect(rendered).not.toContain(FAKE_TOKEN);
       expect(rendered).not.toContain("DISCORD_TOKEN");
@@ -244,25 +242,19 @@ describe("health-metrics config", () => {
   it("defaults HEALTH_PORT to 8080 and HEALTH_HOST to 127.0.0.1", async () => {
     delete process.env.HEALTH_PORT;
     delete process.env.HEALTH_HOST;
-    const { readHealthMetricsConfig } = await import(
-      "../src/features/health-metrics/config.js"
-    );
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
     expect(readHealthMetricsConfig(process.env)).toEqual({ port: 8080, host: "127.0.0.1" });
   });
 
   it("honors HEALTH_PORT and HEALTH_HOST overrides", async () => {
     process.env.HEALTH_PORT = "9090";
     process.env.HEALTH_HOST = "0.0.0.0";
-    const { readHealthMetricsConfig } = await import(
-      "../src/features/health-metrics/config.js"
-    );
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
     expect(readHealthMetricsConfig(process.env)).toEqual({ port: 9090, host: "0.0.0.0" });
   });
 
   it("rejects invalid HEALTH_PORT values", async () => {
-    const { readHealthMetricsConfig } = await import(
-      "../src/features/health-metrics/config.js"
-    );
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
     expect(() => readHealthMetricsConfig({ ...process.env, HEALTH_PORT: "not-a-number" })).toThrow(
       /Invalid HEALTH_PORT/,
     );

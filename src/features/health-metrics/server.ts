@@ -53,7 +53,8 @@ export function createHealthMetricsServer(
     server.listen(port, host, () => {
       server.removeListener("error", onError);
       const address = server.address();
-      const actualPort = typeof address === "object" && address ? (address as AddressInfo).port : port;
+      const actualPort =
+        typeof address === "object" && address ? (address as AddressInfo).port : port;
       resolve({
         server,
         port: actualPort,
