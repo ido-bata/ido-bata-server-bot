@@ -1,11 +1,17 @@
-import type { Client, MessageReaction, PartialMessageReaction, PartialUser, User } from "discord.js";
+import type {
+  Client,
+  MessageReaction,
+  PartialMessageReaction,
+  PartialUser,
+  User,
+} from "discord.js";
 import { Events } from "discord.js";
 
 import type { EmojiLike } from "../reaction-roles/config.js";
 import { matchesStarEmoji, starboardConfig } from "./config.js";
 import { buildStarboardPayload } from "./embed.js";
 
-export type StarboardReactionEvent = {
+type StarboardReactionEvent = {
   emoji: EmojiLike;
   guildId: string;
   messageId: string;
@@ -50,15 +56,17 @@ export type StarboardHandler = {
   repostedMessageIds: ReadonlySet<string>;
 };
 
-const DEFAULT_FETCH_MESSAGE_INFO: NonNullable<StarboardDependencies["fetchMessageInfo"]> =
-  async () => {
-    throw new Error("starboard: fetchMessageInfo dependency is not provided");
-  };
+const DEFAULT_FETCH_MESSAGE_INFO: NonNullable<
+  StarboardDependencies["fetchMessageInfo"]
+> = async () => {
+  throw new Error("starboard: fetchMessageInfo dependency is not provided");
+};
 
-const DEFAULT_COUNT_STAR_REACTIONS: NonNullable<StarboardDependencies["countStarReactions"]> =
-  async () => {
-    throw new Error("starboard: countStarReactions dependency is not provided");
-  };
+const DEFAULT_COUNT_STAR_REACTIONS: NonNullable<
+  StarboardDependencies["countStarReactions"]
+> = async () => {
+  throw new Error("starboard: countStarReactions dependency is not provided");
+};
 
 const DEFAULT_SEND_REPOST: NonNullable<StarboardDependencies["sendRepost"]> = async () => {
   throw new Error("starboard: sendRepost dependency is not provided");
@@ -167,13 +175,14 @@ export function registerStarboardHandlers(client: Client): void {
           })
         | null;
 
-      if (!message || !message.author) {
+      if (!message?.author) {
         return null;
       }
 
       const author = message.author;
       const attachments = message.attachments;
-      const imageUrl = attachments && attachments.size > 0 ? (attachments.first()?.url ?? null) : null;
+      const imageUrl =
+        attachments && attachments.size > 0 ? (attachments.first()?.url ?? null) : null;
 
       return {
         authorTag: author.tag ?? "unknown",
@@ -220,10 +229,7 @@ export function registerStarboardHandlers(client: Client): void {
       }
 
       const sendable = channel as {
-        send: (options: {
-          content?: string;
-          embeds?: StarboardEmbed[];
-        }) => Promise<unknown>;
+        send: (options: { content?: string; embeds?: StarboardEmbed[] }) => Promise<unknown>;
       };
 
       await sendable.send({

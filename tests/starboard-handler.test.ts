@@ -37,7 +37,10 @@ describe("starboard handler", () => {
     await handler.onReactionAdd(baseEvent);
 
     expect(sendRepost).toHaveBeenCalledTimes(1);
-    const call = sendRepost.mock.calls[0] as unknown as [string, { embeds: { description?: string }[] }];
+    const call = sendRepost.mock.calls[0] as unknown as [
+      string,
+      { embeds: { description?: string }[] },
+    ];
     const [channelId, payload] = call;
     expect(channelId).toBe("STARBOARD_CHANNEL_ID_PLACEHOLDER");
     expect(payload.embeds).toHaveLength(1);
@@ -212,8 +215,6 @@ describe("starboard handler", () => {
     ];
     const [, payload] = call;
     expect(payload.content).toContain("⭐ 9");
-    expect(payload.embeds[0]?.fields?.find((field) => field.name === "Stars")?.value).toBe(
-      "⭐ 9",
-    );
+    expect(payload.embeds[0]?.fields?.find((field) => field.name === "Stars")?.value).toBe("⭐ 9");
   });
 });
