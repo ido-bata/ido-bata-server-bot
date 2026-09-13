@@ -4,6 +4,7 @@ import { Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
+import { deployPollCommands, registerPollHandlers } from "./features/poll/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 
@@ -13,12 +14,20 @@ async function main(): Promise<void> {
     enableMessageContentIntent: config.enableMessageContentIntent,
   });
 
+  registerReactionRoleHandlers(client);
+  registerPollHandlers(client);
+  registerTimekeeper(client);
+
   client.once(Events.ClientReady, (readyClient) => {
     console.log(`Logged in as ${readyClient.user.tag}`);
-  });
 
-  registerReactionRoleHandlers(client);
-  registerTimekeeper(client);
+    void deployPollCommands(readyClient, {
+      clientId: config.discordClientId,
+      guildId: config.discordGuildId,
+    }).catch((error: unknown) => {
+      console.error("Failed to deploy poll slash commands on ready", error);
+    });
+  });
 
   await client.login(config.discordToken);
 }
