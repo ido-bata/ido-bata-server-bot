@@ -114,6 +114,75 @@ describe("starboard handler", () => {
     expect(sendRepost).toHaveBeenCalledTimes(1);
   });
 
+  it("serializes concurrent reaction events for the same messageId to a single repost", async () => {
+    // Use a shared deferred so every fetchMessageInfo call resolves together.
+    // The chain in the handler ensures only the first run reaches this call;
+    // queued runs short-circuit on the repostedMessageIds re-check.
+    let resolveFetch: ((info: StarboardMessageInfo) => void) | undefined;
+    const fetchPromise = new Promise<StarboardMessageInfo>((resolve) => {
+      resolveFetch = resolve;
+    });
+    // The Promise executor runs synchronously, so resolveFetch is assigned
+    // before any code below observes it.
+    if (!resolveFetch) {
+      throw new Error("resolveFetch should be assigned by the Promise executor");
+    }
+    const fetchMessageInfo = vi.fn(async () => fetchPromise);
+    const sendRepost = vi.fn(async () => undefined);
+    const handler = createStarboardHandler({
+      fetchMessageInfo,
+      countStarReactions: async () => 5,
+      sendRepost,
+    });
+
+    // Fire three concurrent reaction events for the same messageId. The
+    // first call suspends inside fetchMessageInfo; the per-messageId queue
+    // holds the other two behind it. With the old check-then-add
+    // implementation both would slip past the has() guard and trigger a
+    // double repost.
+    const first = handler.onReactionAdd(baseEvent);
+    const second = handler.onReactionAdd({ ...baseEvent, guildId: "guild-2" });
+    const third = handler.onReactionAdd({ ...baseEvent, guildId: "guild-3" });
+
+    // Yield several microtask ticks so the first queued run starts and
+    // reaches the await on fetchMessageInfo before we release the deferred.
+    for (let i = 0; i < 5; i += 1) {
+      await Promise.resolve();
+    }
+    expect(sendRepost).not.toHaveBeenCalled();
+    expect(fetchMessageInfo).toHaveBeenCalledTimes(1);
+
+    // Release the deferred; the first run adds to repostedMessageIds and
+    // sends, while the queued runs short-circuit on the re-check.
+    resolveFetch(baseInfo);
+
+    await Promise.all([first, second, third]);
+
+    expect(fetchMessageInfo).toHaveBeenCalledTimes(1);
+    expect(sendRepost).toHaveBeenCalledTimes(1);
+    expect(handler.repostedMessageIds.has("message-1")).toBe(true);
+  });
+
+  it("releases the claim when sendRepost fails so a later event can retry", async () => {
+    const sendRepost = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce(undefined);
+    const handler = createStarboardHandler({
+      fetchMessageInfo: async () => baseInfo,
+      countStarReactions: async () => 5,
+      sendRepost,
+    });
+
+    await expect(handler.onReactionAdd(baseEvent)).rejects.toThrow("network");
+    expect(handler.repostedMessageIds.has("message-1")).toBe(false);
+
+    await handler.onReactionAdd(baseEvent);
+
+    expect(sendRepost).toHaveBeenCalledTimes(2);
+    expect(handler.repostedMessageIds.has("message-1")).toBe(true);
+  });
+
   it("skips when the message info cannot be loaded", async () => {
     const sendRepost = vi.fn(async () => undefined);
     const handler = createStarboardHandler({

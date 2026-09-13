@@ -70,37 +70,72 @@ export function createStarboardHandler(deps: StarboardDependencies = {}): Starbo
   const sendRepost = deps.sendRepost ?? DEFAULT_SEND_REPOST;
 
   const repostedMessageIds = new Set<string>();
+  // Per-messageId chain so concurrent reaction events for the same message
+  // are serialized: the next call waits for the previous one's check-and-send
+  // to finish (so a second event sees the freshly-added id and bails out).
+  const inflightSends = new Map<string, Promise<void>>();
+
+  function enqueue(messageId: string, run: () => Promise<void>): Promise<void> {
+    const previous = inflightSends.get(messageId) ?? Promise.resolve();
+    // Swallow rejection from the previous run so it does not poison the chain;
+    // failures are reported via the promise returned for the current invocation.
+    const next = previous.catch(() => undefined).then(run);
+    inflightSends.set(messageId, next);
+    // Track completion to drop the map entry once no further work is pending.
+    // The trailing .catch keeps this fire-and-forget cleanup from surfacing
+    // as an unhandled rejection when `run` rejects.
+    void next
+      .finally(() => {
+        if (inflightSends.get(messageId) === next) {
+          inflightSends.delete(messageId);
+        }
+      })
+      .catch(() => undefined);
+    return next;
+  }
 
   async function handleReaction(event: StarboardReactionEvent): Promise<void> {
     if (!matchesStarEmoji(event.emoji, starboardConfig)) {
       return;
     }
 
-    if (repostedMessageIds.has(event.messageId)) {
-      return;
-    }
+    return enqueue(event.messageId, async () => {
+      // Re-check after acquiring the queue slot: a prior invocation may have
+      // already claimed and reposted this messageId while we were waiting.
+      if (repostedMessageIds.has(event.messageId)) {
+        return;
+      }
 
-    const info = await fetchMessageInfo(event.channelId, event.messageId);
-    if (!info) {
-      return;
-    }
+      const info = await fetchMessageInfo(event.channelId, event.messageId);
+      if (!info) {
+        return;
+      }
 
-    if (info.isAuthorBot) {
-      return;
-    }
+      if (info.isAuthorBot) {
+        return;
+      }
 
-    if (info.isNsfw) {
-      return;
-    }
+      if (info.isNsfw) {
+        return;
+      }
 
-    const count = await countStarReactions(event.channelId, event.messageId, event.emoji);
-    if (count < starboardConfig.threshold) {
-      return;
-    }
+      const count = await countStarReactions(event.channelId, event.messageId, event.emoji);
+      if (count < starboardConfig.threshold) {
+        return;
+      }
 
-    const payload = buildStarboardPayload({ ...info, reactionCount: count });
-    await sendRepost(starboardConfig.channelId, payload);
-    repostedMessageIds.add(event.messageId);
+      // Claim BEFORE sending so concurrent reaction events queued behind us
+      // see the id and skip; release the claim only on failure so a later
+      // reaction event can retry.
+      repostedMessageIds.add(event.messageId);
+      const payload = buildStarboardPayload({ ...info, reactionCount: count });
+      try {
+        await sendRepost(starboardConfig.channelId, payload);
+      } catch (error) {
+        repostedMessageIds.delete(event.messageId);
+        throw error;
+      }
+    });
   }
 
   return {
