@@ -16,6 +16,9 @@ coverage/
 # Local persisted state for the timekeeper feature
 data/timekeeper-history.json
 
+# Local persisted state for the poll feature
+data/polls.json
+
 # Editor / OS / tooling
 .DS_Store
 .idea/
