@@ -3,17 +3,23 @@ import { REST as RestClass, Routes, SlashCommandBuilder } from "discord.js";
 
 const TIMEKEEPER_COMMAND_DESCRIPTION = "Timekeeper セッションの確認・操作 (moderator role 必須)。";
 
-export type DeployTimekeeperCommandsDeps = {
+export type DeployGuildCommandsDeps = {
   token: string;
   clientId: string;
   guildId: string;
+  /**
+   * Every guild-scoped slash-command payload the bot wants registered.
+   * `Routes.applicationGuildCommands` is a bulk overwrite — passing only
+   * this feature's payload here would erase any commands owned by other
+   * features, so callers must aggregate definitions from every feature
+   * into a single array and call this exactly once.
+   */
+  payloads: RESTPostAPIChatInputApplicationCommandsJSONBody[];
   /** Injected REST client. Tests substitute a fake. */
   rest?: Pick<REST, "put">;
-  /** Override the payload builder (used by tests). */
-  buildPayload?: () => RESTPostAPIChatInputApplicationCommandsJSONBody;
 };
 
-export type DeployTimekeeperCommandsResult = { registered: 1 };
+export type DeployGuildCommandsResult = { registered: number };
 
 export function buildTimekeeperCommandPayload(): RESTPostAPIChatInputApplicationCommandsJSONBody {
   return new SlashCommandBuilder()
@@ -37,32 +43,32 @@ export function buildTimekeeperCommandPayload(): RESTPostAPIChatInputApplication
 }
 
 /**
- * PUT the `/timekeeper` slash-command payload (with 4 subcommands) to
- * the guild-scoped route. Idempotent — re-running replaces the previous
- * payload.
+ * PUT every guild-scoped slash-command payload (aggregated across
+ * features) to `Routes.applicationGuildCommands` in a single bulk
+ * request. Idempotent — re-running replaces the previous set of
+ * payloads for the guild.
  *
  * Throws when any of the credentials are blank, before any REST call is
  * made.
  */
-export async function deployTimekeeperCommands(
-  deps: DeployTimekeeperCommandsDeps,
-): Promise<DeployTimekeeperCommandsResult> {
+export async function deployGuildCommands(
+  deps: DeployGuildCommandsDeps,
+): Promise<DeployGuildCommandsResult> {
   if (!deps.token) {
-    throw new Error("deployTimekeeperCommands: token is required");
+    throw new Error("deployGuildCommands: token is required");
   }
   if (!deps.clientId) {
-    throw new Error("deployTimekeeperCommands: clientId is required");
+    throw new Error("deployGuildCommands: clientId is required");
   }
   if (!deps.guildId) {
-    throw new Error("deployTimekeeperCommands: guildId is required");
+    throw new Error("deployGuildCommands: guildId is required");
   }
 
-  const payload = (deps.buildPayload ?? buildTimekeeperCommandPayload)();
   const rest = deps.rest ?? new RestClass({ version: "10" }).setToken(deps.token);
 
   await rest.put(Routes.applicationGuildCommands(deps.clientId, deps.guildId), {
-    body: [payload],
+    body: deps.payloads,
   });
 
-  return { registered: 1 };
+  return { registered: deps.payloads.length };
 }

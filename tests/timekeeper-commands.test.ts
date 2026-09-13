@@ -1,3 +1,4 @@
+import type { RESTPostAPIChatInputApplicationCommandsJSONBody } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { TimekeeperConfig } from "../src/features/timekeeper/config.js";
@@ -14,7 +15,7 @@ import {
 } from "../src/features/timekeeper-commands/commands.js";
 import {
   buildTimekeeperCommandPayload,
-  deployTimekeeperCommands,
+  deployGuildCommands,
 } from "../src/features/timekeeper-commands/deploy.js";
 import { createTimekeeperCommandHandler } from "../src/features/timekeeper-commands/handler.js";
 
@@ -276,32 +277,56 @@ describe("handler dispatch", () => {
   });
 });
 
-describe("deployTimekeeperCommands", () => {
-  it("PUTs a /timekeeper payload with 4 subcommands", async () => {
+describe("deployGuildCommands", () => {
+  it("PUTs every aggregated payload in a single bulk request", async () => {
     const put = vi.fn(async () => undefined);
-    const result = await deployTimekeeperCommands({
+    const payloads = [buildTimekeeperCommandPayload()];
+    const result = await deployGuildCommands({
       token: "token",
       clientId: "client-1",
       guildId: "guild-1",
+      payloads,
       rest: { put },
     });
     expect(put).toHaveBeenCalledTimes(1);
     const [route, options] = put.mock.calls[0] as unknown as [string, { body: unknown[] }];
     expect(route).toBe("/applications/client-1/guilds/guild-1/commands");
+    expect(options.body).toBe(payloads);
     expect(options.body).toHaveLength(1);
     expect(result).toEqual({ registered: 1 });
   });
 
+  it("accepts payloads from multiple features without making extra PUTs", async () => {
+    const put = vi.fn(async () => undefined);
+    const timekeeperPayload = buildTimekeeperCommandPayload();
+    const pingPayload = {
+      name: "ping",
+      description: "pong",
+    } as unknown as RESTPostAPIChatInputApplicationCommandsJSONBody;
+    const result = await deployGuildCommands({
+      token: "token",
+      clientId: "client-1",
+      guildId: "guild-1",
+      payloads: [timekeeperPayload, pingPayload],
+      rest: { put },
+    });
+    expect(put).toHaveBeenCalledTimes(1);
+    const [, options] = put.mock.calls[0] as unknown as [string, { body: unknown[] }];
+    expect(options.body).toHaveLength(2);
+    expect(result).toEqual({ registered: 2 });
+  });
+
   it("rejects missing credentials before calling REST", async () => {
     const put = vi.fn(async () => undefined);
+    const payloads = [buildTimekeeperCommandPayload()];
     await expect(
-      deployTimekeeperCommands({ token: "", clientId: "c", guildId: "g", rest: { put } }),
+      deployGuildCommands({ token: "", clientId: "c", guildId: "g", payloads, rest: { put } }),
     ).rejects.toThrow(/token/);
     await expect(
-      deployTimekeeperCommands({ token: "t", clientId: "", guildId: "g", rest: { put } }),
+      deployGuildCommands({ token: "t", clientId: "", guildId: "g", payloads, rest: { put } }),
     ).rejects.toThrow(/clientId/);
     await expect(
-      deployTimekeeperCommands({ token: "t", clientId: "c", guildId: "", rest: { put } }),
+      deployGuildCommands({ token: "t", clientId: "c", guildId: "", payloads, rest: { put } }),
     ).rejects.toThrow(/guildId/);
     expect(put).not.toHaveBeenCalled();
   });
