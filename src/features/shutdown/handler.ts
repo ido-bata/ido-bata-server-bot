@@ -92,18 +92,25 @@ export function createShutdownRunner(
     running = true;
     logger(`Received ${signal} at ${now().toISOString()}, shutting down gracefully`);
 
+    let cancelResult: boolean | null = null;
     try {
-      const hadSession = safeCancel(cancelSession, logger);
-      logger(`Timekeeper session cancelled: ${hadSession}`);
+      cancelResult = cancelSession();
     } catch (error) {
       logger(`Failed to cancel timekeeper session: ${formatError(error)}`);
     }
+    if (cancelResult !== null) {
+      logger(`Timekeeper session cancelled: ${cancelResult}`);
+    }
 
+    let voiceDestroyed = false;
     try {
-      safeDestroyConnections(destroyVoiceConnections, logger);
-      logger("Voice connections destroyed");
+      destroyVoiceConnections();
+      voiceDestroyed = true;
     } catch (error) {
       logger(`Failed to destroy voice connections: ${formatError(error)}`);
+    }
+    if (voiceDestroyed) {
+      logger("Voice connections destroyed");
     }
 
     try {
@@ -124,23 +131,6 @@ function defaultDestroyVoiceConnections(): void {
   const connections = getVoiceConnections();
   for (const connection of connections.values()) {
     connection.destroy();
-  }
-}
-
-function safeCancel(cancel: () => boolean, logger: ShutdownLogger): boolean {
-  try {
-    return cancel();
-  } catch (error) {
-    logger(`Failed to cancel timekeeper session: ${formatError(error)}`);
-    return false;
-  }
-}
-
-function safeDestroyConnections(destroy: () => void, logger: ShutdownLogger): void {
-  try {
-    destroy();
-  } catch (error) {
-    logger(`destroyVoiceConnections threw: ${formatError(error)}`);
   }
 }
 

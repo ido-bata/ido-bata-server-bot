@@ -163,6 +163,25 @@ describe("shutdown handler", () => {
     expect(messages.some((line) => line.includes("Failed to cancel timekeeper session"))).toBe(
       true,
     );
+    expect(messages.some((line) => line.startsWith("Timekeeper session cancelled:"))).toBe(false);
+    expect(messages.at(-1)).toBe("Graceful shutdown complete");
+  });
+
+  it("does not log a misleading success when destroyVoiceConnections throws", async () => {
+    const { destroyClient, exit, messages, runner } = setupRunner({
+      destroyVoiceConnections: vi.fn(() => {
+        throw new Error("voice destroy failed");
+      }),
+    });
+
+    await runner.run("SIGINT");
+
+    expect(destroyClient).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(messages.some((line) => line.includes("Failed to destroy voice connections"))).toBe(
+      true,
+    );
+    expect(messages.includes("Voice connections destroyed")).toBe(false);
     expect(messages.at(-1)).toBe("Graceful shutdown complete");
   });
 
