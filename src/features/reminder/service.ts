@@ -78,12 +78,6 @@ export type ReminderQueue = {
 
 const SCAN_INTERVAL_MS = 30_000;
 
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 async function defaultOpenDm(client: Client, userId: string): Promise<DmSurface | null> {
   try {
     const user: User | null = await client.users.fetch(userId);
@@ -103,13 +97,15 @@ export function createReminderQueue(
 ): ReminderQueue {
   const nowFn = options.now ?? (() => new Date());
   const logger = options.logger ?? defaultLogger;
-  const sleep = options.sleep ?? defaultSleep;
   const loadOptions = options.loadOptions ?? {};
 
   const initial = loadReminders(loadOptions);
   let reminders: PersistedReminder[] = [...initial.reminders];
   let stopped = false;
   let loopPromise: Promise<void> | null = null;
+  // Aborts the in-flight scheduler sleep so add()/stop() can wake the loop
+  // immediately instead of waiting up to SCAN_INTERVAL_MS for the next tick.
+  let sleepAbortController: AbortController | null = null;
 
   function persist(): void {
     try {
@@ -117,6 +113,35 @@ export function createReminderQueue(
     } catch (error) {
       logger.error(`Failed to persist reminder state: ${stringifyError(error)}`);
     }
+  }
+
+  function wakeScheduler(): void {
+    sleepAbortController?.abort();
+  }
+
+  function interruptibleSleep(ms: number): Promise<void> {
+    if (ms <= 0) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const ac = new AbortController();
+      sleepAbortController = ac;
+      const timer = setTimeout(() => {
+        ac.signal.removeEventListener("abort", onAbort);
+        if (sleepAbortController === ac) {
+          sleepAbortController = null;
+        }
+        resolve();
+      }, ms);
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        if (sleepAbortController === ac) {
+          sleepAbortController = null;
+        }
+        resolve();
+      };
+      ac.signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   function add(input: AddReminderInput): AddReminderResult {
@@ -152,6 +177,9 @@ export function createReminderQueue(
 
     reminders = [...reminders, reminder];
     persist();
+    // Wake the scheduler loop so the new reminder is evaluated on the next
+    // tick instead of waiting for the current sleep to finish.
+    wakeScheduler();
     return { ok: true, reminder };
   }
 
@@ -231,11 +259,14 @@ export function createReminderQueue(
       }
 
       const next = pickNextFire(reminders, nowFn());
-      const delayMs = next
-        ? Math.max(SCAN_INTERVAL_MS, next.fireAt.getTime() - nowFn().getTime())
-        : SCAN_INTERVAL_MS;
+      const remainingMs = next
+        ? Math.max(0, next.fireAt.getTime() - nowFn().getTime())
+        : Number.POSITIVE_INFINITY;
+      // Cap the wait at SCAN_INTERVAL_MS so a far-future reminder (or an
+      // empty queue) cannot block newly added earlier reminders for hours.
+      const delayMs = Math.min(SCAN_INTERVAL_MS, remainingMs);
 
-      await sleep(delayMs);
+      await interruptibleSleep(delayMs);
     }
   }
 
@@ -257,6 +288,9 @@ export function createReminderQueue(
     },
     stop() {
       stopped = true;
+      // Wake the scheduler so the loop exits promptly instead of waiting up
+      // to SCAN_INTERVAL_MS for the in-flight sleep to resolve on its own.
+      wakeScheduler();
     },
   };
 }
