@@ -128,7 +128,7 @@ const issuePayload = {
 };
 
 describe("GitHub webhook HTTP server", () => {
-  it("delivers a signed release.published event to Discord", async () => {
+  it("delivers a signed release.published event (header=release + action=published)", async () => {
     const { handle, deliverCalls, stop } = await startServer();
     try {
       const rawBody = JSON.stringify(releasePayload);
@@ -136,7 +136,7 @@ describe("GitHub webhook HTTP server", () => {
 
       const req = makeRequest(
         {
-          "x-github-event": "release.published",
+          "x-github-event": "release",
           "x-hub-signature-256": signature,
           "content-type": "application/json",
         },
@@ -164,7 +164,7 @@ describe("GitHub webhook HTTP server", () => {
       const rawBody = JSON.stringify(releasePayload);
       const req = makeRequest(
         {
-          "x-github-event": "release.published",
+          "x-github-event": "release",
           "content-type": "application/json",
         },
         rawBody,
@@ -186,7 +186,7 @@ describe("GitHub webhook HTTP server", () => {
       const rawBody = JSON.stringify(releasePayload);
       const req = makeRequest(
         {
-          "x-github-event": "release.published",
+          "x-github-event": "release",
           "x-hub-signature-256": computeSignature("wrong-secret", rawBody),
           "content-type": "application/json",
         },
@@ -209,7 +209,30 @@ describe("GitHub webhook HTTP server", () => {
       const rawBody = JSON.stringify(releasePayload);
       const req = makeRequest(
         {
-          "x-github-event": "star.created",
+          "x-github-event": "star",
+          "x-hub-signature-256": computeSignature("test-secret", rawBody),
+          "content-type": "application/json",
+        },
+        rawBody,
+      );
+      const captured = captureResponse();
+
+      await handle.handle(req, captured.res);
+
+      expect(captured.status()).toBe(202);
+      expect(deliverCalls).toHaveLength(0);
+    } finally {
+      await stop();
+    }
+  });
+
+  it("ACKs (202) for a release header with a non-published action (e.g. unpublished)", async () => {
+    const { handle, deliverCalls, stop } = await startServer();
+    try {
+      const rawBody = JSON.stringify({ ...releasePayload, action: "unpublished" });
+      const req = makeRequest(
+        {
+          "x-github-event": "release",
           "x-hub-signature-256": computeSignature("test-secret", rawBody),
           "content-type": "application/json",
         },
@@ -232,7 +255,7 @@ describe("GitHub webhook HTTP server", () => {
       const rawBody = JSON.stringify(prPayload);
 
       const headers = {
-        "x-github-event": "pull_request.closed",
+        "x-github-event": "pull_request",
         "x-hub-signature-256": computeSignature("test-secret", rawBody),
         "content-type": "application/json",
       };
@@ -252,13 +275,13 @@ describe("GitHub webhook HTTP server", () => {
     }
   });
 
-  it("delivers an issue.opened event", async () => {
+  it("delivers an issue.opened event (header=issues + action=opened)", async () => {
     const { handle, deliverCalls, stop } = await startServer();
     try {
       const rawBody = JSON.stringify(issuePayload);
       const req = makeRequest(
         {
-          "x-github-event": "issues.opened",
+          "x-github-event": "issues",
           "x-hub-signature-256": computeSignature("test-secret", rawBody),
           "content-type": "application/json",
         },
@@ -322,7 +345,7 @@ describe("GitHub webhook HTTP server", () => {
       const rawBody = JSON.stringify(issuePayload);
       const req = makeRequest(
         {
-          "x-github-event": "issues.opened",
+          "x-github-event": "issues",
           "x-hub-signature-256": computeSignature("test-secret", rawBody),
         },
         rawBody,
@@ -353,7 +376,7 @@ describe("GitHub webhook HTTP server", () => {
       const rawBody = JSON.stringify(issuePayload);
       const req = makeRequest(
         {
-          "x-github-event": "issues.opened",
+          "x-github-event": "issues",
           "x-hub-signature-256": computeSignature("test-secret", rawBody),
         },
         rawBody,

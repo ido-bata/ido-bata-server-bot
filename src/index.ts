@@ -253,16 +253,42 @@ async function main(): Promise<void> {
     icalService.stopScheduler();
   });
 
+  // Build the shared HTTP router. Each feature that exposes HTTP routes
+  // (`/health`, `/metrics`, `/webhook/github`, …) registers its handlers
+  // here, and the composition root binds a single TCP listener to serve
+  // them all. See issue #36 acceptance criteria and `docs/architecture.md`.
+  const router = new HttpRouter();
+
   if (process.env.GITHUB_WEBHOOK_SECRET) {
-    try {
-      await registerGitHubWebhook(client);
-    } catch (error) {
-      console.error("Failed to start GitHub webhook server", error);
-    }
+    registerGitHubWebhook(client, { router });
   } else {
     console.log(
       "GitHub webhook server is disabled (set GITHUB_WEBHOOK_SECRET to enable).",
     );
+  }
+
+  // The shared HTTP listener uses the configured webhook port by default
+  // so deployments only need to expose one endpoint. The port defaults
+  // live in `readGitHubWebhookConfig`; the same value is reused here.
+  const webhookConfig = process.env.GITHUB_WEBHOOK_SECRET
+    ? readGitHubWebhookConfig(process.env)
+    : null;
+
+  if (webhookConfig) {
+    const handle = await createHttpServer({
+      host: webhookConfig.host,
+      port: webhookConfig.port,
+      router,
+    });
+    console.log(`HTTP server listening on http://${webhookConfig.host}:${handle.port}`);
+
+    const shutdown = async () => {
+      await handle.close();
+      client.destroy();
+      process.exit(0);
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
   }
 
   await client.login(config.discordToken);

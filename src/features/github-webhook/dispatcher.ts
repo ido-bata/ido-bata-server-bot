@@ -25,9 +25,44 @@ export type DispatchResult =
   | { kind: "invalid"; reason: string };
 
 export type DispatchOptions = {
-  /** Allowed event types (lowercase GitHub event name). */
+  /** Allowed event labels, e.g. `release.published`. See {@link SUPPORTED_GITHUB_EVENTS}. */
   allowedEvents: ReadonlySet<string>;
 };
+
+/**
+ * GitHub's `X-GitHub-Event` header carries only the resource type
+ * (`release`, `pull_request`, `issues`), not the action. The action lives
+ * in `payload.action`. We split the user-facing whitelist label
+ * (`release.published`) so we can match both pieces against the wire.
+ */
+type EventAction = { event: string; action: string | null };
+
+function splitEventLabel(label: string): EventAction | null {
+  const dot = label.indexOf(".");
+  if (dot < 0) {
+    return null;
+  }
+  return { event: label.slice(0, dot), action: label.slice(dot + 1) };
+}
+
+function readAction(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const action = (payload as Record<string, unknown>).action;
+  return typeof action === "string" ? action : null;
+}
+
+function isMergedPullRequest(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+  const pr = (payload as Record<string, unknown>).pull_request;
+  if (!pr || typeof pr !== "object") {
+    return false;
+  }
+  return (pr as Record<string, unknown>).merged === true;
+}
 
 function isReleasePayload(value: unknown): value is GitHubReleasePayload {
   if (!value || typeof value !== "object") {
@@ -84,20 +119,30 @@ function isIssuesPayload(value: unknown): value is GitHubIssuesPayload {
 }
 
 /**
- * Decide what to do with an incoming GitHub webhook payload.
+ * Decide what to do with an incoming GitHub webhook.
+ *
+ * `headerEvent` comes from the `X-GitHub-Event` header (e.g. `release`),
+ * and the action is read from `payload.action`. The whitelist entry
+ * `release.published` therefore matches when the header is `release` AND
+ * `payload.action === "published"`.
  */
-export function dispatchPayload(eventName: string, payload: unknown, options: DispatchOptions): DispatchResult {
+export function dispatchPayload(
+  headerEvent: string,
+  payload: unknown,
+  options: DispatchOptions,
+): DispatchResult {
   const repoKey = extractRepoKey(payload);
 
   if (!repoKey) {
     return { kind: "invalid", reason: "missing repository.full_name" };
   }
 
-  if (!options.allowedEvents.has(eventName)) {
+  const matched = matchWhitelistEntry(headerEvent, payload, options.allowedEvents);
+  if (!matched) {
     return { kind: "ignored", reason: "unknown_event", repoKey };
   }
 
-  if (eventName === "release.published") {
+  if (matched === "release.published") {
     if (!isReleasePayload(payload)) {
       return { kind: "invalid", reason: "release payload shape mismatch" };
     }
@@ -107,7 +152,7 @@ export function dispatchPayload(eventName: string, payload: unknown, options: Di
       : { kind: "ignored", reason: "unknown_event", repoKey };
   }
 
-  if (eventName === "pull_request.closed" || eventName === "pull_request.merged") {
+  if (matched === "pull_request.closed") {
     if (!isPullRequestPayload(payload)) {
       return { kind: "invalid", reason: "pull_request payload shape mismatch" };
     }
@@ -117,7 +162,7 @@ export function dispatchPayload(eventName: string, payload: unknown, options: Di
       : { kind: "ignored", reason: "unknown_event", repoKey };
   }
 
-  if (eventName === "issues.opened") {
+  if (matched === "issues.opened") {
     if (!isIssuesPayload(payload)) {
       return { kind: "invalid", reason: "issues payload shape mismatch" };
     }
@@ -128,4 +173,42 @@ export function dispatchPayload(eventName: string, payload: unknown, options: Di
   }
 
   return { kind: "ignored", reason: "unknown_event", repoKey };
+}
+
+/**
+ * Return the whitelist entry that matches `(headerEvent, payload.action,
+ * payload.pull_request.merged)`, or `null` if none does. We use the
+ * returned label to dispatch to the right formatter — the label keeps
+ * the wire-facing naming (`release.published` etc.) while the predicate
+ * uses the actual GitHub event semantics.
+ */
+function matchWhitelistEntry(
+  headerEvent: string,
+  payload: unknown,
+  allowed: ReadonlySet<string>,
+): string | null {
+  const action = readAction(payload);
+  const merged = isMergedPullRequest(payload);
+
+  for (const entry of allowed) {
+    const parts = splitEventLabel(entry);
+    if (!parts) {
+      continue;
+    }
+    if (parts.event !== headerEvent) {
+      continue;
+    }
+    if (parts.action !== null && parts.action !== action) {
+      continue;
+    }
+    // `pull_request.closed` is a closed-and-merged PR per the issue #36
+    // acceptance criteria. A non-merged close is silently ignored so we
+    // don't spam Discord for every abandoned branch.
+    if (entry === "pull_request.closed" && !merged) {
+      continue;
+    }
+    return entry;
+  }
+
+  return null;
 }

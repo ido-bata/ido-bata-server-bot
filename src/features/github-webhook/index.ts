@@ -1,31 +1,39 @@
 import type { Client, TextChannel } from "discord.js";
 import { ChannelType, Events } from "discord.js";
 
+import type { HttpRouter } from "../../http/router.js";
 import { type GitHubWebhookConfig, readGitHubWebhookConfig } from "./config.js";
-import { type GitHubWebhookServerHandle, createGitHubWebhookServer } from "./server.js";
+import { registerWebhookRoutes, type WebhookRouteHandle } from "./server.js";
 
 export type { GitHubWebhookConfig } from "./config.js";
 export { readGitHubWebhookConfig } from "./config.js";
 
-export type { GitHubWebhookServerHandle } from "./server.js";
-
 export type RegisterGitHubWebhookOptions = {
   /** Override the parsed env config. */
   config?: GitHubWebhookConfig;
-  /** Disable the HTTP server. Useful for unit tests. */
-  disableServer?: boolean;
+  /**
+   * Inject the shared router (typically owned by the composition root in
+   * `src/index.ts`). When omitted, `registerGitHubWebhook` registers the
+   * route on a fresh router but does NOT bind a TCP listener — callers
+   * are expected to drive the lifecycle themselves (the test suite uses
+   * this seam to exercise the route handler without binding a port).
+   */
+  router?: HttpRouter;
 };
 
 export type GitHubWebhookRegistration = {
   config: GitHubWebhookConfig;
-  handle: GitHubWebhookServerHandle | null;
+  /** Always populated when `router` is supplied; useful for sharing rate-limit state. */
+  route: WebhookRouteHandle | null;
 };
 
 /**
  * Wire the GitHub webhook feature into the bot process.
  *
- * Spins up a minimal HTTP server (the same pattern used by the health /
- * metrics server in #26) that:
+ * Registers `/webhook/github` on the shared HTTP router so the webhook
+ * shares the same TCP port as `/health` and `/metrics` from issue #26
+ * (issue #36 acceptance criterion). The actual listener is owned by the
+ * composition root in `src/index.ts`.
  *
  * - Verifies `X-Hub-Signature-256` against `GITHUB_WEBHOOK_SECRET`
  * - Filters by `GITHUB_WEBHOOK_EVENTS` (default: release.published,
@@ -34,19 +42,18 @@ export type GitHubWebhookRegistration = {
  * - Posts the rendered Discord embed into `GITHUB_WEBHOOK_DISCORD_CHANNEL_ID`
  *
  * The Discord client is used only to resolve the configured channel and
- * post messages. If the bot is not ready yet, deliveries are skipped
- * (the rate-limit window keeps the situation from spiralling).
+ * post messages.
  */
-export async function registerGitHubWebhook(
+export function registerGitHubWebhook(
   client: Client,
   options: RegisterGitHubWebhookOptions = {},
-): Promise<GitHubWebhookRegistration> {
+): GitHubWebhookRegistration {
   const config = options.config ?? readGitHubWebhookConfig(process.env);
 
-  let handle: GitHubWebhookServerHandle | null = null;
+  let route: WebhookRouteHandle | null = null;
 
-  if (!options.disableServer) {
-    handle = await createGitHubWebhookServer({
+  if (options.router) {
+    route = registerWebhookRoutes(options.router, {
       host: config.host,
       port: config.port,
       secret: config.secret,
@@ -54,10 +61,9 @@ export async function registerGitHubWebhook(
       defaultDiscordChannelId: config.discordChannelId,
       deliver: (channelId, message) => deliverToChannel(client, channelId, message),
     });
-    console.log(`GitHub webhook server listening on http://${config.host}:${handle.port}`);
   }
 
-  return { config, handle };
+  return { config, route };
 }
 
 async function deliverToChannel(
@@ -82,13 +88,10 @@ async function deliverToChannel(
 // Surface a minimal Discord-ready listener so future features can react to
 // webhook deliveries (e.g. analytics). Currently unused but exported for
 // symmetry with other features.
-export function attachGitHubWebhookLogging(
-  client: Client,
-  handle: GitHubWebhookServerHandle,
-): void {
+export function attachGitHubWebhookLogging(client: Client, handle: WebhookRouteHandle): void {
   client.on(Events.ClientReady, () => {
     console.log(
-      `GitHub webhook ready: ${handle.port > 0 ? `http://127.0.0.1:${handle.port}/webhook/github` : "disabled"}`,
+      `GitHub webhook ready: /webhook/github registered (rate-limit bucket: ${handle.rateLimiter.size()})`,
     );
   });
 }

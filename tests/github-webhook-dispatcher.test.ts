@@ -35,9 +35,23 @@ const prPayload = {
   },
 };
 
+const issuePayload = {
+  action: "opened",
+  issue: {
+    number: 7,
+    title: "Webhook missing",
+    html_url: "https://github.com/acme/widget/issues/7",
+    user: { login: "reporter" },
+  },
+  repository: {
+    full_name: "acme/widget",
+    html_url: "https://github.com/acme/widget",
+  },
+};
+
 describe("GitHub webhook dispatcher", () => {
-  it("returns 'deliver' for a whitelisted release event", () => {
-    const result = dispatchPayload("release.published", releasePayload, { allowedEvents: allowed });
+  it("matches (header=release, action=published) against the release.published whitelist entry", () => {
+    const result = dispatchPayload("release", releasePayload, { allowedEvents: allowed });
     expect(result.kind).toBe("deliver");
     if (result.kind === "deliver") {
       expect(result.repoKey).toBe("acme/widget");
@@ -45,27 +59,38 @@ describe("GitHub webhook dispatcher", () => {
     }
   });
 
-  it("returns 'deliver' for a merged pull_request.closed event", () => {
-    const result = dispatchPayload("pull_request.closed", prPayload, { allowedEvents: allowed });
+  it("matches (header=pull_request, action=closed) with merged=true against pull_request.closed", () => {
+    const result = dispatchPayload("pull_request", prPayload, { allowedEvents: allowed });
     expect(result.kind).toBe("deliver");
   });
 
-  it("returns 'ignored' for a non-merged pull request", () => {
+  it("ignores a pull_request.closed that wasn't merged (issue #36 acceptance)", () => {
     const payload = {
       ...prPayload,
       pull_request: { ...prPayload.pull_request, merged: false, merged_at: null },
     };
-    const result = dispatchPayload("pull_request.closed", payload, { allowedEvents: allowed });
+    const result = dispatchPayload("pull_request", payload, { allowedEvents: allowed });
     expect(result.kind).toBe("ignored");
   });
 
-  it("returns 'ignored' for unknown events even when payload is valid", () => {
+  it("matches (header=issues, action=opened) against the issues.opened whitelist entry", () => {
+    const result = dispatchPayload("issues", issuePayload, { allowedEvents: allowed });
+    expect(result.kind).toBe("deliver");
+  });
+
+  it("ignores a release header with an action that isn't whitelisted (e.g. unpublished)", () => {
+    const payload = { ...releasePayload, action: "unpublished" };
+    const result = dispatchPayload("release", payload, { allowedEvents: allowed });
+    expect(result.kind).toBe("ignored");
+  });
+
+  it("ignores unknown event headers even when the payload is valid", () => {
     const result = dispatchPayload("star.created", releasePayload, { allowedEvents: allowed });
     expect(result.kind).toBe("ignored");
   });
 
   it("returns 'invalid' when the payload has no repository.full_name", () => {
-    const result = dispatchPayload("release.published", { action: "published" }, {
+    const result = dispatchPayload("release", { action: "published" }, {
       allowedEvents: allowed,
     });
     expect(result.kind).toBe("invalid");
@@ -73,7 +98,7 @@ describe("GitHub webhook dispatcher", () => {
 
   it("returns 'invalid' when a release payload is structurally broken", () => {
     const result = dispatchPayload(
-      "release.published",
+      "release",
       { action: "published", repository: { full_name: "acme/widget" } },
       { allowedEvents: allowed },
     );

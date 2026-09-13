@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 
+import { HttpRouter } from "../../http/router.js";
+import type { HttpServerHandle } from "../../http/server.js";
+import { createHttpServer } from "../../http/server.js";
 import { dispatchPayload } from "./dispatcher.js";
 import type { DiscordWebhookMessage } from "./formatter.js";
 import { GitHubWebhookRateLimiter } from "./rate-limit.js";
@@ -25,7 +26,7 @@ export type RequestBodySource = {
  */
 export type DeliverMessage = (channelId: string, message: DiscordWebhookMessage) => Promise<void>;
 
-export type GitHubWebhookServerOptions = {
+export type GitHubWebhookRouteOptions = {
   host: string;
   port: number;
   secret: string;
@@ -42,82 +43,90 @@ export type GitHubWebhookServerOptions = {
   rateLimitWindowMs?: number;
 };
 
-export type GitHubWebhookServerHandle = {
-  server: Server;
-  /** The actual bound port (may differ from the requested port when port=0). */
-  port: number;
-  close: () => Promise<void>;
+export type GitHubWebhookServerHandle = HttpServerHandle & {
   /**
    * Read the body of an incoming HTTP request as UTF-8 text. Exposed so
    * tests can exercise the same parsing path the server uses internally.
    */
   readBody: (req: RequestBodySource) => Promise<string>;
+  /**
+   * Invoke the `/webhook/github` handler against an `IncomingMessage` +
+   * `ServerResponse` pair without going through a TCP listener. Used by
+   * the test suite to assert response codes / bodies without binding a
+   * real socket.
+   */
   handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 };
 
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60_000;
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB — GitHub payloads are far smaller.
+const WEBHOOK_PATH = "/webhook/github";
 
-export function createGitHubWebhookServer(
-  options: GitHubWebhookServerOptions,
+/**
+ * Spin up a self-contained GitHub webhook HTTP server bound to
+ * `host:port`. Internally this builds a private router, registers the
+ * webhook route on it, and delegates to the shared HTTP server factory
+ * (`src/http/server.ts`) — the listener is the same one `/health` and
+ * `/metrics` (issue #26) will use once they migrate to `registerWebhookRoutes`.
+ *
+ * Tests use this entrypoint because they want a fully isolated listener
+ * on an ephemeral port. Production code calls `registerWebhookRoutes` on
+ * the router shared with the rest of the bot.
+ */
+export async function createGitHubWebhookServer(
+  options: GitHubWebhookRouteOptions,
 ): Promise<GitHubWebhookServerHandle> {
-  const {
-    host,
-    port: requestedPort,
-    secret,
-    allowedEvents,
-    deliver,
-    defaultDiscordChannelId = null,
-    rateLimitWindowMs = DEFAULT_RATE_LIMIT_WINDOW_MS,
-  } = options;
-
-  const rateLimiter = new GitHubWebhookRateLimiter(rateLimitWindowMs);
-
-  const server = createServer((req, res) => {
-    handleRequest(req, res, {
-      secret,
-      allowedEvents,
-      rateLimiter,
-      deliver,
-      defaultDiscordChannelId,
-      readBody,
-    }).catch((error: unknown) => {
-      console.error("github-webhook request failed", error);
-      if (!res.headersSent) {
-        sendJson(res, 500, { error: "internal_error" });
-      } else {
-        res.destroy();
-      }
-    });
+  const router = new HttpRouter();
+  const routeHandle = registerWebhookRoutes(router, options);
+  const handle = await createHttpServer({
+    host: options.host,
+    port: options.port,
+    router,
   });
 
-  return new Promise((resolve, reject) => {
-    const onError = (error: Error) => {
-      server.removeListener("error", onError);
-      reject(error);
-    };
-    server.once("error", onError);
-    server.listen(requestedPort, host, () => {
-      server.removeListener("error", onError);
-      const address = server.address();
-      const actualPort = typeof address === "object" && address ? (address as AddressInfo).port : requestedPort;
-      resolve({
-        server,
-        port: actualPort,
-        close: () => closeServer(server),
+  return {
+    ...handle,
+    readBody,
+    handle: (req, res) =>
+      handleRequest(req, res, {
+        secret: options.secret,
+        allowedEvents: options.allowedEvents,
+        rateLimiter: routeHandle.rateLimiter,
+        deliver: options.deliver,
+        defaultDiscordChannelId: options.defaultDiscordChannelId ?? null,
         readBody,
-        handle: (req, res) =>
-          handleRequest(req, res, {
-            secret,
-            allowedEvents,
-            rateLimiter,
-            deliver,
-            defaultDiscordChannelId,
-            readBody,
-          }),
-      });
-    });
-  });
+      }),
+  };
+}
+
+export type WebhookRouteHandle = {
+  rateLimiter: GitHubWebhookRateLimiter;
+};
+
+/**
+ * Register the GitHub webhook route on `router`. The composition root
+ * (`src/index.ts`) calls this so the webhook shares the same HTTP
+ * listener as `/health` and `/metrics` from issue #26.
+ */
+export function registerWebhookRoutes(
+  router: HttpRouter,
+  options: GitHubWebhookRouteOptions,
+): WebhookRouteHandle {
+  const rateLimiter = new GitHubWebhookRateLimiter(
+    options.rateLimitWindowMs ?? DEFAULT_RATE_LIMIT_WINDOW_MS,
+  );
+  const ctx: HandleContext = {
+    secret: options.secret,
+    allowedEvents: options.allowedEvents,
+    rateLimiter,
+    deliver: options.deliver,
+    defaultDiscordChannelId: options.defaultDiscordChannelId ?? null,
+    readBody,
+  };
+
+  router.add("POST", WEBHOOK_PATH, (req, res) => handleRequest(req, res, ctx));
+
+  return { rateLimiter };
 }
 
 type HandleContext = {
@@ -138,7 +147,7 @@ export async function handleRequest(
   const path = rawUrl.split("?", 1)[0] || "/";
   const method = (req.method ?? "GET").toUpperCase();
 
-  if (path !== "/webhook/github") {
+  if (path !== WEBHOOK_PATH) {
     sendJson(res, 404, { error: "not_found" });
     return;
   }
@@ -173,8 +182,8 @@ export async function handleRequest(
     return;
   }
 
-  const eventName = (headerValue(req, "x-github-event") ?? "").toLowerCase();
-  if (!eventName) {
+  const headerEvent = (headerValue(req, "x-github-event") ?? "").toLowerCase();
+  if (!headerEvent) {
     sendJson(res, 400, { error: "missing_github_event_header" });
     return;
   }
@@ -194,7 +203,12 @@ export async function handleRequest(
     }
   }
 
-  const result = dispatchPayload(eventName, payload, { allowedEvents: ctx.allowedEvents });
+  // The whitelist is keyed on labels like `release.published`, but
+  // GitHub's wire header carries only the event part (`release`). The
+  // dispatcher combines the header event with `payload.action` to
+  // produce the final match — see `matchWhitelistEntry` in
+  // `dispatcher.ts`.
+  const result = dispatchPayload(headerEvent, payload, { allowedEvents: ctx.allowedEvents });
 
   if (result.kind === "invalid") {
     console.warn(`github-webhook invalid payload: ${result.reason}`);
@@ -307,16 +321,4 @@ function sendJson(
     ...extraHeaders,
   });
   res.end(payload);
-}
-
-function closeServer(server: Server): Promise<void> {
-  return new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
 }
