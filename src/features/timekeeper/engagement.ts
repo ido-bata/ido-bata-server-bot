@@ -4,6 +4,16 @@ import { dirname, join } from "node:path";
 import type { TimekeeperEventKind } from "./timeline.js";
 import { fetchRandomWikipediaTopic, type WikipediaTopic } from "./wikipedia.js";
 
+export type TimekeeperSessionStatus = "completed" | "cancelled" | "interrupted";
+
+export type TimekeeperSessionRecord = {
+  endedAt: string;
+  id: string;
+  reason?: string;
+  startedAt: string;
+  status: TimekeeperSessionStatus;
+};
+
 export type TimekeeperSessionEngagement = {
   attendanceDatesByUserId: Map<string, Set<string>>;
   checkInsByUserId: Map<string, Set<number>>;
@@ -11,8 +21,15 @@ export type TimekeeperSessionEngagement = {
 };
 
 type PersistedAttendance = Record<string, string[]>;
+type PersistedSessionLog = TimekeeperSessionRecord[];
 
-const historyPath = join(process.cwd(), "data", "timekeeper-history.json");
+function getHistoryPath(): string {
+  return join(process.cwd(), "data", "timekeeper-history.json");
+}
+
+function getSessionLogPath(): string {
+  return join(process.cwd(), "data", "timekeeper-sessions.json");
+}
 
 type FortuneDependencies = {
   fetchRandomTopic?: () => Promise<WikipediaTopic>;
@@ -116,11 +133,76 @@ export function persistSessionAttendance(session: TimekeeperSessionEngagement, d
     serialized[userId] = [...dates].sort();
   }
 
+  const historyPath = getHistoryPath();
   mkdirSync(dirname(historyPath), { recursive: true });
   writeFileSync(historyPath, JSON.stringify(serialized, null, 2), "utf8");
 }
 
+/**
+ * Mark an in-progress session as interrupted (e.g. bot shutdown). Persists
+ * any check-ins / attendance already collected so the data is not lost, then
+ * appends a session-status entry to the session log.
+ *
+ * The session status log is the durable record of which sessions completed
+ * normally vs were cancelled or interrupted by a graceful shutdown.
+ */
+export function markSessionInterrupted(
+  session: TimekeeperSessionEngagement,
+  options: { reason?: string; status?: TimekeeperSessionStatus } = {},
+): void {
+  const status: TimekeeperSessionStatus = options.status ?? "interrupted";
+  const date = formatSessionDateFromId(session.id);
+
+  if (session.checkInsByUserId.size > 0) {
+    persistSessionAttendance(session, date);
+  }
+
+  const log = loadSessionLog();
+  log.push({
+    endedAt: new Date().toISOString(),
+    id: session.id,
+    reason: options.reason,
+    startedAt: session.id,
+    status,
+  });
+
+  const logPath = getSessionLogPath();
+  mkdirSync(dirname(logPath), { recursive: true });
+  writeFileSync(logPath, JSON.stringify(log, null, 2), "utf8");
+}
+
+export function loadSessionLog(): TimekeeperSessionRecord[] {
+  const logPath = getSessionLogPath();
+  if (!existsSync(logPath)) {
+    return [];
+  }
+
+  const raw = readFileSync(logPath, "utf8");
+  try {
+    const parsed = JSON.parse(raw) as PersistedSessionLog;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function formatSessionDateFromId(id: string): string {
+  const parsed = new Date(id);
+  if (Number.isNaN(parsed.getTime())) {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return formatter.format(parsed);
+}
+
 function loadAttendanceHistory(): Map<string, Set<string>> {
+  const historyPath = getHistoryPath();
   if (!existsSync(historyPath)) {
     return new Map();
   }

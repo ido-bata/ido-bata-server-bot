@@ -19,6 +19,7 @@ import {
   buildFortuneSummary,
   createSessionEngagement,
   getSessionCheckInCount,
+  markSessionInterrupted,
   parseCheckInCustomId,
   persistSessionAttendance,
   recordCheckIn,
@@ -59,6 +60,42 @@ type AnnouncementPlaybackResult = {
 let activeSession: TimekeeperSessionEngagement | null = null;
 let activeTimeline: TimekeeperTimelineEvent[] = [];
 let activeClock: SessionClock | null = null;
+
+/**
+ * Cancel the in-progress timekeeper session if any. Persists whatever state
+ * has been collected so far, marks the session as cancelled, and resets the
+ * module-level singletons. Returns true if a session was cancelled.
+ *
+ * Safe to call when no session is active — it then returns false and is a
+ * no-op. Used by the graceful-shutdown handler so a SIGINT/SIGTERM does not
+ * silently drop an in-progress session.
+ */
+export function cancelActiveSession(
+  options: { reason?: string; status?: "cancelled" | "interrupted" } = {},
+): boolean {
+  const session = activeSession;
+  if (!session) {
+    return false;
+  }
+
+  markSessionInterrupted(session, {
+    reason: options.reason ?? "shutdown",
+    status: options.status ?? "interrupted",
+  });
+
+  activeSession = null;
+  activeTimeline = [];
+  activeClock = null;
+  return true;
+}
+
+/**
+ * Read-only snapshot of the currently active session, if any. Used by tests
+ * and by the shutdown handler to decide whether anything needs to be flushed.
+ */
+export function getActiveSession(): TimekeeperSessionEngagement | null {
+  return activeSession;
+}
 
 export function registerTimekeeper(client: Client): void {
   client.on(Events.InteractionCreate, async (interaction) => {
