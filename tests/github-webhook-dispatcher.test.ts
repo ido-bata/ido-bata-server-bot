@@ -90,9 +90,13 @@ describe("GitHub webhook dispatcher", () => {
   });
 
   it("returns 'invalid' when the payload has no repository.full_name", () => {
-    const result = dispatchPayload("release", { action: "published" }, {
-      allowedEvents: allowed,
-    });
+    const result = dispatchPayload(
+      "release",
+      { action: "published" },
+      {
+        allowedEvents: allowed,
+      },
+    );
     expect(result.kind).toBe("invalid");
   });
 

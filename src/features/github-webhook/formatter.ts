@@ -11,13 +11,13 @@
  * forward the message to Discord.
  */
 
-export type DiscordEmbedField = {
+type DiscordEmbedField = {
   name: string;
   value: string;
   inline?: boolean;
 };
 
-export type DiscordEmbed = {
+type DiscordEmbed = {
   title: string;
   url?: string;
   description?: string;
@@ -110,11 +110,11 @@ function buildRepoFooter(repository: { full_name: string }): { text: string } {
   return { text: repository.full_name };
 }
 
-function buildSenderAuthor(sender: {
-  login: string;
-  html_url?: string;
-  avatar_url?: string;
-}): { name: string; url?: string; icon_url?: string } {
+function buildSenderAuthor(sender: { login: string; html_url?: string; avatar_url?: string }): {
+  name: string;
+  url?: string;
+  icon_url?: string;
+} {
   return {
     name: `@${sender.login}`,
     url: sender.html_url,

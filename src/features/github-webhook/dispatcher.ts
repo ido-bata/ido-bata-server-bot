@@ -3,10 +3,10 @@ import {
   extractRepoKey,
   formatIssueOpenedEvent,
   formatPullRequestEvent,
+  formatReleaseEvent,
   type GitHubIssuesPayload,
   type GitHubPullRequestPayload,
   type GitHubReleasePayload,
-  formatReleaseEvent,
 } from "./formatter.js";
 
 /**

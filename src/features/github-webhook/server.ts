@@ -13,7 +13,7 @@ import { verifySignature } from "./signature.js";
  *
  * `IncomingMessage` already implements it, so the seam is only used by tests.
  */
-export type RequestBodySource = {
+type RequestBodySource = {
   on(event: "data", listener: (chunk: Buffer) => void): void;
   on(event: "end", listener: () => void): void;
   on(event: "error", listener: (err: Error) => void): void;
@@ -24,7 +24,7 @@ export type RequestBodySource = {
  * composition root (src/index.ts) so tests can stub it without involving
  * a real Discord bot.
  */
-export type DeliverMessage = (channelId: string, message: DiscordWebhookMessage) => Promise<void>;
+type DeliverMessage = (channelId: string, message: DiscordWebhookMessage) => Promise<void>;
 
 export type GitHubWebhookRouteOptions = {
   host: string;
@@ -138,7 +138,7 @@ type HandleContext = {
   readBody: (req: RequestBodySource) => Promise<string>;
 };
 
-export async function handleRequest(
+async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
   ctx: HandleContext,
@@ -281,7 +281,7 @@ function headerValue(req: IncomingMessage, name: string): string | null {
   return null;
 }
 
-export function readBody(req: RequestBodySource): Promise<string> {
+function readBody(req: RequestBodySource): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;

@@ -44,7 +44,7 @@ describe("readConfig", () => {
     expect(config.enableGuildMembersIntent).toBe(true);
   });
 
-it("captures the role audit channel id when provided", () => {
+  it("captures the role audit channel id when provided", () => {
     const config = readConfig({
       DISCORD_TOKEN: "token",
       DISCORD_CLIENT_ID: "client-id",

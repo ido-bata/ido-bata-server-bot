@@ -41,11 +41,7 @@ describe("GitHub webhook formatter", () => {
     expect(embed?.color).toBe(0x2ea44f);
     expect(embed?.author?.name).toBe("@octocat");
     expect(embed?.footer?.text).toBe("acme/widget");
-    expect(embed?.fields?.map((f) => f.name)).toEqual([
-      "Repository",
-      "Tag",
-      "Release notes",
-    ]);
+    expect(embed?.fields?.map((f) => f.name)).toEqual(["Repository", "Tag", "Release notes"]);
   });
 
   it("returns null when the release action is not 'published'", () => {

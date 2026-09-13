@@ -1,12 +1,9 @@
 import type { Client, TextChannel } from "discord.js";
-import { ChannelType, Events } from "discord.js";
+import { ChannelType } from "discord.js";
 
 import type { HttpRouter } from "../../http/router.js";
 import { type GitHubWebhookConfig, readGitHubWebhookConfig } from "./config.js";
 import { registerWebhookRoutes, type WebhookRouteHandle } from "./server.js";
-
-export type { GitHubWebhookConfig } from "./config.js";
-export { readGitHubWebhookConfig } from "./config.js";
 
 export type RegisterGitHubWebhookOptions = {
   /** Override the parsed env config. */
@@ -83,15 +80,4 @@ async function deliverToChannel(
 
   const textChannel = channel as unknown as TextChannel;
   await textChannel.send({ embeds: message.embeds as never });
-}
-
-// Surface a minimal Discord-ready listener so future features can react to
-// webhook deliveries (e.g. analytics). Currently unused but exported for
-// symmetry with other features.
-export function attachGitHubWebhookLogging(client: Client, handle: WebhookRouteHandle): void {
-  client.on(Events.ClientReady, () => {
-    console.log(
-      `GitHub webhook ready: /webhook/github registered (rate-limit bucket: ${handle.rateLimiter.size()})`,
-    );
-  });
 }

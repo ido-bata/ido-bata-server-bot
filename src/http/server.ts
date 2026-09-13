@@ -28,9 +28,7 @@ export type CreateHttpServerOptions = {
  * same server as `/health` from issue #26) and avoids the operational
  * cost of one listener per feature.
  */
-export function createHttpServer(
-  options: CreateHttpServerOptions,
-): Promise<HttpServerHandle> {
+export function createHttpServer(options: CreateHttpServerOptions): Promise<HttpServerHandle> {
   const { host, port: requestedPort, router } = options;
 
   const server = createServer((req, res) => {
@@ -65,7 +63,11 @@ export function createHttpServer(
   });
 }
 
-async function invoke(router: HttpRouter, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function invoke(
+  router: HttpRouter,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
   await router.dispatch(req, res);
 }
 

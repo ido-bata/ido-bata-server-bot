@@ -7,9 +7,7 @@
  * The class is intentionally tiny and dependency-free — callers can pass
  * their own `now()` for deterministic tests.
  */
-export type RateLimitDecision =
-  | { allowed: true }
-  | { allowed: false; retryAfterMs: number };
+export type RateLimitDecision = { allowed: true } | { allowed: false; retryAfterMs: number };
 
 export class GitHubWebhookRateLimiter {
   private readonly lastSeenAt = new Map<string, number>();

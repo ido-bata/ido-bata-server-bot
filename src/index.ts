@@ -1,9 +1,8 @@
 import "dotenv/config";
 
 import { join } from "node:path";
-
-import { ChannelType, Events } from "discord.js";
 import type { TextChannel } from "discord.js";
+import { ChannelType, Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
@@ -35,14 +34,14 @@ import { registerShutdownHandler } from "./features/shutdown/handler.js";
 import { deploySlashCommands } from "./features/slash-commands/deploy.js";
 import { registerSlashCommandHandlers } from "./features/slash-commands/handler.js";
 import { createSlashCommandRegistry } from "./features/slash-commands/registry.js";
+import { isSpotifyConfigured, readSpotifyConfig } from "./features/spotify/config.js";
+import { registerSpotifyNowPlaying } from "./features/spotify/service.js";
 import { registerStarboardHandlers } from "./features/starboard/handler.js";
 import { readSnapshotConfig } from "./features/state-snapshot/config.js";
 import {
   createSnapshotRuntime,
   registerStateSnapshotScheduler,
 } from "./features/state-snapshot/service.js";
-import { isSpotifyConfigured, readSpotifyConfig } from "./features/spotify/config.js";
-import { registerSpotifyNowPlaying } from "./features/spotify/service.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 import { registerTimekeeperCommandHandlers } from "./features/timekeeper-commands/handler.js";
 import { registerWelcomeHandlers } from "./features/welcome/handler.js";
@@ -253,42 +252,14 @@ async function main(): Promise<void> {
     icalService.stopScheduler();
   });
 
-  // Build the shared HTTP router. Each feature that exposes HTTP routes
-  // (`/health`, `/metrics`, `/webhook/github`, …) registers its handlers
-  // here, and the composition root binds a single TCP listener to serve
-  // them all. See issue #36 acceptance criteria and `docs/architecture.md`.
-  const router = new HttpRouter();
-
   if (process.env.GITHUB_WEBHOOK_SECRET) {
-    registerGitHubWebhook(client, { router });
+    try {
+      await registerGitHubWebhook(client);
+    } catch (error) {
+      console.error("Failed to start GitHub webhook server", error);
+    }
   } else {
-    console.log(
-      "GitHub webhook server is disabled (set GITHUB_WEBHOOK_SECRET to enable).",
-    );
-  }
-
-  // The shared HTTP listener uses the configured webhook port by default
-  // so deployments only need to expose one endpoint. The port defaults
-  // live in `readGitHubWebhookConfig`; the same value is reused here.
-  const webhookConfig = process.env.GITHUB_WEBHOOK_SECRET
-    ? readGitHubWebhookConfig(process.env)
-    : null;
-
-  if (webhookConfig) {
-    const handle = await createHttpServer({
-      host: webhookConfig.host,
-      port: webhookConfig.port,
-      router,
-    });
-    console.log(`HTTP server listening on http://${webhookConfig.host}:${handle.port}`);
-
-    const shutdown = async () => {
-      await handle.close();
-      client.destroy();
-      process.exit(0);
-    };
-    process.once("SIGINT", shutdown);
-    process.once("SIGTERM", shutdown);
+    console.log("GitHub webhook server is disabled (set GITHUB_WEBHOOK_SECRET to enable).");
   }
 
   await client.login(config.discordToken);

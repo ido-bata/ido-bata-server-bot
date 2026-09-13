@@ -293,7 +293,9 @@ describe("GitHub webhook HTTP server", () => {
 
       expect(captured.status()).toBe(200);
       expect(deliverCalls).toHaveLength(1);
-      expect((deliverCalls[0].embeds[0] as { title: string }).title.startsWith("Issue #7")).toBe(true);
+      expect((deliverCalls[0].embeds[0] as { title: string }).title.startsWith("Issue #7")).toBe(
+        true,
+      );
     } finally {
       await stop();
     }
