@@ -29,7 +29,7 @@ import {
 } from "../src/features/state-snapshot/snapshot.js";
 import {
   createCompositeUploader,
-  createGitHubBranchUploader,
+  createGitHubApiUploader,
   createNoopUploader,
 } from "../src/features/state-snapshot/uploaders.js";
 
@@ -385,14 +385,14 @@ describe("state-snapshot uploaders", () => {
   it("composite uploader aggregates names", () => {
     const uploader = createCompositeUploader([
       createNoopUploader(),
-      createGitHubBranchUploader({
+      createGitHubApiUploader({
         branch: "state-snapshots",
-        remote: "origin",
-        workdir: "/tmp",
+        repo: "ido-bata/ido-bata-server-bot",
+        token: "ghp_test",
       }),
     ]);
     expect(uploader.name).toContain("noop");
-    expect(uploader.name).toContain("github-branch");
+    expect(uploader.name).toContain("github-api");
   });
 
   it("composite uploader raises when every uploader fails", async () => {
@@ -436,11 +436,11 @@ describe("state-snapshot uploaders", () => {
     expect(goodCalled).toBe(true);
   });
 
-  it("github-branch uploader throws when the snapshot file is missing", async () => {
-    const uploader = createGitHubBranchUploader({
+  it("github-api uploader throws when the snapshot file is missing", async () => {
+    const uploader = createGitHubApiUploader({
       branch: "state-snapshots",
-      remote: "origin",
-      workdir: "/tmp",
+      repo: "ido-bata/ido-bata-server-bot",
+      token: "ghp_test",
     });
     await expect(
       uploader.upload({
@@ -450,5 +450,96 @@ describe("state-snapshot uploaders", () => {
         path: "/nonexistent.snap.enc",
       }),
     ).rejects.toThrow(/no longer exists/);
+  });
+
+  it("github-api uploader drives the Git Data API end-to-end", async () => {
+    const workDir = createTempDir("gh-api-");
+    const snapshotPath = join(workDir, "demo.snap.enc");
+    writeFileSync(snapshotPath, Buffer.from("encrypted-blob-bytes"));
+
+    const headSha = "headcommit123";
+    const treeSha = "basetree123";
+    const blobSha = "blobsha123";
+    const newTreeSha = "newtree123";
+    const newCommitSha = "newcommit123";
+
+    const calls: { method: string; path: string }[] = [];
+    const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const path = url.replace("https://api.github.com", "");
+      calls.push({ method, path });
+      if (method === "GET" && path === "/repos/o/r/git/ref/heads/main") {
+        return new Response(JSON.stringify({ object: { sha: headSha } }), { status: 200 });
+      }
+      if (method === "GET" && path === `/repos/o/r/git/commits/${headSha}`) {
+        return new Response(JSON.stringify({ tree: { sha: treeSha } }), { status: 200 });
+      }
+      if (method === "POST" && path === "/repos/o/r/git/blobs") {
+        return new Response(JSON.stringify({ sha: blobSha }), { status: 201 });
+      }
+      if (method === "POST" && path === "/repos/o/r/git/trees") {
+        return new Response(JSON.stringify({ sha: newTreeSha }), { status: 201 });
+      }
+      if (method === "POST" && path === "/repos/o/r/git/commits") {
+        return new Response(JSON.stringify({ sha: newCommitSha }), { status: 201 });
+      }
+      if (method === "PATCH" && path === "/repos/o/r/git/refs/heads/main") {
+        return new Response(JSON.stringify({ sha: newCommitSha }), { status: 200 });
+      }
+      return new Response("unexpected", { status: 500 });
+    };
+
+    const uploader = createGitHubApiUploader({
+      branch: "main",
+      fetchImpl: fetchImpl as typeof fetch,
+      repo: "o/r",
+      token: "ghp_test",
+    });
+
+    await uploader.upload({
+      createdAt: new Date().toISOString(),
+      files: [],
+      id: "demo",
+      path: snapshotPath,
+    });
+
+    const expected = [
+      { method: "GET", path: "/repos/o/r/git/ref/heads/main" },
+      { method: "GET", path: `/repos/o/r/git/commits/${headSha}` },
+      { method: "POST", path: "/repos/o/r/git/blobs" },
+      { method: "POST", path: "/repos/o/r/git/trees" },
+      { method: "POST", path: "/repos/o/r/git/commits" },
+      { method: "PATCH", path: "/repos/o/r/git/refs/heads/main" },
+    ];
+    expect(calls).toEqual(expected);
+
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("github-api uploader surfaces non-2xx responses", async () => {
+    const workDir = createTempDir("gh-api-err-");
+    const snapshotPath = join(workDir, "demo.snap.enc");
+    writeFileSync(snapshotPath, Buffer.from("encrypted-blob-bytes"));
+
+    const fetchImpl = async (): Promise<Response> =>
+      new Response(JSON.stringify({ message: "boom" }), { status: 401 });
+
+    const uploader = createGitHubApiUploader({
+      branch: "main",
+      fetchImpl: fetchImpl as typeof fetch,
+      repo: "o/r",
+      token: "ghp_test",
+    });
+
+    await expect(
+      uploader.upload({
+        createdAt: new Date().toISOString(),
+        files: [],
+        id: "demo",
+        path: snapshotPath,
+      }),
+    ).rejects.toThrow(/401|boom/);
+
+    rmSync(workDir, { recursive: true, force: true });
   });
 });

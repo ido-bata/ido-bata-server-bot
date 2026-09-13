@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 const ALGORITHM = "aes-256-gcm";
 const IV_BYTES = 12;
@@ -59,11 +59,4 @@ export function decryptBuffer(payload: EncryptedPayload, key: Buffer): Buffer {
   const decipher = createDecipheriv(ALGORITHM, key, payload.iv);
   decipher.setAuthTag(payload.authTag);
   return Buffer.concat([decipher.update(payload.ciphertext), decipher.final()]);
-}
-
-export function verifyKey(expectedKey: Buffer, candidateKey: Buffer): boolean {
-  if (expectedKey.length !== candidateKey.length) {
-    return false;
-  }
-  return timingSafeEqual(expectedKey, candidateKey);
 }

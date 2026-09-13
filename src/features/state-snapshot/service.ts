@@ -12,12 +12,12 @@ import {
 } from "./snapshot.js";
 import {
   createCompositeUploader,
-  createGitHubBranchUploader,
+  createGitHubApiUploader,
   createNoopUploader,
   type SnapshotUploader,
 } from "./uploaders.js";
 
-export type SnapshotDependencies = {
+type SnapshotDependencies = {
   encryptionKey?: string;
   runOnReady?: boolean;
   clock?: () => Date;
@@ -30,13 +30,6 @@ export type SnapshotRuntime = {
   runOnReady: boolean;
   clock: () => Date;
   uploader: SnapshotUploader;
-};
-
-export type SnapshotRunResult = {
-  created: SnapshotMetadata | null;
-  deleted: string[];
-  uploadedTo: string[];
-  error?: string;
 };
 
 export function createSnapshotRuntime(
@@ -107,66 +100,46 @@ export function registerStateSnapshotScheduler(
   };
 }
 
-export async function runSnapshotOnce(runtime: SnapshotRuntime): Promise<SnapshotRunResult> {
+async function runSnapshotOnce(runtime: SnapshotRuntime): Promise<void> {
   ensureSnapshotDir(runtime.config.snapshotDir);
-  try {
-    const created = await createSnapshot(
-      {
-        snapshotDir: runtime.config.snapshotDir,
-        sourcePaths: runtime.config.sourcePaths,
-      },
-      runtime.encryptionKey,
-      runtime.clock(),
-    );
+  const created = await createSnapshot(
+    {
+      snapshotDir: runtime.config.snapshotDir,
+      sourcePaths: runtime.config.sourcePaths,
+    },
+    runtime.encryptionKey,
+    runtime.clock(),
+  );
 
-    const plan = planRetention(
-      listSnapshots(runtime.config.snapshotDir, runtime.encryptionKey),
-      toRetentionPolicy(runtime.config),
-      runtime.clock(),
-    );
-    await applyRetentionPlan(plan);
+  const plan = planRetention(
+    listSnapshots(runtime.config.snapshotDir, runtime.encryptionKey),
+    toRetentionPolicy(runtime.config),
+    runtime.clock(),
+  );
+  await applyRetentionPlan(plan);
 
-    const uploadedTo = await uploadSnapshot(runtime, created);
-
-    return {
-      created,
-      deleted: plan.delete.map((entry) => entry.path),
-      uploadedTo,
-    };
-  } catch (error) {
-    return {
-      created: null,
-      deleted: [],
-      uploadedTo: [],
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
+  await uploadSnapshot(runtime, created);
 }
 
-async function uploadSnapshot(
-  runtime: SnapshotRuntime,
-  created: SnapshotMetadata,
-): Promise<string[]> {
+async function uploadSnapshot(runtime: SnapshotRuntime, created: SnapshotMetadata): Promise<void> {
   try {
     await runtime.uploader.upload(created);
-    return [runtime.uploader.name];
   } catch (error) {
     console.error(
       `[StateSnapshot] Uploader "${runtime.uploader.name}" failed for ${created.path}`,
       error,
     );
-    return [];
   }
 }
 
 function buildUploaderFromConfig(config: SnapshotConfig): SnapshotUploader {
   const parts: SnapshotUploader[] = [];
-  if (config.uploadRemote && config.uploadBranch) {
+  if (config.uploadRepo && config.uploadBranch && config.uploadToken) {
     parts.push(
-      createGitHubBranchUploader({
+      createGitHubApiUploader({
         branch: config.uploadBranch,
-        remote: config.uploadRemote,
-        workdir: process.cwd(),
+        repo: config.uploadRepo,
+        token: config.uploadToken,
       }),
     );
   }

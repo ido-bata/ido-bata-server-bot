@@ -1,5 +1,4 @@
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
 
 import type { SnapshotMetadata } from "./snapshot.js";
@@ -9,35 +8,106 @@ export type SnapshotUploader = {
   upload(snapshot: SnapshotMetadata): Promise<void>;
 };
 
-export type GitHubBranchUploaderOptions = {
-  remote: string;
+export type GitHubApiUploaderOptions = {
+  repo: string;
   branch: string;
-  workdir: string;
+  token: string;
+  fetchImpl?: typeof fetch;
+  apiBaseUrl?: string;
 };
 
-export function createGitHubBranchUploader(options: GitHubBranchUploaderOptions): SnapshotUploader {
-  const { remote, branch, workdir } = options;
+// Uploads an encrypted snapshot to a GitHub branch via the Git Data REST API.
+//
+// We use the REST API (not a local `git checkout`) because:
+//   - The container runtime does not ship a `git` binary or `.git` directory.
+//   - Mutating `process.cwd()` (the live worktree) would collide with the
+//     running bot's repository state on a dev host.
+//   - The GitHub Actions workflow picks up the snapshot from the same branch,
+//     so the upload only needs to commit a single file to the branch root.
+export function createGitHubApiUploader(options: GitHubApiUploaderOptions): SnapshotUploader {
+  const { repo, branch, token } = options;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const apiBaseUrl = options.apiBaseUrl ?? "https://api.github.com";
+
+  const headers = {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+    "User-Agent": "ido-bata-state-snapshot-uploader",
+    "X-GitHub-Api-Version": "2022-11-28",
+  } as const;
+
+  const request = async (method: string, path: string, body?: unknown): Promise<Response> => {
+    const response = await fetchImpl(`${apiBaseUrl}${path}`, {
+      body: body === undefined ? undefined : JSON.stringify(body),
+      headers,
+      method,
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(
+        `GitHub API ${method} ${path} failed with ${response.status}: ${detail.slice(0, 500)}`,
+      );
+    }
+    return response;
+  };
+
   return {
-    name: `github-branch:${remote}/${branch}`,
+    name: `github-api:${repo}:${branch}`,
     async upload(snapshot: SnapshotMetadata): Promise<void> {
       if (!existsSync(snapshot.path)) {
         throw new Error(`Snapshot file no longer exists on disk: ${snapshot.path}`);
       }
       const fileName = basename(snapshot.path);
-      // Stage the snapshot file at the repo root so the GitHub Actions
-      // workflow can pick it up via `actions/upload-artifact` with a
-      // predictable path regardless of where the bot stores it.
-      runGit(workdir, ["checkout", "-B", branch, "--"]);
-      runGit(workdir, ["add", "--", fileName]);
-      // `--allow-empty` keeps the branch healthy even if the same snapshot
-      // file name (unlikely, but possible across months) is staged twice.
-      runGit(workdir, [
-        "commit",
-        "--allow-empty",
-        "-m",
-        `snapshot: ${fileName} (${snapshot.createdAt})`,
-      ]);
-      runGit(workdir, ["push", "--force-with-lease", remote, branch]);
+      const fileBytes = readFileSync(snapshot.path);
+      const fileBase64 = fileBytes.toString("base64");
+
+      // 1. Resolve the branch's current head commit.
+      const refResponse = await request("GET", `/repos/${repo}/git/ref/heads/${branch}`);
+      const refData = (await refResponse.json()) as { object: { sha: string } };
+      const headCommitSha = refData.object.sha;
+
+      // 2. Fetch the head commit so we can build a new tree on top of it.
+      const commitResponse = await request("GET", `/repos/${repo}/git/commits/${headCommitSha}`);
+      const commitData = (await commitResponse.json()) as { tree: { sha: string } };
+      const baseTreeSha = commitData.tree.sha;
+
+      // 3. Upload the encrypted bytes as a blob (no working tree required).
+      const blobResponse = await request("POST", `/repos/${repo}/git/blobs`, {
+        content: fileBase64,
+        encoding: "base64",
+      });
+      const blobData = (await blobResponse.json()) as { sha: string };
+
+      // 4. Build a new tree that reuses the previous tree and adds this snapshot.
+      const treeResponse = await request("POST", `/repos/${repo}/git/trees`, {
+        base_tree: baseTreeSha,
+        tree: [
+          {
+            mode: "100644",
+            path: fileName,
+            sha: blobData.sha,
+            type: "blob",
+          },
+        ],
+      });
+      const treeData = (await treeResponse.json()) as { sha: string };
+
+      // 5. Commit the new tree onto the branch's head.
+      const newCommitResponse = await request("POST", `/repos/${repo}/git/commits`, {
+        message: `snapshot: ${fileName} (${snapshot.createdAt})`,
+        parents: [headCommitSha],
+        tree: treeData.sha,
+      });
+      const newCommitData = (await newCommitResponse.json()) as { sha: string };
+
+      // 6. Fast-forward the branch ref to the new commit. This is the
+      //    equivalent of a `--ff-only` push; it never rewrites published
+      //    history and never touches the local working tree.
+      await request("PATCH", `/repos/${repo}/git/refs/heads/${branch}`, {
+        force: false,
+        sha: newCommitData.sha,
+      });
     },
   };
 }
@@ -73,18 +143,4 @@ export function createCompositeUploader(uploaders: SnapshotUploader[]): Snapshot
       }
     },
   };
-}
-
-function runGit(cwd: string, args: string[]): void {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-  if (result.error) {
-    throw new Error(`git ${args.join(" ")} failed: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      `git ${args.join(" ")} exited with status ${result.status}: ${(
-        result.stderr || result.stdout || ""
-      ).trim()}`,
-    );
-  }
 }

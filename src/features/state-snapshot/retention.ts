@@ -1,6 +1,5 @@
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 
-import { decryptBuffer, resolveEncryptionKey } from "./encryption.js";
 import type { SnapshotMetadata } from "./snapshot.js";
 
 export type RetentionPolicy = {
@@ -9,9 +8,9 @@ export type RetentionPolicy = {
   monthlyRetention: number;
 };
 
-export type Bucket = "daily" | "weekly" | "monthly";
+type Bucket = "daily" | "weekly" | "monthly";
 
-export type ClassifiedSnapshot = {
+type ClassifiedSnapshot = {
   bucket: Bucket;
   metadata: SnapshotMetadata;
 };
@@ -153,7 +152,7 @@ function monthKeyOf(snapshot: SnapshotMetadata): string {
 // ISO week key (e.g. "2026-W12") based on UTC components of createdAt.
 // Uses the standard algorithm: the ISO week is determined by the Thursday of
 // the calendar week the date falls in.
-export function isoWeekKeyOf(snapshot: SnapshotMetadata): string {
+function isoWeekKeyOf(snapshot: SnapshotMetadata): string {
   return isoWeekKeyOfDate(new Date(snapshot.createdAt));
 }
 
@@ -186,28 +185,4 @@ export function applyRetentionPlan(
     }
   }
   return Promise.resolve();
-}
-
-export function verifySnapshotIntegrity(snapshotPath: string, hexKey: string): boolean {
-  if (!existsSync(snapshotPath)) {
-    return false;
-  }
-  try {
-    const key = resolveEncryptionKey(hexKey);
-    const buffer = readFileSync(snapshotPath);
-    if (buffer.length < 28) {
-      return false;
-    }
-    const iv = buffer.subarray(0, 12);
-    const authTag = buffer.subarray(12, 28);
-    const ciphertext = buffer.subarray(28);
-    decryptBuffer({ authTag, ciphertext, iv }, key);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function isoDateOf(metadata: SnapshotMetadata): string {
-  return metadata.createdAt.slice(0, ISO_DATE_LENGTH);
 }

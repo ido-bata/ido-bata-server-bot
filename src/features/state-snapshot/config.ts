@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const snapshotConfigSchema = z.object({
+const snapshotConfigSchema = z.object({
   snapshotDir: z.string().min(1),
   sourcePaths: z.array(z.string().min(1)).min(1),
   dailyRetention: z.number().int().positive(),
@@ -8,8 +8,9 @@ export const snapshotConfigSchema = z.object({
   monthlyRetention: z.number().int().positive(),
   snapshotHourJst: z.number().int().min(0).max(23),
   snapshotMinuteJst: z.number().int().min(0).max(59),
-  uploadRemote: z.string().optional(),
+  uploadRepo: z.string().optional(),
   uploadBranch: z.string().min(1).optional(),
+  uploadToken: z.string().min(1).optional(),
 });
 
 export type SnapshotConfig = z.infer<typeof snapshotConfigSchema>;
@@ -22,8 +23,9 @@ export type SnapshotRuntimeOptions = {
   monthlyRetention?: number;
   snapshotHourJst?: number;
   snapshotMinuteJst?: number;
-  uploadRemote?: string;
+  uploadRepo?: string;
   uploadBranch?: string;
+  uploadToken?: string;
 };
 
 export function readSnapshotConfig(options: SnapshotRuntimeOptions = {}): SnapshotConfig {
@@ -35,11 +37,17 @@ export function readSnapshotConfig(options: SnapshotRuntimeOptions = {}): Snapsh
     monthlyRetention: options.monthlyRetention ?? 12,
     snapshotHourJst: options.snapshotHourJst ?? 3,
     snapshotMinuteJst: options.snapshotMinuteJst ?? 0,
-    uploadRemote: options.uploadRemote ?? process.env.STATE_SNAPSHOT_UPLOAD_REMOTE ?? undefined,
-    uploadBranch: options.uploadBranch ?? process.env.STATE_SNAPSHOT_UPLOAD_BRANCH ?? undefined,
+    uploadRepo:
+      options.uploadRepo ??
+      process.env.STATE_SNAPSHOT_UPLOAD_REPO ??
+      process.env.GITHUB_REPOSITORY ??
+      undefined,
+    uploadBranch:
+      options.uploadBranch ?? process.env.STATE_SNAPSHOT_UPLOAD_BRANCH ?? "state-snapshots",
+    uploadToken:
+      options.uploadToken ??
+      process.env.STATE_SNAPSHOT_UPLOAD_TOKEN ??
+      process.env.GITHUB_TOKEN ??
+      undefined,
   });
-}
-
-export function isSnapshotConfigured(config: SnapshotConfig): boolean {
-  return config.sourcePaths.length > 0;
 }

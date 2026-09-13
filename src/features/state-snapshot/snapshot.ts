@@ -20,7 +20,7 @@ export type SnapshotFileEntry = {
   sha256: string;
 };
 
-export type SnapshotManifest = {
+type SnapshotManifest = {
   createdAt: string;
   files: SnapshotFileEntry[];
   schemaVersion: 1;
@@ -61,7 +61,7 @@ export function buildSnapshotId(now: Date): string {
   );
 }
 
-export function snapshotFilePath(snapshotDir: string, id: string): string {
+function snapshotFilePath(snapshotDir: string, id: string): string {
   return join(snapshotDir, `${id}.snap.enc`);
 }
 
@@ -167,7 +167,7 @@ export function readSnapshotMetadata(
   };
 }
 
-export async function snapshotFile(sourcePath: string): Promise<SnapshotFileEntry> {
+async function snapshotFile(sourcePath: string): Promise<SnapshotFileEntry> {
   if (!existsSync(sourcePath)) {
     return {
       missing: true,
@@ -191,7 +191,7 @@ export async function snapshotFile(sourcePath: string): Promise<SnapshotFileEntr
   };
 }
 
-export async function collectSourceFiles(sourcePaths: string[]): Promise<SnapshotFileEntry[]> {
+async function collectSourceFiles(sourcePaths: string[]): Promise<SnapshotFileEntry[]> {
   const entries: SnapshotFileEntry[] = [];
   for (const sourcePath of sourcePaths) {
     entries.push(await snapshotFile(sourcePath));
