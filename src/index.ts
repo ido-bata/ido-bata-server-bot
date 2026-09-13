@@ -5,6 +5,7 @@ import { Events } from "discord.js";
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
+import { registerScheduledAnnouncements } from "./features/scheduled-announcements/service.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 
 async function main(): Promise<void> {
@@ -18,6 +19,7 @@ async function main(): Promise<void> {
   });
 
   registerReactionRoleHandlers(client);
+  registerScheduledAnnouncements(client);
   registerTimekeeper(client);
 
   await client.login(config.discordToken);
