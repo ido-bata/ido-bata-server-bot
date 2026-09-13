@@ -8,6 +8,7 @@ export type CreateDiscordClientOptions = {
 export function createDiscordClient(options?: CreateDiscordClientOptions): Client {
   const intents = [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildVoiceStates,
