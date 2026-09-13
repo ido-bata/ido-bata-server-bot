@@ -4,6 +4,7 @@ import { Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
+import { registerErrorForwarder } from "./features/error-forwarder/service.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
@@ -21,6 +22,7 @@ async function main(): Promise<void> {
     console.log(`Logged in as ${readyClient.user.tag}`);
   });
 
+  registerErrorForwarder(client);
   registerReactionRoleHandlers(client);
   registerMemberAuditHandlers(client, {
     config: memberAuditConfig,
