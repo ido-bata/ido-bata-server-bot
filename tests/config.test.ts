@@ -15,6 +15,7 @@ describe("readConfig", () => {
       discordClientId: "client-id",
       discordGuildId: "guild-id",
       enableMessageContentIntent: false,
+      roleAuditChannelId: null,
     });
   });
 
@@ -27,6 +28,17 @@ describe("readConfig", () => {
     });
 
     expect(config.enableMessageContentIntent).toBe(true);
+  });
+
+  it("captures the role audit channel id when provided", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_ID: "guild-id",
+      ROLE_AUDIT_CHANNEL_ID: "audit-channel-1",
+    });
+
+    expect(config.roleAuditChannelId).toBe("audit-channel-1");
   });
 
   it("throws when a required variable is missing", () => {
