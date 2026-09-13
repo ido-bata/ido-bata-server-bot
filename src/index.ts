@@ -4,6 +4,7 @@ import { Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
+import { registerHealthMetrics } from "./features/health-metrics/index.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 
@@ -19,6 +20,7 @@ async function main(): Promise<void> {
 
   registerReactionRoleHandlers(client);
   registerTimekeeper(client);
+  await registerHealthMetrics(client);
 
   await client.login(config.discordToken);
 }

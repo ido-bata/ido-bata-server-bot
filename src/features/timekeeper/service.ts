@@ -60,6 +60,17 @@ let activeSession: TimekeeperSessionEngagement | null = null;
 let activeTimeline: TimekeeperTimelineEvent[] = [];
 let activeClock: SessionClock | null = null;
 
+/**
+ * Read-only accessor for the observability layer. Returns the number of
+ * timekeeper sessions currently active in this process (0 or 1 — the
+ * service runs a single session at a time). Exposed so the health/metrics
+ * endpoints can report `bot_timekeeper_active_sessions` without poking
+ * at module-level state directly.
+ */
+export function getActiveTimekeeperSessionCount(): number {
+  return activeSession ? 1 : 0;
+}
+
 export function registerTimekeeper(client: Client): void {
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isButton()) {
