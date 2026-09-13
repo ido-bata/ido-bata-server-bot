@@ -16,6 +16,7 @@ describe("readConfig", () => {
       discordGuildId: "guild-id",
       enableMessageContentIntent: false,
       enableGuildMembersIntent: false,
+      enablePresenceIntent: false,
     });
   });
 
@@ -39,6 +40,17 @@ describe("readConfig", () => {
     });
 
     expect(config.enableGuildMembersIntent).toBe(true);
+  });
+
+  it("enables presence intent only when explicitly configured", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_ID: "guild-id",
+      DISCORD_ENABLE_PRESENCE: "true",
+    });
+
+    expect(config.enablePresenceIntent).toBe(true);
   });
 
   it("throws when a required variable is missing", () => {

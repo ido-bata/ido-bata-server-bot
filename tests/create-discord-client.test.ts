@@ -13,6 +13,7 @@ describe("createDiscordClient", () => {
     expect(client.options.intents.has(GatewayIntentBits.GuildVoiceStates)).toBe(true);
     expect(client.options.intents.has(GatewayIntentBits.MessageContent)).toBe(false);
     expect(client.options.intents.has(GatewayIntentBits.GuildMembers)).toBe(false);
+    expect(client.options.intents.has(GatewayIntentBits.GuildPresences)).toBe(false);
   });
 
   it("includes message content intent only when enabled", () => {
@@ -25,5 +26,11 @@ describe("createDiscordClient", () => {
     const client = createDiscordClient({ enableGuildMembersIntent: true });
 
     expect(client.options.intents.has(GatewayIntentBits.GuildMembers)).toBe(true);
+  });
+
+  it("includes guild presences intent only when enabled", () => {
+    const client = createDiscordClient({ enablePresenceIntent: true });
+
+    expect(client.options.intents.has(GatewayIntentBits.GuildPresences)).toBe(true);
   });
 });

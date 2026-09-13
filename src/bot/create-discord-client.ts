@@ -3,6 +3,7 @@ import { Client, GatewayIntentBits, Partials } from "discord.js";
 export type CreateDiscordClientOptions = {
   enableMessageContentIntent?: boolean;
   enableGuildMembersIntent?: boolean;
+  enablePresenceIntent?: boolean;
 };
 
 export function createDiscordClient(options?: CreateDiscordClientOptions): Client {
@@ -19,6 +20,10 @@ export function createDiscordClient(options?: CreateDiscordClientOptions): Clien
 
   if (options?.enableGuildMembersIntent) {
     intents.push(GatewayIntentBits.GuildMembers);
+  }
+
+  if (options?.enablePresenceIntent) {
+    intents.push(GatewayIntentBits.GuildPresences);
   }
 
   return new Client({
