@@ -9,6 +9,7 @@ import { registerMemberAuditHandlers } from "./features/member-audit/handler.js"
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
+import { registerTimekeeperCommandHandlers } from "./features/timekeeper-commands/handler.js";
 
 async function main(): Promise<void> {
   const config = readConfig(process.env);
@@ -34,6 +35,7 @@ async function main(): Promise<void> {
   });
   registerTimekeeper(client);
   registerShutdownHandler(client);
+  registerTimekeeperCommandHandlers(client);
 
   await client.login(config.discordToken);
 }
