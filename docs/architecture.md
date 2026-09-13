@@ -13,14 +13,20 @@ src/index.ts
 ├── createDiscordClient(...)            # src/bot/create-discord-client.ts
 ├── readConfig(process.env)             # src/config.ts
 ├── registerReactionRoleHandlers(...)   # src/features/reaction-roles/handler.ts
-└── registerTimekeeper(...)             # src/features/timekeeper/service.ts
+├── registerTimekeeper(...)             # src/features/timekeeper/service.ts
+└── registerGameActivity(...)           # src/features/game-activity/handler.ts
 ```
 
 ## Layout
 
 - `src/index.ts` — composition root
 - `src/config.ts` — Zod-validated env → `BotConfig`
-- `src/bot/create-discord-client.ts` — constructs `Client` with intents (`Guilds`, `GuildMessages`, `GuildMessageReactions`, `GuildVoiceStates`; adds `MessageContent` only when enabled)
+- `src/bot/create-discord-client.ts` — constructs `Client` with intents (`Guilds`, `GuildMessages`, `GuildMessageReactions`, `GuildVoiceStates`; adds `MessageContent` only when enabled; adds `GuildPresences` only when `DISCORD_ENABLE_PRESENCE_INTENT=true`)
+- `src/features/game-activity/` — Discord Rich Presence → "X 人 playing <game>" summary
+  - `config.ts` — whitelist of game names (case-insensitive), target channel id, 5-minute stale window, 60-second refresh cadence
+  - `tracker.ts` — `GameActivityTracker` keeps the last observation per user; `evict()` drops anything older than the stale threshold; `snapshot()` returns a deterministic per-game aggregation sorted by player count then name
+  - `formatter.ts` — `formatGameActivityMessage` renders the headline + per-game lines with `<@userId>` mentions; `summarizeGameActivity` is the short variant used by future slash commands
+  - `handler.ts` — `createGameActivityHandler(config, deps)` returns the testable handle; `registerGameActivity(client, config, deps)` wires `Events.PresenceUpdate` and starts the refresh interval. Requires `DISCORD_ENABLE_PRESENCE_INTENT=true` and the privileged intent enabled in the Discord Developer Portal.
 - `src/features/reaction-roles/` — `config.ts` holds the rule list; `handler.ts` registers `MessageReactionAdd`/`Remove` listeners. Uses a DI seam (`HandlerDependencies`) so the role-lookup and member-fetch logic can be replaced in tests
 - `src/features/timekeeper/` — daily pomodoro-style scheduler. Submodules:
   - `config.ts` — JST start time, channel IDs, phase list
