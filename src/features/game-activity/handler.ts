@@ -18,11 +18,29 @@ export type GameActivityPresenceSnapshot = {
   activities: { name?: string | null; type?: number | null }[];
 };
 
+export type GameActivityMessageHandle = {
+  readonly id: string;
+  edit: (payload: { content: string }) => Promise<unknown>;
+};
+
 export type GameActivityMessageTarget = {
-  send: (payload: { content: string }) => Promise<{
-    id: string;
-    edit: (payload: { content: string }) => Promise<unknown>;
-  }>;
+  /**
+   * Post a fresh message. Returns a handle that exposes `edit` so the
+   * caller can update the message in place on subsequent renders.
+   */
+  send: (payload: { content: string }) => Promise<GameActivityMessageHandle>;
+  /**
+   * Resolve a previously-sent message id into a handle we can edit in
+   * place. Returns `null` when the message is gone (deleted by a mod,
+   * purged by a prune, or in a channel we can no longer read).
+   */
+  fetchMessage: (messageId: string) => Promise<GameActivityMessageHandle | null>;
+  /**
+   * Delete a previously-sent message by id. Returns `false` when the
+   * delete failed (missing permissions, message already gone, etc.) so
+   * the caller can fall back to editing the message into a placeholder.
+   */
+  deleteMessage: (messageId: string) => Promise<boolean>;
 };
 
 export type GameActivityDependencies = {
@@ -99,6 +117,30 @@ export function createGameActivityHandler(
     activeMessageId = null;
   }
 
+  async function tryFetchActiveMessage(
+    channel: GameActivityMessageTarget,
+    messageId: string,
+  ): Promise<GameActivityMessageHandle | null> {
+    try {
+      return await channel.fetchMessage(messageId);
+    } catch (error) {
+      logger.warn(`Failed to fetch game activity message ${messageId}: ${stringifyError(error)}`);
+      return null;
+    }
+  }
+
+  async function tryDeleteActiveMessage(
+    channel: GameActivityMessageTarget,
+    messageId: string,
+  ): Promise<boolean> {
+    try {
+      return await channel.deleteMessage(messageId);
+    } catch (error) {
+      logger.warn(`Failed to delete game activity message ${messageId}: ${stringifyError(error)}`);
+      return false;
+    }
+  }
+
   async function postOrEdit(snapshot: GameActivitySnapshot): Promise<void> {
     if (!isGameActivityConfigured(config) || !config.channelId) {
       return;
@@ -110,28 +152,41 @@ export function createGameActivityHandler(
     }
 
     const formatted = formatGameActivityMessage(snapshot);
-    if (formatted === null) {
-      if (activeMessageId) {
-        // No active players any more — keep the last message ID so we can
-        // try to delete it on the next call, but tolerate missing delete.
+
+    // Edit-in-place path: try to update the previously-posted summary
+    // message so we do not spam the channel on every presence change.
+    if (activeMessageId) {
+      const handle = await tryFetchActiveMessage(channel, activeMessageId);
+      if (handle) {
         try {
-          // deleteMessage is not part of the minimal target type, but the
-          // resolved discord.js channel always exposes one. Fall back to
-          // editing the message into an empty placeholder.
-          await channel.send({ content: "_現在プレイ中の whitelisted ゲームはありません。_" });
+          if (formatted === null) {
+            // No active players any more — delete the summary. If delete
+            // is denied, fall back to editing into a placeholder so the
+            // channel at least shows the current state honestly.
+            const deleted = await tryDeleteActiveMessage(channel, activeMessageId);
+            if (!deleted) {
+              await handle.edit({ content: "_現在プレイ中の whitelisted ゲームはありません。_" });
+            }
+            resetMessageId();
+            return;
+          }
+          await handle.edit({ content: formatted });
+          return;
         } catch (error) {
-          logger.warn(`Failed to clear game activity message: ${stringifyError(error)}`);
+          logger.warn(`Failed to edit game activity message: ${stringifyError(error)}`);
+          resetMessageId();
+          // fall through to send a fresh message below
         }
+      } else {
+        // The previous message is gone (deleted / purged). Reset and
+        // post a fresh summary below.
         resetMessageId();
       }
-      return;
     }
 
-    if (activeMessageId) {
-      // Edit-in-place path is impossible without a direct message handle in
-      // our DI seam, so we always send a new message and treat the prior ID
-      // as retired. This keeps the seam simple and avoids stale renders.
-      resetMessageId();
+    if (formatted === null) {
+      // No previous message and nothing to show — keep the channel clean.
+      return;
     }
 
     try {

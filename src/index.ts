@@ -32,10 +32,38 @@ async function main(): Promise<void> {
       if (!channel || channel.type === ChannelType.GuildCategory) {
         return null;
       }
-      if (!channel.isTextBased() || !("send" in channel)) {
+      if (!channel.isTextBased() || !("send" in channel) || !("messages" in channel)) {
         return null;
       }
-      return channel as unknown as GameActivityMessageTarget;
+      return {
+        send: async (payload) => {
+          const message = await channel.send(payload);
+          return {
+            id: message.id,
+            edit: (editPayload) => message.edit(editPayload),
+          };
+        },
+        fetchMessage: async (messageId) => {
+          try {
+            const message = await channel.messages.fetch(messageId);
+            return {
+              id: message.id,
+              edit: (editPayload) => message.edit(editPayload),
+            };
+          } catch {
+            return null;
+          }
+        },
+        deleteMessage: async (messageId) => {
+          try {
+            const message = await channel.messages.fetch(messageId);
+            await message.delete();
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      } satisfies GameActivityMessageTarget;
     },
   });
 

@@ -186,21 +186,69 @@ describe("formatGameActivityMessage", () => {
   });
 });
 
+type StoredMessage = {
+  id: string;
+  content: string;
+  edit: (payload: { content: string }) => Promise<unknown>;
+  delete: () => Promise<unknown>;
+};
+
 type FakeChannel = GameActivityMessageTarget & {
   sentPayloads: { content: string }[];
+  edits: { id: string; content: string }[];
+  deletedIds: string[];
+  fetchFailsFor: Set<string>;
+  deleteFailsFor: Set<string>;
 };
 
 function createFakeChannel(): FakeChannel {
-  const channel: FakeChannel = {
-    sentPayloads: [],
+  const messages = new Map<string, StoredMessage>();
+  const channel = {
+    sentPayloads: [] as { content: string }[],
+    edits: [] as { id: string; content: string }[],
+    deletedIds: [] as string[],
+    fetchFailsFor: new Set<string>(),
+    deleteFailsFor: new Set<string>(),
     send: vi.fn(),
+    fetchMessage: vi.fn(),
+    deleteMessage: vi.fn(),
   } as unknown as FakeChannel;
   channel.send = vi.fn(async (payload: { content: string }) => {
     channel.sentPayloads.push(payload);
-    return {
-      id: `msg-${channel.sentPayloads.length}`,
-      edit: vi.fn(async () => undefined),
-    };
+    const id = `msg-${channel.sentPayloads.length}`;
+    const edit = vi.fn(async (editPayload: { content: string }) => {
+      channel.edits.push({ id, content: editPayload.content });
+      const stored = messages.get(id);
+      if (stored) {
+        stored.content = editPayload.content;
+      }
+      return undefined;
+    });
+    const deleteFn = vi.fn(async () => {
+      channel.deletedIds.push(id);
+      messages.delete(id);
+      return undefined;
+    });
+    messages.set(id, { id, content: payload.content, edit, delete: deleteFn });
+    return { id, edit };
+  });
+  channel.fetchMessage = vi.fn(async (messageId: string) => {
+    if (channel.fetchFailsFor.has(messageId)) {
+      throw new Error(`Unknown message ${messageId}`);
+    }
+    const stored = messages.get(messageId);
+    if (!stored) {
+      return null;
+    }
+    return { id: stored.id, edit: stored.edit };
+  });
+  channel.deleteMessage = vi.fn(async (messageId: string) => {
+    const stored = messages.get(messageId);
+    if (!stored || channel.deleteFailsFor.has(messageId)) {
+      return false;
+    }
+    await stored.delete();
+    return true;
   });
   return channel;
 }
@@ -296,7 +344,7 @@ describe("createGameActivityHandler", () => {
     expect(channel.sentPayloads).toHaveLength(0);
   });
 
-  it("clears the message id after posting an empty placeholder", async () => {
+  it("clears the active summary when no players remain", async () => {
     const channel = createFakeChannel();
     let now = 0;
     const handler = createGameActivityHandler(baseConfig, {
@@ -313,9 +361,81 @@ describe("createGameActivityHandler", () => {
     now = 10 * 60_000;
     await handler.render();
 
-    // The handler posts a "no active players" placeholder so the next
-    // observation does not pile up against a stale message id.
-    expect(channel.sentPayloads.length).toBeGreaterThanOrEqual(2);
-    expect(channel.sentPayloads.at(-1)?.content).toContain("ありません");
+    // The handler edits/deletes the previous summary rather than
+    // posting a fresh "no players" message — keeps the channel clean.
+    expect(channel.sentPayloads).toHaveLength(1);
+    expect(channel.deletedIds).toEqual(["msg-1"]);
+    expect(channel.edits).toHaveLength(0);
+  });
+
+  it("edits the active summary in place when another player joins", async () => {
+    const channel = createFakeChannel();
+    const handler = createGameActivityHandler(baseConfig, {
+      resolveChannel: async () => channel,
+      now: () => 5_000,
+    });
+
+    await handler.handlePresenceUpdate({
+      userId: "alice",
+      activities: [{ name: "Apex Legends", type: 0 }],
+    });
+    await handler.handlePresenceUpdate({
+      userId: "bob",
+      activities: [{ name: "Apex Legends", type: 0 }],
+    });
+
+    expect(channel.sentPayloads).toHaveLength(1);
+    expect(channel.edits).toHaveLength(1);
+    expect(channel.edits[0]?.id).toBe("msg-1");
+    expect(channel.edits[0]?.content).toContain("2人 playing");
+    expect(channel.deletedIds).toHaveLength(0);
+  });
+
+  it("posts a new summary after the previous message disappears", async () => {
+    const channel = createFakeChannel();
+    const handler = createGameActivityHandler(baseConfig, {
+      resolveChannel: async () => channel,
+      now: () => 5_000,
+    });
+
+    await handler.handlePresenceUpdate({
+      userId: "alice",
+      activities: [{ name: "Apex Legends", type: 0 }],
+    });
+    expect(channel.sentPayloads).toHaveLength(1);
+
+    // Simulate the summary being purged from the channel between updates.
+    channel.fetchFailsFor.add("msg-1");
+
+    await handler.handlePresenceUpdate({
+      userId: "bob",
+      activities: [{ name: "Apex Legends", type: 0 }],
+    });
+
+    expect(channel.sentPayloads).toHaveLength(2);
+    expect(channel.edits).toHaveLength(0);
+  });
+
+  it("falls back to a placeholder edit when delete is denied", async () => {
+    const channel = createFakeChannel();
+    let now = 0;
+    const handler = createGameActivityHandler(baseConfig, {
+      resolveChannel: async () => channel,
+      now: () => now,
+    });
+
+    await handler.handlePresenceUpdate({
+      userId: "alice",
+      activities: [{ name: "Apex Legends", type: 0 }],
+    });
+    channel.deleteFailsFor.add("msg-1");
+
+    now = 10 * 60_000;
+    await handler.render();
+
+    expect(channel.sentPayloads).toHaveLength(1);
+    expect(channel.deletedIds).toHaveLength(0);
+    expect(channel.edits).toHaveLength(1);
+    expect(channel.edits[0]?.content).toContain("ありません");
   });
 });
