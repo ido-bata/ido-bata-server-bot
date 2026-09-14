@@ -14,14 +14,14 @@ How durable work flows through this repo. Maintained in repo-controlled docs (th
 
 | Version | Start date | Target release date | Status |
 | ------- | ---------- | ------------------- | ------ |
-| `release-0-1-0` | 2026-09-07 | 2026-09-14 | In Progress |
+| `release-0-1-1` | 2026-09-07 | 2026-09-14 | In Progress |
 
 ### Included Issues
 
-- #51: `bun audit --production` を required check 化
+- #51: `bun audit --production` を required check 化 (受入条件未達 — v0.1.1 では done 扱いにしない)
 - #54: 依存関係の更新とセキュリティパッチ適用
 - #55: timekeeper ステージ接続の安定性改善
-- #56: リリース駆動アジャイル開発プロセスの導入
+- #56: リリース駆動アジャイル開発プロセスの導入 (受入条件未達 — v0.1.1 では done 扱いにしない)
 
 ## SemVer policy
 

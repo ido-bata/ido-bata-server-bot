@@ -11,7 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Fixed** — bug fixes
 - **Security** — vulnerability fixes
 
-## [Unreleased]
+## [0.1.1] — 2026-09-14
+
+Patch release on the v0.1.0 baseline: timekeeper stage-channel robustness, release-tooling cleanup, and process docs alignment. Carries the timekeeper fixes from PR #91 (stage reconnect cleanup + Zod-validated `VOICE_CONNECTION_TIMEOUT_MS`).
 
 ### Added
 
