@@ -18,6 +18,9 @@ data/timekeeper-history.json
 data/timekeeper-sessions.json
 data/birthdays.json
 
+# Local runtime config (see data/config.example.json + src/features/config-hot-reload/)
+data/config.json
+
 # Editor / OS / tooling
 .DS_Store
 .idea/
