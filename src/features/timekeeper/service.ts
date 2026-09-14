@@ -459,7 +459,7 @@ async function runSession(client: Client, config: TimekeeperConfig, startAt: Dat
   if (activeSession) {
     persistSessionAttendance(activeSession, formatSessionDate(startAt));
   }
-const fortuneSummaries = activeSession ? await buildFortuneSummary(activeSession) : null;
+  const fortuneSummaries = activeSession ? await buildFortuneSummary(activeSession) : null;
   if (fortuneSummaries) {
     for (const summary of fortuneSummaries) {
       await textChannel.send(summary);
@@ -760,7 +760,7 @@ async function postMissedProgressMessages(
 
     await textChannel.send({
       content,
-components: effectiveNow < (event.endAt ?? event.at) ? buildCheckInComponents(event) : [],
+      components: effectiveNow < (event.endAt ?? event.at) ? buildCheckInComponents(event) : [],
     });
   }
 }

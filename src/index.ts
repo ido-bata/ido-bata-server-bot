@@ -254,7 +254,7 @@ async function main(): Promise<void> {
     icalService.stopScheduler();
   });
 
-if (process.env.GITHUB_WEBHOOK_SECRET) {
+  if (process.env.GITHUB_WEBHOOK_SECRET) {
     try {
       await registerGitHubWebhook(client);
     } catch (error) {
