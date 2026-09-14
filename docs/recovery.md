@@ -43,6 +43,49 @@ This project does **not** push every micro-edit to a remote branch. We checkpoin
 
 Boundary commits go on the **ticket branch**, named for the issue. Squash-merge into the release branch only after the ticket integration gate is green.
 
+A durable ticket branch is only "active" once it carries **both**:
+
+- A published remote head (`origin/<issue-number>` resolves to the local tip).
+- An immediate Draft PR linked to the Issue.
+
+If either is missing, the recovery algorithm treats the branch as not properly started and restarts from the branch-start contract in `docs/process.md`.
+
+## Structured recovery checkpoint (schema)
+
+For subagents / workers that produce intermediate artifacts, the recoverable state is captured as an immutable checkpoint with this schema. Secrets, machine-specific absolute paths, and private reasoning are **never** persisted.
+
+```text
+schema_version
+issue_id
+target_release
+ticket_branch
+pr_number
+immediate_pr_base           # release-x-y-z | <predecessor-issue>
+predecessor_issue_or_pr    # issue/PR id, or null if independent
+predecessor_sha            # pinned predecessor head SHA, or null
+base_sha                   # PR base SHA at checkpoint time
+checkpoint_sha_or_snapshot # commit SHA or filesystem snapshot id
+execution_generation       # monotonic; rejects stale generations
+status                     # open | in_progress | blocked | integrated | aborted
+completed_steps
+next_steps
+pending_validation
+active_children
+integrated_child_results
+external_side_effects      # Discord message ids, audio playback ids, etc.
+blockers
+decision_refs              # ADR ids, Issue links, doc anchors
+artifact_refs              # paths under .tmp/ or .reference/ (never secrets)
+updated_at
+```
+
+### Soft vs hard checkpoint
+
+- **Soft checkpoint** (same host / sandbox recovery): local immutable refs, filesystem snapshots, Supervisor journal. Used for fast resume within the same host.
+- **Hard checkpoint** (host, sandbox, or provider lost): the durable recovery boundary is `GitHub Issue + ticket branch tip + this docs/ tree + the published Draft PR`. Anything not represented there is presumed lost.
+
+A branch whose latest commit is **not** on the canonical remote is not a hard checkpoint. A PR that is **not** linked to its Issue is not a hard checkpoint. Validate both before trusting the durable state.
+
 ## Hard-checkpoint boundary
 
 If the host, sandbox, or model-provider is lost, the recovery boundary is the **GitHub Issue + the ticket branch tip + `docs/`**. Everything needed to resume lies in those durable stores.

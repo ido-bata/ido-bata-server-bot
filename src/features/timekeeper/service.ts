@@ -11,7 +11,7 @@ import {
 } from "@discordjs/voice";
 import type { Client, GuildMember, VoiceBasedChannel } from "discord.js";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, Events } from "discord.js";
-
+import type { BotConfig } from "../../config.js";
 import { isTimekeeperConfigured, type TimekeeperConfig, timekeeperConfig } from "./config.js";
 import {
   buildCheckInCustomId,
@@ -60,7 +60,7 @@ let activeSession: TimekeeperSessionEngagement | null = null;
 let activeTimeline: TimekeeperTimelineEvent[] = [];
 let activeClock: SessionClock | null = null;
 
-export function registerTimekeeper(client: Client): void {
+export function registerTimekeeper(client: Client, botConfig: BotConfig): void {
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isButton()) {
       return;
@@ -112,17 +112,17 @@ export function registerTimekeeper(client: Client): void {
       console.log(
         `Running timekeeper immediately because TIMEKEEPER_RUN_ON_READY=true (startAt=${startAt.toISOString()})`,
       );
-      void runSession(client, timekeeperConfig, startAt).catch((error: unknown) => {
+      void runSession(client, timekeeperConfig, botConfig, startAt).catch((error: unknown) => {
         console.error("Immediate timekeeper session failed", error);
       });
       return;
     }
 
-    scheduleNextSession(client, timekeeperConfig);
+    scheduleNextSession(client, timekeeperConfig, botConfig);
   });
 }
 
-function scheduleNextSession(client: Client, config: TimekeeperConfig): void {
+function scheduleNextSession(client: Client, config: TimekeeperConfig, botConfig: BotConfig): void {
   if (!isTimekeeperConfigured(config)) {
     console.warn(
       "Timekeeper is disabled. Set voiceChannelId and textChannelId in timekeeper config.",
@@ -144,12 +144,12 @@ function scheduleNextSession(client: Client, config: TimekeeperConfig): void {
   );
 
   setTimeout(() => {
-    void runSession(client, config, nextStartAt)
+    void runSession(client, config, botConfig, nextStartAt)
       .catch((error: unknown) => {
         console.error("Timekeeper session failed", error);
       })
       .finally(() => {
-        scheduleNextSession(client, config);
+        scheduleNextSession(client, config, botConfig);
       });
   }, delayMs);
 }
@@ -163,7 +163,12 @@ function isWithinSessionWindow(now: Date, startAt: Date, config: TimekeeperConfi
   return now >= startAt && now < sessionEndAt;
 }
 
-async function runSession(client: Client, config: TimekeeperConfig, startAt: Date): Promise<void> {
+async function runSession(
+  client: Client,
+  config: TimekeeperConfig,
+  botConfig: BotConfig,
+  startAt: Date,
+): Promise<void> {
   const voiceChannel = await resolveVoiceChannel(client, config.voiceChannelId);
   const textChannel = await resolveTextChannel(client, config.textChannelId);
 
@@ -175,7 +180,11 @@ async function runSession(client: Client, config: TimekeeperConfig, startAt: Dat
     throw new Error(`Text channel not found: ${config.textChannelId}`);
   }
 
-  const connection = await connectForPlayback(voiceChannel, client);
+  const connection = await connectForPlayback(
+    voiceChannel,
+    client,
+    botConfig.voiceConnectionTimeoutMs,
+  );
 
   const player = createAudioPlayer({
     behaviors: {
@@ -383,24 +392,45 @@ async function prepareStageSpeaker(voiceChannel: VoiceBasedChannel, client: Clie
   await logVoiceStateSnapshot(botMember, voiceChannel, "after-stage-prepare");
 }
 
-async function connectForPlayback(voiceChannel: VoiceBasedChannel, client: Client) {
-  let connection = await joinAndPrepare(voiceChannel, client);
+const MAX_STAGE_RECONNECT_ATTEMPTS = 3;
+
+export async function connectForPlayback(
+  voiceChannel: VoiceBasedChannel,
+  client: Client,
+  timeoutMs: number,
+) {
+  let connection = await joinAndPrepare(voiceChannel, client, timeoutMs);
 
   if (voiceChannel.type !== ChannelType.GuildStageVoice) {
     return connection;
   }
 
-  // Stage channels can fail to relay audio immediately after the first join.
-  // Reconnecting after unsuppressing the bot is a practical workaround.
-  console.log("Reconnecting stage channel once before playback.");
-  connection.destroy();
-  await delay(1_500);
+  for (let attempt = 1; attempt <= MAX_STAGE_RECONNECT_ATTEMPTS; attempt++) {
+    console.log(
+      `[Timekeeper] Stage channel reconnect attempt ${attempt}/${MAX_STAGE_RECONNECT_ATTEMPTS}`,
+    );
+    safeDestroy(connection);
+    await delay(1_500);
 
-  connection = await joinAndPrepare(voiceChannel, client);
-  return connection;
+    try {
+      connection = await joinAndPrepare(voiceChannel, client, timeoutMs);
+      console.log(`[Timekeeper] Stage channel reconnected successfully on attempt ${attempt}`);
+      return connection;
+    } catch (error) {
+      console.error(`[Timekeeper] Stage channel reconnect attempt ${attempt} failed:`, error);
+      if (attempt === MAX_STAGE_RECONNECT_ATTEMPTS) {
+        throw new Error(
+          `Failed to connect to stage channel after ${MAX_STAGE_RECONNECT_ATTEMPTS} attempts`,
+          { cause: error },
+        );
+      }
+    }
+  }
+
+  throw new Error("Unexpected: stage reconnect loop exited without return");
 }
 
-async function joinAndPrepare(voiceChannel: VoiceBasedChannel, client: Client) {
+async function joinAndPrepare(voiceChannel: VoiceBasedChannel, client: Client, timeoutMs: number) {
   const connection = joinVoiceChannel({
     guildId: voiceChannel.guild.id,
     channelId: voiceChannel.id,
@@ -409,18 +439,53 @@ async function joinAndPrepare(voiceChannel: VoiceBasedChannel, client: Client) {
     selfMute: false,
   });
 
-  await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
-  await prepareStageSpeaker(voiceChannel, client);
-  await delay(1_000);
+  try {
+    await entersState(connection, VoiceConnectionStatus.Ready, timeoutMs);
+  } catch (error) {
+    console.error(`[Timekeeper] Voice connection timed out after ${timeoutMs}ms, destroying...`);
+    connection.destroy();
+    throw new Error(`Voice connection timed out after ${timeoutMs}ms`, { cause: error });
+  }
 
-  if (client.user) {
-    const botMember = await resolveBotMember(voiceChannel.guild, client.user.id);
-    if (botMember) {
-      await logVoiceStateSnapshot(botMember, voiceChannel, "after-join");
+  try {
+    await prepareStageSpeaker(voiceChannel, client);
+    await delay(1_000);
+
+    if (client.user) {
+      const botMember = await resolveBotMember(voiceChannel.guild, client.user.id);
+      if (botMember) {
+        await logVoiceStateSnapshot(botMember, voiceChannel, "after-join");
+      }
     }
+  } catch (error) {
+    console.error("[Timekeeper] Post-join setup failed, destroying voice connection:", error);
+    safeDestroy(connection);
+    throw new Error("joinAndPrepare post-join setup failed", { cause: error });
   }
 
   return connection;
+}
+
+/**
+ * Calls `connection.destroy()` while tolerating "already destroyed" failures.
+ *
+ * `@discordjs/voice` throws when `destroy()` is invoked on a connection that
+ * has already been torn down. `joinAndPrepare` destroys the connection on its
+ * own error paths (e.g. voice timeout), so when a stage-reconnect iteration
+ * resumes after a failed `joinAndPrepare`, the connection tracked by the
+ * caller has already been destroyed inside that helper. We swallow the
+ * secondary destroy here so the loop can keep going without losing the real
+ * cause of the failure.
+ */
+function safeDestroy(connection: Awaited<ReturnType<typeof joinAndPrepare>>): void {
+  try {
+    connection.destroy();
+  } catch (error) {
+    console.warn(
+      "[Timekeeper] Ignored error while destroying voice connection (already destroyed):",
+      error,
+    );
+  }
 }
 
 async function resolveTextChannel(

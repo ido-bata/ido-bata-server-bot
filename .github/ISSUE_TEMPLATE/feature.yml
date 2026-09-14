@@ -1,6 +1,6 @@
 name: 機能追加 / Feature
 description: ユーザー可視の機能を追加・変更するチケットのテンプレート。
-labels: ["type:feature"]
+labels: ["type:feat"]
 body:
   - type: markdown
     attributes:
@@ -22,6 +22,24 @@ body:
         - config / infra
         - docs
         - other
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: P0=本番停止 / P1=今sprint必須 / P2=次sprint候補 / P3=backlog
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+  - type: dropdown
+    id: size
+    attributes:
+      label: Size
+      options:
+        - S
+        - M
+        - L
   - type: textarea
     id: objective
     attributes:

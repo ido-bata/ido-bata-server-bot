@@ -4,7 +4,7 @@
 
 1. Install **Bun 1.3** or later.
 2. `bun install` to fetch dependencies (CI uses `--frozen-lockfile`).
-3. Provide the required env vars (`DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_GUILD_ID`, optional `DISCORD_ENABLE_MESSAGE_CONTENT` / `TIMEKEEPER_RUN_ON_READY`). Real secrets are sourced from the host — a CI secret, a vault, exported shell variables, or a git-ignored local `.env`. The `.env.example` documents the schema.
+3. Provide the required env vars (`DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_GUILD_ID`, optional `DISCORD_ENABLE_MESSAGE_CONTENT` / `TIMEKEEPER_RUN_ON_READY` / `VOICE_CONNECTION_TIMEOUT_MS`). Real secrets are sourced from the host — a CI secret, a vault, exported shell variables, or a git-ignored local `.env`. The `.env.example` documents the schema.
 4. `bun run type-check && bun run test` to confirm the baseline is green before you change anything.
 
 The bot itself runs via `tsx` on Node — Bun is only used for installs and scripts.
