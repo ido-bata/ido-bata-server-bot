@@ -18,6 +18,7 @@ import {
   registerGameActivity,
 } from "./features/game-activity/handler.js";
 import { registerHealthMetrics } from "./features/health-metrics/index.js";
+import { registerIcalCalendar } from "./features/ical-calendar/index.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { messageAuditConfig } from "./features/message-audit/config.js";
@@ -52,7 +53,6 @@ async function main(): Promise<void> {
     enableGuildMembersIntent: config.enableGuildMembersIntent,
     enablePresenceIntent: config.enablePresenceIntent,
   });
-
   const slashRegistry = createSlashCommandRegistry();
   const roleSlashRegistry = createRoleSlashCommandRegistry();
 
@@ -237,6 +237,19 @@ async function main(): Promise<void> {
         },
       } satisfies GameActivityMessageTarget;
     },
+  });
+
+  const icalService = registerIcalCalendar(client, {
+    onReady: (service) => {
+      service.startScheduler();
+      void service
+        .fetchAndCacheAll()
+        .catch((error: unknown) => console.error("[ical-calendar] initial fetch failed", error));
+    },
+  });
+
+  process.on("beforeExit", () => {
+    icalService.stopScheduler();
   });
 
   await client.login(config.discordToken);

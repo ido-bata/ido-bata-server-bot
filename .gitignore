@@ -30,6 +30,10 @@ data/polls.json
 # Local persisted state files (runtime only — these are never committed)
 data/reminders.json
 
+# Local persisted state for the iCal calendar feature
+data/calendars.json
+data/calendar-cache.json
+
 # Editor / OS / tooling
 .DS_Store
 .idea/

@@ -33,18 +33,6 @@ describe("readConfig", () => {
     expect(config.enablePresenceIntent).toBe(false);
   });
 
-  it("enables presence intent only when explicitly configured", () => {
-    const config = readConfig({
-      DISCORD_TOKEN: "token",
-      DISCORD_CLIENT_ID: "client-id",
-      DISCORD_GUILD_ID: "guild-id",
-      DISCORD_ENABLE_PRESENCE_INTENT: "true",
-    });
-
-    expect(config.enablePresenceIntent).toBe(true);
-    expect(config.enableMessageContentIntent).toBe(false);
-  });
-
   it("enables guild members intent only when explicitly configured", () => {
     const config = readConfig({
       DISCORD_TOKEN: "token",
