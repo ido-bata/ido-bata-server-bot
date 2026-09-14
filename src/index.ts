@@ -2,8 +2,8 @@ import "dotenv/config";
 
 import { join } from "node:path";
 
+import { ChannelType, Events } from "discord.js";
 import type { TextChannel } from "discord.js";
-import { Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
@@ -12,6 +12,11 @@ import { deployBirthdayCommands } from "./features/birthday-role/deploy.js";
 import { registerBirthdayRoleHandlers } from "./features/birthday-role/service.js";
 import { registerConfigHotReload } from "./features/config-hot-reload/register.js";
 import { registerErrorForwarder } from "./features/error-forwarder/service.js";
+import { gameActivityConfig } from "./features/game-activity/config.js";
+import {
+  type GameActivityMessageTarget,
+  registerGameActivity,
+} from "./features/game-activity/handler.js";
 import { registerHealthMetrics } from "./features/health-metrics/index.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
@@ -191,6 +196,48 @@ async function main(): Promise<void> {
       registerSpotifyNowPlaying(client, spotifyConfig);
     }
   }
+
+  registerGameActivity(client, gameActivityConfig, {
+    expectedGuildId: config.discordGuildId,
+    resolveChannel: async (channelId) => {
+      const channel = await client.channels.fetch(channelId);
+      if (!channel || channel.type === ChannelType.GuildCategory) {
+        return null;
+      }
+      if (!channel.isTextBased() || !("send" in channel) || !("messages" in channel)) {
+        return null;
+      }
+      return {
+        send: async (payload) => {
+          const message = await channel.send(payload);
+          return {
+            id: message.id,
+            edit: (editPayload) => message.edit(editPayload),
+          };
+        },
+        fetchMessage: async (messageId) => {
+          try {
+            const message = await channel.messages.fetch(messageId);
+            return {
+              id: message.id,
+              edit: (editPayload) => message.edit(editPayload),
+            };
+          } catch {
+            return null;
+          }
+        },
+        deleteMessage: async (messageId) => {
+          try {
+            const message = await channel.messages.fetch(messageId);
+            await message.delete();
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      } satisfies GameActivityMessageTarget;
+    },
+  });
 
   await client.login(config.discordToken);
 }
