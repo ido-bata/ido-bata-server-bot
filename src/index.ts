@@ -1,9 +1,8 @@
 import "dotenv/config";
 
 import { join } from "node:path";
-
-import { ChannelType, Events } from "discord.js";
 import type { TextChannel } from "discord.js";
+import { ChannelType, Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
@@ -17,6 +16,7 @@ import {
   type GameActivityMessageTarget,
   registerGameActivity,
 } from "./features/game-activity/handler.js";
+import { registerGitHubWebhook } from "./features/github-webhook/index.js";
 import { registerHealthMetrics } from "./features/health-metrics/index.js";
 import { registerIcalCalendar } from "./features/ical-calendar/index.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
@@ -34,14 +34,14 @@ import { registerShutdownHandler } from "./features/shutdown/handler.js";
 import { deploySlashCommands } from "./features/slash-commands/deploy.js";
 import { registerSlashCommandHandlers } from "./features/slash-commands/handler.js";
 import { createSlashCommandRegistry } from "./features/slash-commands/registry.js";
+import { isSpotifyConfigured, readSpotifyConfig } from "./features/spotify/config.js";
+import { registerSpotifyNowPlaying } from "./features/spotify/service.js";
 import { registerStarboardHandlers } from "./features/starboard/handler.js";
 import { readSnapshotConfig } from "./features/state-snapshot/config.js";
 import {
   createSnapshotRuntime,
   registerStateSnapshotScheduler,
 } from "./features/state-snapshot/service.js";
-import { isSpotifyConfigured, readSpotifyConfig } from "./features/spotify/config.js";
-import { registerSpotifyNowPlaying } from "./features/spotify/service.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 import { registerTimekeeperCommandHandlers } from "./features/timekeeper-commands/handler.js";
 import { registerWelcomeHandlers } from "./features/welcome/handler.js";
@@ -251,6 +251,16 @@ async function main(): Promise<void> {
   process.on("beforeExit", () => {
     icalService.stopScheduler();
   });
+
+  if (process.env.GITHUB_WEBHOOK_SECRET) {
+    try {
+      await registerGitHubWebhook(client);
+    } catch (error) {
+      console.error("Failed to start GitHub webhook server", error);
+    }
+  } else {
+    console.log("GitHub webhook server is disabled (set GITHUB_WEBHOOK_SECRET to enable).");
+  }
 
   await client.login(config.discordToken);
 }
