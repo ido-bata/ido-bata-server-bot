@@ -16,6 +16,7 @@ export type BotConfig = {
   enableMessageContentIntent: boolean;
   enableGuildMembersIntent: boolean;
   roleAuditChannelId: string | null;
+  enablePresenceIntent: boolean;
 };
 
 export function readConfig(env: NodeJS.ProcessEnv): BotConfig {
@@ -23,6 +24,7 @@ export function readConfig(env: NodeJS.ProcessEnv): BotConfig {
   const enableMessageContentIntent = env.DISCORD_ENABLE_MESSAGE_CONTENT === "true";
   const enableGuildMembersIntent = env.DISCORD_ENABLE_GUILD_MEMBERS === "true";
   const roleAuditChannelId = parsed.ROLE_AUDIT_CHANNEL_ID?.trim() || null;
+  const enablePresenceIntent = env.DISCORD_ENABLE_PRESENCE === "true";
 
   return {
     discordToken: parsed.DISCORD_TOKEN,
@@ -31,5 +33,6 @@ export function readConfig(env: NodeJS.ProcessEnv): BotConfig {
     enableMessageContentIntent,
     enableGuildMembersIntent,
     roleAuditChannelId,
+    enablePresenceIntent,
   };
 }
