@@ -21,6 +21,7 @@ import { registerShutdownHandler } from "./features/shutdown/handler.js";
 import { deploySlashCommands } from "./features/slash-commands/deploy.js";
 import { registerSlashCommandHandlers } from "./features/slash-commands/handler.js";
 import { createSlashCommandRegistry } from "./features/slash-commands/registry.js";
+import { registerStarboardHandlers } from "./features/starboard/handler.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 import { registerTimekeeperCommandHandlers } from "./features/timekeeper-commands/handler.js";
 import { registerWelcomeHandlers } from "./features/welcome/handler.js";
@@ -59,7 +60,7 @@ async function main(): Promise<void> {
       await channel.send(content);
     },
   });
-  registerSlashCommandHandlers(client);
+registerSlashCommandHandlers(client);
   registerScheduledAnnouncements(client);
   registerMessageAuditHandlers(client, {
     config: messageAuditConfig,
@@ -71,6 +72,7 @@ async function main(): Promise<void> {
       await channel.send(content);
     },
   });
+  registerStarboardHandlers(client);
   registerTimekeeper(client);
   registerTimekeeperCommandHandlers(client);
   registerShutdownHandler(client);
