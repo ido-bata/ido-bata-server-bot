@@ -24,6 +24,9 @@ data/config.json
 # Local persisted state for the scheduled-announcements feature
 data/scheduled-announcements.json
 
+# Local persisted state for the poll feature
+data/polls.json
+
 # Editor / OS / tooling
 .DS_Store
 .idea/

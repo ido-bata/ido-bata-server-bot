@@ -15,6 +15,7 @@ import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { messageAuditConfig } from "./features/message-audit/config.js";
 import { registerMessageAuditHandlers } from "./features/message-audit/handler.js";
+import { deployPollCommands, registerPollHandlers } from "./features/poll/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerScheduledAnnouncements } from "./features/scheduled-announcements/service.js";
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
@@ -46,6 +47,12 @@ async function main(): Promise<void> {
     }).catch((error: unknown) => {
       console.error("Failed to deploy slash commands on ready", error);
     });
+    void deployPollCommands(readyClient, {
+      clientId: config.discordClientId,
+      guildId: config.discordGuildId,
+    }).catch((error: unknown) => {
+      console.error("Failed to deploy poll slash commands on ready", error);
+    });
   });
 
   registerErrorForwarder(client);
@@ -60,7 +67,7 @@ async function main(): Promise<void> {
       await channel.send(content);
     },
   });
-registerSlashCommandHandlers(client);
+  registerSlashCommandHandlers(client);
   registerScheduledAnnouncements(client);
   registerMessageAuditHandlers(client, {
     config: messageAuditConfig,
@@ -76,6 +83,7 @@ registerSlashCommandHandlers(client);
   registerTimekeeper(client);
   registerTimekeeperCommandHandlers(client);
   registerShutdownHandler(client);
+  registerPollHandlers(client);
   registerWelcomeHandlers(client);
 
   const birthdayService = registerBirthdayRoleHandlers(client, { config: birthdayRoleConfig });
