@@ -10,6 +10,7 @@ import { birthdayRoleConfig } from "./features/birthday-role/config.js";
 import { deployBirthdayCommands } from "./features/birthday-role/deploy.js";
 import { registerBirthdayRoleHandlers } from "./features/birthday-role/service.js";
 import { registerConfigHotReload } from "./features/config-hot-reload/register.js";
+import { registerErrorForwarder } from "./features/error-forwarder/service.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
     });
   });
 
+  registerErrorForwarder(client);
   registerReactionRoleHandlers(client);
   registerMemberAuditHandlers(client, {
     config: memberAuditConfig,
