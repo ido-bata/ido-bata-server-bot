@@ -18,7 +18,7 @@ async function main(): Promise<void> {
   });
 
   registerReactionRoleHandlers(client);
-  registerTimekeeper(client);
+  registerTimekeeper(client, config);
 
   await client.login(config.discordToken);
 }
