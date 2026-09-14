@@ -4,6 +4,9 @@ import { Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
+import { birthdayRoleConfig } from "./features/birthday-role/config.js";
+import { deployBirthdayCommands } from "./features/birthday-role/deploy.js";
+import { registerBirthdayRoleHandlers } from "./features/birthday-role/service.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
@@ -51,6 +54,19 @@ async function main(): Promise<void> {
   registerTimekeeper(client);
   registerShutdownHandler(client);
   registerWelcomeHandlers(client);
+
+  const birthdayService = registerBirthdayRoleHandlers(client, { config: birthdayRoleConfig });
+
+  client.once(Events.ClientReady, () => {
+    void deployBirthdayCommands({
+      registry: birthdayService.registry,
+      token: config.discordToken,
+      clientId: config.discordClientId,
+      guildId: config.discordGuildId,
+    }).catch((error: unknown) => {
+      console.error("Failed to deploy birthday slash commands on ready", error);
+    });
+  });
 
   await client.login(config.discordToken);
 }
