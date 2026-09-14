@@ -20,7 +20,7 @@ src/index.ts
 
 - `src/index.ts` — composition root
 - `src/config.ts` — Zod-validated env → `BotConfig`
-- `src/bot/create-discord-client.ts` — constructs `Client` with intents (`Guilds`, `GuildMessages`, `GuildMessageReactions`, `GuildVoiceStates`; adds `MessageContent` only when enabled; adds `GuildMembers` only when enabled — required for the member-audit feature to receive `GuildMemberAdd` / `GuildMemberRemove`)
+- `src/bot/create-discord-client.ts` — constructs `Client` with intents (`Guilds`, `GuildMembers`, `GuildMessages`, `GuildMessageReactions`, `GuildVoiceStates`; adds `MessageContent` only when enabled). `GuildMembers` is a privileged intent and must also be enabled on the Discord Developer Portal side.
 - `src/features/reaction-roles/` — `config.ts` holds the rule list; `handler.ts` registers `MessageReactionAdd`/`Remove` listeners. Uses a DI seam (`HandlerDependencies`) so the role-lookup and member-fetch logic can be replaced in tests
 - `src/features/timekeeper/` — daily pomodoro-style scheduler. Submodules:
   - `config.ts` — JST start time, channel IDs, phase list
