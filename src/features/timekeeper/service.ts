@@ -200,7 +200,6 @@ export function __resetTimekeeperRuntimeState(): void {
 }
 
 /**
-/**
  * Cancel the in-progress timekeeper session if any. Persists whatever state
  * has been collected so far, marks the session as cancelled, and resets the
  * module-level singletons. Returns true if a session was cancelled.

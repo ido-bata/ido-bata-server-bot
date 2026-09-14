@@ -14,10 +14,11 @@ describe("readConfig", () => {
       discordToken: "token",
       discordClientId: "client-id",
       discordGuildId: "guild-id",
+      discordGuildIds: ["guild-id"],
       enableMessageContentIntent: false,
       enableGuildMembersIntent: false,
-      roleAuditChannelId: null,
       enablePresenceIntent: false,
+      roleAuditChannelId: null,
     });
   });
 
@@ -66,6 +67,28 @@ describe("readConfig", () => {
     expect(config.enablePresenceIntent).toBe(true);
   });
 
+  it("parses a comma-separated DISCORD_GUILD_IDS list", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_IDS: "111, 222,333",
+    });
+
+    expect(config.discordGuildIds).toEqual(["111", "222", "333"]);
+    expect(config.discordGuildId).toBe("");
+  });
+
+  it("unions DISCORD_GUILD_ID and DISCORD_GUILD_IDS without duplicates", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_ID: "111",
+      DISCORD_GUILD_IDS: "111,222",
+    });
+
+    expect(config.discordGuildIds).toEqual(["111", "222"]);
+  });
+
   it("throws when a required variable is missing", () => {
     expect(() =>
       readConfig({
@@ -73,5 +96,25 @@ describe("readConfig", () => {
         DISCORD_CLIENT_ID: "",
       }),
     ).toThrow(/DISCORD_CLIENT_ID/);
+  });
+
+  it("throws when neither DISCORD_GUILD_ID nor DISCORD_GUILD_IDS is provided", () => {
+    expect(() =>
+      readConfig({
+        DISCORD_TOKEN: "token",
+        DISCORD_CLIENT_ID: "client-id",
+      }),
+    ).toThrow(/guild id/i);
+  });
+
+  it("throws when DISCORD_GUILD_ID and DISCORD_GUILD_IDS are both blank", () => {
+    expect(() =>
+      readConfig({
+        DISCORD_TOKEN: "token",
+        DISCORD_CLIENT_ID: "client-id",
+        DISCORD_GUILD_ID: "   ",
+        DISCORD_GUILD_IDS: " , ",
+      }),
+    ).toThrow(/guild id/i);
   });
 });

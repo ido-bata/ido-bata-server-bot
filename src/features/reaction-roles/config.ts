@@ -50,12 +50,16 @@ export function toEmojiKey(emoji: EmojiLike): string | null {
  *
  * Single-role rules win when both match — that mirrors the historical behavior
  * and keeps operator-authored overrides authoritative over category defaults.
+ *
+ * `rules` defaults to the module-level `reactionRoleRules`. Pass an explicit
+ * per-guild list to opt into multi-guild lookups.
  */
 export function findReactionRoleMatch(
   messageId: string,
   emoji: EmojiLike,
+  rules: ReactionRoleRule[] = reactionRoleRules,
 ): { roleId: string; category: CategoryRule | null } | null {
-  const single = findReactionRoleRule(messageId, emoji);
+  const single = findReactionRoleRule(rules, messageId, emoji);
   if (single) {
     return { roleId: single.roleId, category: null };
   }
@@ -74,17 +78,22 @@ export function findReactionRoleMatch(
   return { roleId, category };
 }
 
-export function findReactionRoleRule(messageId: string, emoji: EmojiLike): ReactionRoleRule | null {
+/**
+ * Locate a single-role rule. The `rules` argument is explicit so callers can
+ * pass per-guild rule lists loaded from the multi-guild config store.
+ */
+export function findReactionRoleRule(
+  rules: ReactionRoleRule[],
+  messageId: string,
+  emoji: EmojiLike,
+): ReactionRoleRule | null {
   const emojiKey = toEmojiKey(emoji);
 
   if (!emojiKey) {
     return null;
   }
 
-  return (
-    reactionRoleRules.find((rule) => rule.messageId === messageId && rule.emoji === emojiKey) ??
-    null
-  );
+  return rules.find((rule) => rule.messageId === messageId && rule.emoji === emojiKey) ?? null;
 }
 
 export function findReactionRoleRuleByRoleId(roleId: string): ReactionRoleRule | null {
