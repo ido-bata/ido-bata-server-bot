@@ -34,6 +34,8 @@ import {
   createSnapshotRuntime,
   registerStateSnapshotScheduler,
 } from "./features/state-snapshot/service.js";
+import { isSpotifyConfigured, readSpotifyConfig } from "./features/spotify/config.js";
+import { registerSpotifyNowPlaying } from "./features/spotify/service.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 import { registerTimekeeperCommandHandlers } from "./features/timekeeper-commands/handler.js";
 import { registerWelcomeHandlers } from "./features/welcome/handler.js";
@@ -43,6 +45,7 @@ async function main(): Promise<void> {
   const client = createDiscordClient({
     enableMessageContentIntent: config.enableMessageContentIntent,
     enableGuildMembersIntent: config.enableGuildMembersIntent,
+    enablePresenceIntent: config.enablePresenceIntent,
   });
 
   const slashRegistry = createSlashCommandRegistry();
@@ -176,6 +179,17 @@ async function main(): Promise<void> {
       runOnReady: process.env.STATE_SNAPSHOT_RUN_ON_READY === "true",
     });
     registerStateSnapshotScheduler(client, snapshotRuntime);
+  }
+
+  const spotifyConfig = readSpotifyConfig(process.env);
+  if (isSpotifyConfigured(spotifyConfig)) {
+    if (!config.enablePresenceIntent) {
+      console.warn(
+        "Spotify now-playing is configured but DISCORD_ENABLE_PRESENCE=true is required to receive PresenceUpdate events.",
+      );
+    } else {
+      registerSpotifyNowPlaying(client, spotifyConfig);
+    }
   }
 
   await client.login(config.discordToken);
