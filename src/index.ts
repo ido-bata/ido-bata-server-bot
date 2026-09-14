@@ -1,5 +1,7 @@
 import "dotenv/config";
 
+import { join } from "node:path";
+
 import { Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
@@ -7,6 +9,7 @@ import { readConfig } from "./config.js";
 import { birthdayRoleConfig } from "./features/birthday-role/config.js";
 import { deployBirthdayCommands } from "./features/birthday-role/deploy.js";
 import { registerBirthdayRoleHandlers } from "./features/birthday-role/service.js";
+import { registerConfigHotReload } from "./features/config-hot-reload/register.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
@@ -67,6 +70,32 @@ async function main(): Promise<void> {
       console.error("Failed to deploy birthday slash commands on ready", error);
     });
   });
+
+  // `data/config.json` is the runtime-tunable config; see
+  // `data/config.example.json` and `src/features/config-hot-reload/`. The
+  // store is registered unconditionally so changes propagate live; a missing
+  // file at startup logs a warning and starts with an empty snapshot.
+  const configStore = registerConfigHotReload({
+    filePath: join(process.cwd(), "data", "config.json"),
+  });
+
+  // Registering a SIGINT/SIGTERM listener suppresses Node's default exit
+  // behavior, so we must tear down the Discord client and terminate the
+  // process explicitly — otherwise Ctrl-C / `docker stop` will hang on the
+  // live gateway connection.
+  let shuttingDown = false;
+  const shutdown = (signal: NodeJS.Signals): void => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    console.log(`Received ${signal}, shutting down`);
+    configStore.stop();
+    client.destroy();
+    process.exit(0);
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
 
   await client.login(config.discordToken);
 }
