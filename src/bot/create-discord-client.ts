@@ -6,24 +6,23 @@ export type CreateDiscordClientOptions = {
   enablePresenceIntent?: boolean;
 };
 
-export function createDiscordClient(options?: CreateDiscordClientOptions): Client {
+export function createDiscordClient(options: CreateDiscordClientOptions = {}): Client {
   const intents = [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildVoiceStates,
   ];
 
-  if (options?.enableMessageContentIntent) {
+  if (options.enableMessageContentIntent) {
     intents.push(GatewayIntentBits.MessageContent);
   }
 
-  if (options?.enableGuildMembersIntent) {
+  if (options.enableGuildMembersIntent) {
     intents.push(GatewayIntentBits.GuildMembers);
   }
 
-  if (options?.enablePresenceIntent) {
+  if (options.enablePresenceIntent) {
     intents.push(GatewayIntentBits.GuildPresences);
   }
 
