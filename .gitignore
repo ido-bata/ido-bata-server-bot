@@ -27,6 +27,9 @@ data/scheduled-announcements.json
 # Local persisted state for the poll feature
 data/polls.json
 
+# Local persisted state files (runtime only — these are never committed)
+data/reminders.json
+
 # Editor / OS / tooling
 .DS_Store
 .idea/

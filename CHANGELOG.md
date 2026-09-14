@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 ### Added
 
 - Slash command foundation: guild-scoped registration via `REST.put(Routes.applicationGuildCommands(...))`, an `InteractionCreate` listener, and minimal examples `/ping` (returns WS ping) and `/help` (lists registered commands). New module at `src/features/slash-commands/` with a `HandlerDependencies`-style DI seam and a `deploy:commands` script (`src/scripts/deploy-commands.ts`).
+- Personal reminder feature (`src/features/reminder/`): `/remind me <duration> "message"` slash command schedules a DM with caps at 7 days duration and 10 active reminders per user; scheduler scans every 30s and reloads from `data/reminders.json` on boot (gitignored) with malformed-file tolerance, matching the timekeeper-history pattern.
 - Project-local AI agent dispatchers (`CLAUDE.md` / `AGENTS.md`) pointing to a `docs/` knowledge base (architecture, process, recovery, security, quality).
 - Dependabot weekly update PRs (`npm` ecosystem, Asia/Tokyo Monday 09:00).
 - Lightweight security workflow (`bun audit --production` + CodeQL on push / PR).

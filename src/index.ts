@@ -17,6 +17,7 @@ import { messageAuditConfig } from "./features/message-audit/config.js";
 import { registerMessageAuditHandlers } from "./features/message-audit/handler.js";
 import { deployPollCommands, registerPollHandlers } from "./features/poll/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
+import { registerReminder } from "./features/reminder/service.js";
 import { registerScheduledAnnouncements } from "./features/scheduled-announcements/service.js";
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
 import { deploySlashCommands } from "./features/slash-commands/deploy.js";
@@ -85,6 +86,7 @@ async function main(): Promise<void> {
   registerShutdownHandler(client);
   registerPollHandlers(client);
   registerWelcomeHandlers(client);
+  registerReminder(client);
 
   const birthdayService = registerBirthdayRoleHandlers(client, { config: birthdayRoleConfig });
 
