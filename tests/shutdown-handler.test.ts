@@ -219,4 +219,36 @@ describe("shutdown handler", () => {
     expect(exit).toHaveBeenCalledTimes(1);
     expect(messages.some((line) => line.includes("Shutdown already in progress"))).toBe(true);
   });
+
+  it("runs onAfterTeardown after the client is destroyed and before exit", async () => {
+    const order: string[] = [];
+    const { runner } = setupRunner({
+      destroyClient: vi.fn(async () => {
+        order.push("destroyClient");
+      }),
+      exit: vi.fn((code) => {
+        order.push(`exit:${code}`);
+      }),
+      onAfterTeardown: () => {
+        order.push("onAfterTeardown");
+      },
+    });
+
+    await runner.run("SIGINT");
+
+    expect(order).toEqual(["destroyClient", "onAfterTeardown", "exit:0"]);
+  });
+
+  it("still exits cleanly when onAfterTeardown throws", async () => {
+    const { exit, messages, runner } = setupRunner({
+      onAfterTeardown: () => {
+        throw new Error("boom");
+      },
+    });
+
+    await runner.run("SIGINT");
+
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(messages.some((line) => line.includes("Failed to run post-teardown hook"))).toBe(true);
+  });
 });

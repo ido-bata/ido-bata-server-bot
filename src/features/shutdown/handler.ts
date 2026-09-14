@@ -28,6 +28,13 @@ export type ShutdownDependencies = {
    * Override the wall-clock for tests.
    */
   now?: () => Date;
+  /**
+   * Runs after the timekeeper / voice / client teardown chain, but before
+   * `exit`. Use this for release-mode-only resources that need explicit
+   * teardown (e.g. closing a file watcher). Failures are logged and
+   * swallowed so the exit still runs.
+   */
+  onAfterTeardown?: () => void | Promise<void>;
 };
 
 export type ShutdownLogger = (message: string) => void;
@@ -81,6 +88,7 @@ export function createShutdownRunner(
   const destroyClient = dependencies.destroyClient ?? (() => client.destroy());
   const exit = dependencies.exit ?? ((code) => process.exit(code));
   const now = dependencies.now ?? (() => new Date());
+  const onAfterTeardown = dependencies.onAfterTeardown;
 
   let running = false;
 
@@ -118,6 +126,14 @@ export function createShutdownRunner(
       logger("Discord client destroyed");
     } catch (error) {
       logger(`Failed to destroy Discord client: ${formatError(error)}`);
+    }
+
+    if (onAfterTeardown) {
+      try {
+        await onAfterTeardown();
+      } catch (error) {
+        logger(`Failed to run post-teardown hook: ${formatError(error)}`);
+      }
     }
 
     logger("Graceful shutdown complete");

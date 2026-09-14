@@ -104,6 +104,18 @@ async function main(): Promise<void> {
   });
 
   registerErrorForwarder(client);
+  // `registerShutdownHandler` owns the SIGINT/SIGTERM listeners — anything
+  // that needs explicit teardown on signal goes through its `onAfterTeardown`
+  // hook (see `src/features/shutdown/handler.ts`). The configStore file
+  // watcher is wired there so there is exactly one shutdown path.
+  const configStore = registerConfigHotReload({
+    filePath: join(process.cwd(), "data", "config.json"),
+  });
+  registerShutdownHandler(client, {
+    onAfterTeardown: () => {
+      configStore.stop();
+    },
+  });
   registerReactionRoleHandlers(client);
   registerMemberAuditHandlers(client, {
     config: memberAuditConfig,
@@ -133,7 +145,6 @@ async function main(): Promise<void> {
   });
   registerTimekeeper(client);
   registerTimekeeperCommandHandlers(client);
-  registerShutdownHandler(client);
   await registerHealthMetrics(client);
   registerPollHandlers(client);
   registerWelcomeHandlers(client);
@@ -151,32 +162,6 @@ async function main(): Promise<void> {
       console.error("Failed to deploy birthday slash commands on ready", error);
     });
   });
-
-  // `data/config.json` is the runtime-tunable config; see
-  // `data/config.example.json` and `src/features/config-hot-reload/`. The
-  // store is registered unconditionally so changes propagate live; a missing
-  // file at startup logs a warning and starts with an empty snapshot.
-  const configStore = registerConfigHotReload({
-    filePath: join(process.cwd(), "data", "config.json"),
-  });
-
-  // Registering a SIGINT/SIGTERM listener suppresses Node's default exit
-  // behavior, so we must tear down the Discord client and terminate the
-  // process explicitly — otherwise Ctrl-C / `docker stop` will hang on the
-  // live gateway connection.
-  let shuttingDown = false;
-  const shutdown = (signal: NodeJS.Signals): void => {
-    if (shuttingDown) {
-      return;
-    }
-    shuttingDown = true;
-    console.log(`Received ${signal}, shutting down`);
-    configStore.stop();
-    client.destroy();
-    process.exit(0);
-  };
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
 
   // State snapshots are opt-in. They run when the bot is ready if
   // STATE_SNAPSHOT_ENCRYPTION_KEY is set; otherwise the scheduler no-ops.
