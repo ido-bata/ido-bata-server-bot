@@ -3,6 +3,9 @@
   "project": ["src/**/*.ts"],
   "ignoreDependencies": ["ffmpeg-static", "opusscript"],
   "ignoreExportsUsedInFile": true,
+  "ignore": [
+    "src/features/timekeeper-commands/config.ts"
+  ],
   "vitest": {
     "config": ["vitest.config.ts"],
     "entry": ["tests/**/*.test.ts"]
