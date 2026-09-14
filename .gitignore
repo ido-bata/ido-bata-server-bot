@@ -21,6 +21,9 @@ data/birthdays.json
 # Local runtime config (see data/config.example.json + src/features/config-hot-reload/)
 data/config.json
 
+# Local persisted state for the scheduled-announcements feature
+data/scheduled-announcements.json
+
 # Editor / OS / tooling
 .DS_Store
 .idea/

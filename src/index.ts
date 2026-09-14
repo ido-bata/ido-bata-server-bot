@@ -14,6 +14,7 @@ import { registerErrorForwarder } from "./features/error-forwarder/service.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
+import { registerScheduledAnnouncements } from "./features/scheduled-announcements/service.js";
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
 import { deploySlashCommands } from "./features/slash-commands/deploy.js";
 import { registerSlashCommandHandlers } from "./features/slash-commands/handler.js";
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
     },
   });
   registerSlashCommandHandlers(client);
+  registerScheduledAnnouncements(client);
   registerTimekeeper(client);
   registerTimekeeperCommandHandlers(client);
   registerShutdownHandler(client);
