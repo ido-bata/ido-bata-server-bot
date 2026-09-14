@@ -200,6 +200,7 @@ export function __resetTimekeeperRuntimeState(): void {
 }
 
 /**
+/**
  * Cancel the in-progress timekeeper session if any. Persists whatever state
  * has been collected so far, marks the session as cancelled, and resets the
  * module-level singletons. Returns true if a session was cancelled.
@@ -225,6 +226,17 @@ export function cancelActiveSession(
   activeTimeline = [];
   activeClock = null;
   return true;
+}
+
+/**
+ * Read-only accessor for the observability layer. Returns the number of
+ * timekeeper sessions currently active in this process (0 or 1 — the
+ * service runs a single session at a time). Exposed so the health/metrics
+ * endpoints can report `bot_timekeeper_active_sessions` without poking
+ * at module-level state directly.
+ */
+export function getActiveTimekeeperSessionCount(): number {
+  return activeSession ? 1 : 0;
 }
 
 export function registerTimekeeper(client: Client): void {
