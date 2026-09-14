@@ -38,17 +38,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - `tests/timekeeper-session-clock.test.ts` import sorting + formatting.
 - `tests/timekeeper-timeline.test.ts` formatting.
 
-### Changed
-
-- Default branch renamed `master` → `main`.
-- `.env.example` upgraded to a schema reference (real values are now expected to come from the host's secret manager).
-- `README.md` and `CONTRIBUTING.md` no longer instruct to copy `.env.example` into a local `.env`.
-
-### Fixed
-
-- `tests/timekeeper-session-clock.test.ts` import sorting + formatting.
-- `tests/timekeeper-timeline.test.ts` formatting.
-
 ## [0.1.0] — initial integration
 
 First integrated release of the timekeeper + reaction-roles Discord bot.

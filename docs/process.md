@@ -30,8 +30,8 @@ This repo follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.htm
 | Bump    | Trigger                                                                                                | Label      |
 | ------- | ------------------------------------------------------------------------------------------------------- | ---------- |
 | major   | Any breaking change to a Discord-side contract (event payload, command interface, exported schema)      | `breaking` |
-| minor   | New feature, opt-in behavior, additive API                                                              | `feature`  |
-| patch   | Bug fix, dependency patch, security fix, internal refactor                                              | `bug` / `deps` / `security` |
+| minor   | New feature, opt-in behavior, additive API                                                              | `type:feat` |
+| patch   | Bug fix, dependency patch, security fix, internal refactor                                              | `bug` / `deps` / `security` / `type:bug` / `type:refactor` / `type:chore` / `type:test` / `dependencies` |
 
 Labels feed [`.github/release-drafter.yml`](../../.github/release-drafter.yml) (driven by `.github/workflows/release-drafter.yml`) so the draft release notes are deterministic per PR.
 
@@ -139,19 +139,30 @@ A partial pass is **not** a pass. Re-run the full gate after any rebase that lan
 
 This repository is **public**. Direct edits, direct pushes, force pushes, and branch deletion on `main` are prohibited in normal operation. The only path into `main` is a `release-x-y-z → main` PR that satisfies the release gate above.
 
-Minimum required configuration on `main`:
+### Target configuration
+
+The target state for `main` protection:
 
 - Pull requests required (no direct push)
 - No force pushes, no deletions
-- At least one approving review
+- At least one approving review (`required_approving_review_count >= 1`)
 - Required checks: `verify` (CI workflow), `audit` (Bun audit), `codeql` (CodeQL)
 - `enforce_admins = enabled` — admins do not bypass in normal ops
 - `required_linear_history = enabled` — release PR uses squash-merge or rebase-merge
 - `required_conversation_resolution = enabled`
+- A repository **ruleset** restricted to PRs whose base is `main` enforcing `head_ref =~ ^refs/heads/release-[0-9]+-[0-9]+-[0-9]+$` (release-source ruleset — second line of defence)
 
-When branch protection alone cannot restrict the head branch pattern, a **repository ruleset** enforces `head_ref =~ ^refs/heads/release-[0-9]+-[0-9]+-[0-9]+$` on PRs whose base is `main`. The ruleset is the second line of defence, not a replacement for branch protection.
+### Current state and known gaps (as of 2026-09-14)
 
-Any deviation (lacking admin permission, missing required check, etc.) is a **blocker** and must be reported to the user before durable work begins on the next sprint.
+Inspect with `gh api repos/ido-bata/ido-bata-server-bot/branches/main/protection` and `gh api repos/ido-bata/ido-bata-server-bot/rulesets`. Documented gaps below must be listed explicitly so the next agent does not assume protection that does not exist.
+
+- `rulesets`: none defined. A release-source ruleset must be created before v0.2.0 work begins.
+- `enforce_admins`: **disabled**. Admins can bypass every check; rely on policy + repository visibility for now.
+- `required_linear_history`: **disabled**. Squash-merge / rebase-merge is a convention, not an enforcement.
+- `required_approving_review_count`: **0**. Reviews are not currently enforced by branch protection.
+- Required status checks: **none configured**. The release gate above is the only enforcement of `verify` / `audit` / `codeql`.
+
+Any gap in the target configuration is a **blocker** for the next release and must be reported to the user before durable work begins on the next sprint.
 
 ## Bot token
 

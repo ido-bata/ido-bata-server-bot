@@ -21,7 +21,6 @@ jobs:
     name: Bun audit (production)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4

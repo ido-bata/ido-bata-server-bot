@@ -4,20 +4,26 @@ tag-template: "v$RESOLVED_VERSION"
 # generic labels documented in docs/process.md. This keeps release-drafter
 # working both for hand-labelled PRs and for dependabot / chore / refactor
 # PRs that may not carry a `type:*` label.
+#
+# Note on the resolver: release-drafter picks the LARGEST increment that
+# matches a PR's labels. Each label must therefore appear in at most one
+# bucket or it silently bumps the release higher than intended. We keep
+# `type:feat` exclusively under `minor:` (a feature is a minor bump) and
+# require an explicit `breaking` label for a major.
 version-resolver:
   major:
-    labels: ["breaking", "type:feat"]
+    labels: ["breaking"]
   minor:
-    labels: ["feature", "type:feat"]
+    labels: ["type:feat"]
   patch:
     labels: ["bug", "type:bug", "type:refactor", "type:chore", "type:test", "deps", "security", "dependencies"]
   default: patch
 
 categories:
   - title: "🚨 Breaking changes"
-    labels: ["breaking", "type:feat"]
+    labels: ["breaking"]
   - title: "🚀 Added"
-    labels: ["feature", "type:feat"]
+    labels: ["type:feat"]
   - title: "🔧 Changed"
     labels: ["change", "type:refactor", "type:chore"]
   - title: "🐛 Fixed"
