@@ -13,6 +13,8 @@ import { registerConfigHotReload } from "./features/config-hot-reload/register.j
 import { registerErrorForwarder } from "./features/error-forwarder/service.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
+import { messageAuditConfig } from "./features/message-audit/config.js";
+import { registerMessageAuditHandlers } from "./features/message-audit/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerScheduledAnnouncements } from "./features/scheduled-announcements/service.js";
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
@@ -59,6 +61,16 @@ async function main(): Promise<void> {
   });
   registerSlashCommandHandlers(client);
   registerScheduledAnnouncements(client);
+  registerMessageAuditHandlers(client, {
+    config: messageAuditConfig,
+    sendMessage: async (channelId, content) => {
+      const channel = await client.channels.fetch(channelId);
+      if (!channel || !("send" in channel) || typeof channel.send !== "function") {
+        throw new Error(`message-audit: channel ${channelId} is not a text channel`);
+      }
+      await channel.send(content);
+    },
+  });
   registerTimekeeper(client);
   registerTimekeeperCommandHandlers(client);
   registerShutdownHandler(client);
