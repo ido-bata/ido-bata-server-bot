@@ -2,6 +2,7 @@ import "dotenv/config";
 
 import { join } from "node:path";
 
+import type { TextChannel } from "discord.js";
 import { Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
@@ -18,6 +19,9 @@ import { registerMessageAuditHandlers } from "./features/message-audit/handler.j
 import { deployPollCommands, registerPollHandlers } from "./features/poll/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerReminder } from "./features/reminder/service.js";
+import { deployRoleSlashCommands } from "./features/role-slash/deploy.js";
+import { registerRoleSlashHandlers } from "./features/role-slash/handler.js";
+import { createRoleSlashCommandRegistry } from "./features/role-slash/registry.js";
 import { registerScheduledAnnouncements } from "./features/scheduled-announcements/service.js";
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
 import { deploySlashCommands } from "./features/slash-commands/deploy.js";
@@ -36,6 +40,7 @@ async function main(): Promise<void> {
   });
 
   const slashRegistry = createSlashCommandRegistry();
+  const roleSlashRegistry = createRoleSlashCommandRegistry();
 
   client.once(Events.ClientReady, (readyClient) => {
     console.log(`Logged in as ${readyClient.user.tag}`);
@@ -54,6 +59,32 @@ async function main(): Promise<void> {
     }).catch((error: unknown) => {
       console.error("Failed to deploy poll slash commands on ready", error);
     });
+    void deployRoleSlashCommands({
+      registry: roleSlashRegistry,
+      token: config.discordToken,
+      clientId: config.discordClientId,
+      guildId: config.discordGuildId,
+    }).catch((error: unknown) => {
+      console.error("Failed to deploy role slash commands on ready", error);
+    });
+
+    // If an audit channel is configured, attempt to log a startup notice so
+    // operators know the bot is online. Best-effort — failure here must not
+    // crash the bot.
+    if (config.roleAuditChannelId) {
+      void readyClient.channels
+        .fetch(config.roleAuditChannelId)
+        .then(async (channel) => {
+          if (channel?.isTextBased() && "send" in channel) {
+            await (channel as TextChannel).send(
+              "role slash commands registered (/role assign, /role remove).",
+            );
+          }
+        })
+        .catch((error: unknown) => {
+          console.warn("Failed to post role-slash startup notice", error);
+        });
+    }
   });
 
   registerErrorForwarder(client);
@@ -81,6 +112,9 @@ async function main(): Promise<void> {
     },
   });
   registerStarboardHandlers(client);
+  registerRoleSlashHandlers(client, {
+    roleAuditChannelId: config.roleAuditChannelId,
+  });
   registerTimekeeper(client);
   registerTimekeeperCommandHandlers(client);
   registerShutdownHandler(client);
