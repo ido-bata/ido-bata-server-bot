@@ -447,14 +447,20 @@ async function joinAndPrepare(voiceChannel: VoiceBasedChannel, client: Client, t
     throw new Error(`Voice connection timed out after ${timeoutMs}ms`, { cause: error });
   }
 
-  await prepareStageSpeaker(voiceChannel, client);
-  await delay(1_000);
+  try {
+    await prepareStageSpeaker(voiceChannel, client);
+    await delay(1_000);
 
-  if (client.user) {
-    const botMember = await resolveBotMember(voiceChannel.guild, client.user.id);
-    if (botMember) {
-      await logVoiceStateSnapshot(botMember, voiceChannel, "after-join");
+    if (client.user) {
+      const botMember = await resolveBotMember(voiceChannel.guild, client.user.id);
+      if (botMember) {
+        await logVoiceStateSnapshot(botMember, voiceChannel, "after-join");
+      }
     }
+  } catch (error) {
+    console.error("[Timekeeper] Post-join setup failed, destroying voice connection:", error);
+    safeDestroy(connection);
+    throw new Error("joinAndPrepare post-join setup failed", { cause: error });
   }
 
   return connection;

@@ -199,4 +199,56 @@ describe("connectForPlayback stage reconnect", () => {
     expect(failedConnection.destroy as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
     expect(mockedJoinVoiceChannel).toHaveBeenCalledTimes(3);
   });
+
+  it("destroys the shared voice connection when prepareStageSpeaker throws after the first attempt", async () => {
+    // Real @discordjs/voice reuses the same VoiceConnection instance across
+    // consecutive joinVoiceChannel() calls for the same guild + adapter group,
+    // so the "leaked connection" scenario from db 4005813153 only reproduces
+    // when the mock returns the same instance on every call. The initial
+    // joinAndPrepare must succeed (Ready state + post-join setup); then
+    // prepareStageSpeaker must throw on every retry attempt so that the loop
+    // has to walk all the way to the exhausted-attempts error.
+    const sharedConnection = buildVoiceConnection();
+    mockedJoinVoiceChannel.mockImplementation(() => sharedConnection);
+    mockedEntersState.mockResolvedValue(undefined);
+
+    const stageChannel = buildStageChannel();
+    const botMember = buildBotMember();
+    // Make guild.members.fetch return the same botMember instance every time
+    // so we can install persistent mock behavior on its fetch spy (which
+    // logVoiceStateSnapshot invokes for both the "after-stage-prepare" and
+    // "after-join" snapshots).
+    (stageChannel.guild.members.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(botMember);
+
+    const fetchSpy = botMember.fetch as ReturnType<typeof vi.fn>;
+    // The first two fetch calls happen during the initial joinAndPrepare
+    // (prepareStageSpeaker's "after-stage-prepare" snapshot + the outer
+    // "after-join" snapshot). Every subsequent fetch (inside retry
+    // attempts' prepareStageSpeaker) must fail, so prepareStageSpeaker
+    // throws and joinAndPrepare exercises its post-join cleanup branch.
+    fetchSpy
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockImplementation(() => {
+        throw new Error("Voice state snapshot fetch failed");
+      });
+
+    const expectation = runWithFakeTimers(() =>
+      expect(connectForPlayback(stageChannel, buildClient(), 5_000)).rejects.toThrow(
+        /Failed to connect to stage channel after 3 attempts/,
+      ),
+    );
+
+    await expectation;
+
+    // 1 initial joinAndPrepare + MAX_STAGE_RECONNECT_ATTEMPTS retries = 4 calls.
+    // Reaching the third retry attempt (the fourth joinAndPrepare) proves the
+    // reconnect loop did not bail on the very first post-join throw.
+    expect(mockedJoinVoiceChannel).toHaveBeenCalledTimes(4);
+    // The shared connection's destroy() must have been invoked at least once
+    // for the leaked connection from the second attempt (the first retry).
+    // Both safeDestroy (loop + joinAndPrepare catch path) route through this
+    // single spy on the shared instance.
+    expect(sharedConnection.destroy as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+  });
 });
