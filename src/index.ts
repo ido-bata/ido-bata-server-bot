@@ -12,6 +12,7 @@ import { deployBirthdayCommands } from "./features/birthday-role/deploy.js";
 import { registerBirthdayRoleHandlers } from "./features/birthday-role/service.js";
 import { registerConfigHotReload } from "./features/config-hot-reload/register.js";
 import { registerErrorForwarder } from "./features/error-forwarder/service.js";
+import { registerHealthMetrics } from "./features/health-metrics/index.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { messageAuditConfig } from "./features/message-audit/config.js";
@@ -118,6 +119,7 @@ async function main(): Promise<void> {
   registerTimekeeper(client);
   registerTimekeeperCommandHandlers(client);
   registerShutdownHandler(client);
+  await registerHealthMetrics(client);
   registerPollHandlers(client);
   registerWelcomeHandlers(client);
   registerReminder(client);
