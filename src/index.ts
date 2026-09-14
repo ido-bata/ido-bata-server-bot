@@ -29,6 +29,11 @@ import { deploySlashCommands } from "./features/slash-commands/deploy.js";
 import { registerSlashCommandHandlers } from "./features/slash-commands/handler.js";
 import { createSlashCommandRegistry } from "./features/slash-commands/registry.js";
 import { registerStarboardHandlers } from "./features/starboard/handler.js";
+import { readSnapshotConfig } from "./features/state-snapshot/config.js";
+import {
+  createSnapshotRuntime,
+  registerStateSnapshotScheduler,
+} from "./features/state-snapshot/service.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 import { registerTimekeeperCommandHandlers } from "./features/timekeeper-commands/handler.js";
 import { registerWelcomeHandlers } from "./features/welcome/handler.js";
@@ -162,6 +167,16 @@ async function main(): Promise<void> {
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
+
+  // State snapshots are opt-in. They run when the bot is ready if
+  // STATE_SNAPSHOT_ENCRYPTION_KEY is set; otherwise the scheduler no-ops.
+  if (process.env.STATE_SNAPSHOT_ENCRYPTION_KEY) {
+    const snapshotRuntime = createSnapshotRuntime(readSnapshotConfig(), {
+      encryptionKey: process.env.STATE_SNAPSHOT_ENCRYPTION_KEY,
+      runOnReady: process.env.STATE_SNAPSHOT_RUN_ON_READY === "true",
+    });
+    registerStateSnapshotScheduler(client, snapshotRuntime);
+  }
 
   await client.login(config.discordToken);
 }
