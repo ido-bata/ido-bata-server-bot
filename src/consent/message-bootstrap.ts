@@ -56,7 +56,7 @@ function isManagedConsentMessage(message: Message, botUserId: string): boolean {
 
 async function fetchConsentChannel(client: Client, config: ConsentConfig): Promise<TextChannel> {
   const channel = await client.channels.fetch(config.channelId);
-  if (!channel || !channel.isTextBased() || !("messages" in channel) || !("send" in channel)) {
+  if (!channel?.isTextBased() || !("messages" in channel) || !("send" in channel)) {
     throw new Error(`Consent channel ${config.channelId} is not a message-capable text channel`);
   }
   if ("guildId" in channel && channel.guildId !== config.guildId) {
@@ -152,7 +152,7 @@ export async function ensureConsentMessage(deps: BootstrapDeps): Promise<Consent
 
 async function fetchTargetMessage(client: Client, target: ReactionTarget): Promise<Message> {
   const channel = await client.channels.fetch(target.channelId);
-  if (!channel || !channel.isTextBased() || !("messages" in channel)) {
+  if (!channel?.isTextBased() || !("messages" in channel)) {
     throw new Error(`Consent target channel ${target.channelId} is unavailable`);
   }
   return channel.messages.fetch(target.messageId);
