@@ -21,6 +21,7 @@ describe("readConfig", () => {
       roleAuditChannelId: null,
       logLevel: "info",
       logRingSize: 200,
+      tuiMode: "auto",
     });
   });
 
