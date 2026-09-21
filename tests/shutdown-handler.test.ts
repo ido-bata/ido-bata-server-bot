@@ -43,7 +43,7 @@ function setupRunner(overrides: Partial<ShutdownDependencies> = {}): RunnerHarne
   const client = createFakeClient();
 
   const dependencies: ShutdownDependencies = {
-    cancelSession: vi.fn<() => boolean>(() => false),
+    cancelSession: vi.fn<() => Promise<boolean>>(async () => false),
     destroyClient: vi.fn<() => Promise<void>>(async () => undefined),
     destroyVoiceConnections: vi.fn<() => void>(() => undefined),
     exit: vi.fn<(code: number) => void>(() => undefined),
@@ -92,7 +92,7 @@ describe("shutdown handler", () => {
     });
 
     const { cancelSession, client, destroyClient, exit, messages, runner } = setupRunner({
-      cancelSession: vi.fn(() => true),
+      cancelSession: vi.fn(async () => true),
       destroyVoiceConnections,
     });
 

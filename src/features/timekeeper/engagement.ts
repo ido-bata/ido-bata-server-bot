@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import type { ConsentEvent } from "../../consent/types.js";
 import type { TimekeeperEventKind } from "./timeline.js";
 import { fetchRandomWikipediaTopic, type WikipediaTopic } from "./wikipedia.js";
 
@@ -61,6 +62,13 @@ export function parseCheckInCustomId(
   };
 }
 
+/**
+ * In-memory check-in collector. **Never gates on consent** — per the v0.2.0
+ * non-consent path (docs/privacy.md § 6) the session check-in itself must
+ * stay usable so the timekeeper remains functional when a user has not
+ * granted consent. The persistence path (`persistSessionAttendance`) is
+ * what enforces the gate.
+ */
 export function recordCheckIn(
   session: TimekeeperSessionEngagement,
   userId: string,
@@ -73,11 +81,34 @@ export function recordCheckIn(
   return existing.size !== beforeSize;
 }
 
-export function recordAttendance(
+/**
+ * Add a per-user attendance date to the in-memory map. The actual write to
+ * `data/timekeeper-history.json` happens in `persistSessionAttendance` —
+ * this function only mutates the session object and never touches disk.
+ *
+ * Consent-gated via the current `PersistenceAuthorization`. A revoke event
+ * short-circuits the gate so future writes for that user are skipped even
+ * if the authorization store lags behind.
+ */
+export async function recordAttendance(
   session: TimekeeperSessionEngagement,
   userId: string,
   date: string,
-): void {
+): Promise<void> {
+  if (revokedUsers.has(userId)) {
+    return;
+  }
+  const auth = currentAuthorization;
+  if (!auth) {
+    // Fail-closed: with no auth wired, no user gets persisted. The bot
+    // must wire `attachPersistenceAuthorization` at startup to enable
+    // any persistence; see `registerTimekeeper` in service.ts.
+    return;
+  }
+  const decision = await auth.authorize(userId, "activity-history");
+  if (!decision.ok) {
+    return;
+  }
   const existing = session.attendanceDatesByUserId.get(userId) ?? new Set<string>();
   existing.add(date);
   session.attendanceDatesByUserId.set(userId, existing);
@@ -123,9 +154,36 @@ export async function buildFortuneSummary(
   return entries;
 }
 
-export function persistSessionAttendance(session: TimekeeperSessionEngagement, date: string): void {
+/**
+ * Persist the session attendance map to `data/timekeeper-history.json`.
+ *
+ * Consent-gated: each user in the session map is checked against the
+ * currently wired `PersistenceAuthorization`. Users without consent — or
+ * users who have been revoked since the last reconcile — are filtered out
+ * before any JSON write happens.
+ */
+export async function persistSessionAttendance(
+  session: TimekeeperSessionEngagement,
+  date: string,
+): Promise<void> {
+  const auth = currentAuthorization;
+  if (!auth) {
+    // Fail-closed: no auth wired means no persistence, regardless of who
+    // checked in. This is the documented non-consent path.
+    return;
+  }
+
   for (const userId of session.checkInsByUserId.keys()) {
-    recordAttendance(session, userId, date);
+    if (revokedUsers.has(userId)) {
+      continue;
+    }
+    const decision = await auth.authorize(userId, "activity-history");
+    if (!decision.ok) {
+      continue;
+    }
+    const existing = session.attendanceDatesByUserId.get(userId) ?? new Set<string>();
+    existing.add(date);
+    session.attendanceDatesByUserId.set(userId, existing);
   }
 
   const serialized: PersistedAttendance = {};
@@ -146,15 +204,15 @@ export function persistSessionAttendance(session: TimekeeperSessionEngagement, d
  * The session status log is the durable record of which sessions completed
  * normally vs were cancelled or interrupted by a graceful shutdown.
  */
-export function markSessionInterrupted(
+export async function markSessionInterrupted(
   session: TimekeeperSessionEngagement,
   options: { reason?: string; status?: TimekeeperSessionStatus } = {},
-): void {
+): Promise<void> {
   const status: TimekeeperSessionStatus = options.status ?? "interrupted";
   const date = formatSessionDateFromId(session.id);
 
   if (session.checkInsByUserId.size > 0) {
-    persistSessionAttendance(session, date);
+    await persistSessionAttendance(session, date);
   }
 
   const log = loadSessionLog();
@@ -230,6 +288,73 @@ function countStreakDays(dates: Set<string>): number {
   }
 
   return streak;
+}
+
+// ---------------------------------------------------------------------------
+// PersistenceAuthorization wiring
+// ---------------------------------------------------------------------------
+
+/**
+ * Shape consumed by `recordAttendance` / `persistSessionAttendance`. The
+ * authorization callback MUST be fail-closed: it returns `{ ok: false }`
+ * whenever it cannot prove the user has an active grant.
+ */
+export type PersistenceAuthorization = {
+  authorize: (subjectId: string, scope: "activity-history") => Promise<{ ok: boolean }>;
+};
+
+const revokedUsers = new Set<string>();
+let currentAuthorization: PersistenceAuthorization | null = null;
+
+/**
+ * Wire a `ConsentService`-backed `PersistenceAuthorization` into the
+ * engagement module. Subscribes to consent events so a revoke immediately
+ * disables future persistence for that subject — independent of what the
+ * authorization callback would later return.
+ *
+ * Returns an unsubscribe function that detaches both the authorization
+ * reference and the event subscription.
+ */
+export function attachPersistenceAuthorization(
+  authorization: PersistenceAuthorization,
+  subscribe: (listener: (event: ConsentEvent) => void) => () => void,
+): () => void {
+  currentAuthorization = authorization;
+  const unsubscribe = subscribe((event) => {
+    if (event.kind === "revoke") {
+      revokedUsers.add(event.subjectId);
+      return;
+    }
+    if (event.kind === "grant") {
+      revokedUsers.delete(event.subjectId);
+      return;
+    }
+    if (event.kind === "clear") {
+      revokedUsers.delete(event.subjectId);
+    }
+  });
+  return () => {
+    if (currentAuthorization === authorization) {
+      currentAuthorization = null;
+    }
+    unsubscribe();
+  };
+}
+
+/** Test-only: clear the module-level state introduced for v0.2.0 gating. */
+export function __resetTimekeeperPersistenceState(): void {
+  revokedUsers.clear();
+  currentAuthorization = null;
+}
+
+/**
+ * Test-only: synchronously check whether a subject has been flagged as
+ * revoked outside of an explicit authorize call. The normal production
+ * path uses `attachPersistenceAuthorization` so this is mostly a debug
+ * surface; the timekeeper itself never reads from it.
+ */
+export function isRevokedForTesting(subjectId: string): boolean {
+  return revokedUsers.has(subjectId);
 }
 
 function pickFortuneText(phaseCount: number, random: () => number): string {

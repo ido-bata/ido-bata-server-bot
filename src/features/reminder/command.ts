@@ -87,7 +87,7 @@ export async function executeRemindCommand(
     });
   }
 
-  const result = deps.queue.add({
+  const result = await deps.queue.add({
     userId: interaction.user.id,
     message,
     fireAt,

@@ -12,8 +12,10 @@ import {
 import type { Client, GuildMember, VoiceBasedChannel } from "discord.js";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, Events } from "discord.js";
 
+import type { ConsentService } from "../../consent/service.js";
 import { isTimekeeperConfigured, type TimekeeperConfig, timekeeperConfig } from "./config.js";
 import {
+  attachPersistenceAuthorization,
   buildCheckInCustomId,
   buildCheckInLabel,
   buildFortuneSummary,
@@ -202,21 +204,24 @@ export function __resetTimekeeperRuntimeState(): void {
 /**
  * Cancel the in-progress timekeeper session if any. Persists whatever state
  * has been collected so far, marks the session as cancelled, and resets the
- * module-level singletons. Returns true if a session was cancelled.
+ * module-level singletons. Resolves with `true` if a session was cancelled.
  *
- * Safe to call when no session is active — it then returns false and is a
- * no-op. Used by the graceful-shutdown handler so a SIGINT/SIGTERM does not
- * silently drop an in-progress session.
+ * Safe to call when no session is active — it then resolves with `false`
+ * and is a no-op. Used by the graceful-shutdown handler so a SIGINT/SIGTERM
+ * does not silently drop an in-progress session.
+ *
+ * Async because `markSessionInterrupted` now awaits the consent-gated
+ * `persistSessionAttendance` call.
  */
-export function cancelActiveSession(
+export async function cancelActiveSession(
   options: { reason?: string; status?: "cancelled" | "interrupted" } = {},
-): boolean {
+): Promise<boolean> {
   const session = activeSession;
   if (!session) {
     return false;
   }
 
-  markSessionInterrupted(session, {
+  await markSessionInterrupted(session, {
     reason: options.reason ?? "shutdown",
     status: options.status ?? "interrupted",
   });
@@ -238,7 +243,25 @@ export function getActiveTimekeeperSessionCount(): number {
   return activeSession ? 1 : 0;
 }
 
-export function registerTimekeeper(client: Client): void {
+export function registerTimekeeper(
+  client: Client,
+  options: { consentService?: ConsentService } = {},
+): {
+  detachConsent: () => void;
+} {
+  let detachConsent: () => void = () => undefined;
+  if (options.consentService) {
+    detachConsent = attachPersistenceAuthorization(
+      {
+        authorize: async (subjectId, scope) => {
+          const decision = await options.consentService!.authorize(subjectId, scope);
+          return { ok: decision.ok };
+        },
+      },
+      (listener) => options.consentService!.subscribe(listener),
+    );
+  }
+
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isButton()) {
       return;
@@ -298,6 +321,8 @@ export function registerTimekeeper(client: Client): void {
 
     scheduleNextSession(client, timekeeperConfig);
   });
+
+  return { detachConsent };
 }
 
 function scheduleNextSession(client: Client, config: TimekeeperConfig): void {
@@ -457,7 +482,7 @@ async function runSession(client: Client, config: TimekeeperConfig, startAt: Dat
 
   await Promise.allSettled(progressTasks);
   if (activeSession) {
-    persistSessionAttendance(activeSession, formatSessionDate(startAt));
+    await persistSessionAttendance(activeSession, formatSessionDate(startAt));
   }
   const fortuneSummaries = activeSession ? await buildFortuneSummary(activeSession) : null;
   if (fortuneSummaries) {

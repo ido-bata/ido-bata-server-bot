@@ -1,6 +1,7 @@
 import type { Client } from "discord.js";
 import { Events } from "discord.js";
 
+import type { ConsentService } from "../../consent/service.js";
 import type { SnapshotConfig } from "./config.js";
 import { applyRetentionPlan, planRetention, type RetentionPolicy } from "./retention.js";
 import { getNextSnapshotStartAt } from "./schedule.js";
@@ -22,6 +23,12 @@ type SnapshotDependencies = {
   runOnReady?: boolean;
   clock?: () => Date;
   uploader?: SnapshotUploader;
+  /**
+   * v0.2.0: optional `ConsentService`. When provided, every `clear` event
+   * triggers `applyRetentionPlan` with a keep-nothing policy so any
+   * snapshot whose source files contained the revoked subject is purged.
+   */
+  consentService?: ConsentService;
 };
 
 export type SnapshotRuntime = {
@@ -49,9 +56,36 @@ export function createSnapshotRuntime(
 export function registerStateSnapshotScheduler(
   client: Client,
   runtime: SnapshotRuntime,
+  options: { consentService?: ConsentService } = {},
 ): { cancel: () => void } {
   let timer: NodeJS.Timeout | null = null;
   let cancelled = false;
+  let detachConsent: (() => void) | null = null;
+
+  if (options.consentService) {
+    detachConsent = options.consentService.subscribe((event) => {
+      if (event.kind !== "clear") {
+        return;
+      }
+      // v0.2.0 invariant: every snapshot whose source files contained the
+      // revoked subject is purged on `clear`. We cannot inspect encrypted
+      // bytes, so the keep-nothing policy is the safe choice — better to
+      // lose a few snapshots than to retain a stale copy of the user's
+      // data.
+      try {
+        purgeAllSnapshots({
+          snapshotDir: runtime.config.snapshotDir,
+          encryptionKey: runtime.encryptionKey,
+          clock: runtime.clock,
+        });
+      } catch (error) {
+        console.error(
+          `[StateSnapshot] retention purge after clear(${event.subjectId}) failed`,
+          error,
+        );
+      }
+    });
+  }
 
   const schedule = (): void => {
     if (cancelled) {
@@ -95,6 +129,10 @@ export function registerStateSnapshotScheduler(
       if (timer) {
         clearTimeout(timer);
         timer = null;
+      }
+      if (detachConsent) {
+        detachConsent();
+        detachConsent = null;
       }
     },
   };
@@ -155,4 +193,46 @@ function toRetentionPolicy(config: SnapshotConfig): RetentionPolicy {
     monthlyRetention: config.monthlyRetention,
     weeklyRetention: config.weeklyRetention,
   };
+}
+
+/**
+ * Purges every snapshot in the directory by invoking `applyRetentionPlan`
+ * with a keep-nothing policy. Used by the v0.2.0 `ConsentService.clear`
+ * listener because we cannot inspect encrypted bytes to know which
+ * snapshots contain the revoked subject.
+ *
+ * `applyRetentionPlan` is signature-async; the body does no I/O awaits
+ * but we await the returned promise to honour the contract. Any leftover
+ * files (e.g. permission denied) are surfaced back through the thrown
+ * `Error`.
+ *
+ * Exported so the privacy-clear test can assert the wire-up without
+ * running the full scheduler loop.
+ */
+export async function purgeAllSnapshots(options: {
+  snapshotDir: string;
+  encryptionKey: string | undefined;
+  clock?: () => Date;
+}): Promise<void> {
+  const snapshots = listSnapshots(options.snapshotDir, options.encryptionKey);
+  if (snapshots.length === 0) {
+    return;
+  }
+  const clock = options.clock ?? (() => new Date());
+  // planRetention only needs createdAt + path; listSnapshots already decoded
+  // the encrypted metadata, so the real timestamps are available.
+  const plan = planRetention(
+    snapshots,
+    {
+      dailyRetention: 0,
+      monthlyRetention: 0,
+      weeklyRetention: 0,
+    },
+    clock(),
+  );
+  await applyRetentionPlan(plan);
+  const remaining = listSnapshots(options.snapshotDir, options.encryptionKey);
+  if (remaining.length > 0) {
+    throw new Error(`failed to purge ${remaining.length} snapshot file(s)`);
+  }
 }

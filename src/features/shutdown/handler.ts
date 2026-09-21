@@ -8,9 +8,10 @@ type ShutdownSignal = "SIGINT" | "SIGTERM";
 export type ShutdownDependencies = {
   /**
    * Cancels any in-progress timekeeper session and flushes its state. Defaults
-   * to the real implementation exported from the timekeeper feature.
+   * to the real implementation exported from the timekeeper feature. Returns
+   * `true` if a session was active and got cancelled.
    */
-  cancelSession?: () => boolean;
+  cancelSession?: () => Promise<boolean>;
   /**
    * Destroys all Discord voice connections tracked by @discordjs/voice.
    * Defaults to iterating `getVoiceConnections()`.
@@ -102,7 +103,7 @@ export function createShutdownRunner(
 
     let cancelResult: boolean | null = null;
     try {
-      cancelResult = cancelSession();
+      cancelResult = await cancelSession();
     } catch (error) {
       logger(`Failed to cancel timekeeper session: ${formatError(error)}`);
     }

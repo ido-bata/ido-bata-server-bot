@@ -4,10 +4,12 @@
 
 import type { Channel, Client, GuildMember } from "discord.js";
 import { ChannelType, Events } from "discord.js";
+import type { ConsentService } from "../../consent/service.js";
 import { birthdayCommand, createBirthdayCommandRegistry } from "./commands.js";
 import { type BirthdayRoleConfig, birthdayRoleConfig, isBirthdayRoleConfigured } from "./config.js";
 import { type JstDate, previousJstDate, toJstDate } from "./date.js";
 import {
+  type BirthdayConsentAuthorization,
   type BirthdayRoleHandler,
   createBirthdayRoleHandler,
   type HandlerDependencies,
@@ -38,16 +40,36 @@ export function createBirthdayRoleService(options: ServiceOptions = {}): Birthda
   return { handler, registry };
 }
 
+/**
+ * Convert a `ConsentService` into the `BirthdayConsentAuthorization` shape
+ * the handler expects. Used by `index.ts` to wire the v0.2.0 consent gate
+ * into the live birthday-role handler.
+ */
+export function toBirthdayConsentAuthorization(
+  service: ConsentService,
+): BirthdayConsentAuthorization {
+  return {
+    authorize: async (subjectId, scope) => {
+      const decision = await service.authorize(subjectId, scope);
+      return { ok: decision.ok };
+    },
+  };
+}
+
 export function registerBirthdayRoleHandlers(
   client: Client,
-  options: ServiceOptions = {},
+  options: ServiceOptions & { consentService?: ConsentService } = {},
 ): BirthdayRoleService {
   const config = options.config ?? birthdayRoleConfig;
   const liveDeps = createLiveHandlerDeps(client, config);
+  const consent: BirthdayConsentAuthorization | undefined = options.consentService
+    ? toBirthdayConsentAuthorization(options.consentService)
+    : options.deps?.consent;
   const deps: HandlerDependencies = {
     config,
     ...liveDeps,
     ...(options.deps ?? {}),
+    ...(consent ? { consent } : {}),
   };
   const service = createBirthdayRoleService({ ...options, deps });
   const now = options.now ?? (() => new Date());
