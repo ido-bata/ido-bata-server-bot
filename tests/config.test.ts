@@ -34,7 +34,6 @@ describe("readConfig", () => {
     });
   });
 
-
   it("enables consent from CONSENT_CHANNEL_ID without a message id", () => {
     const config = readConfig({
       DISCORD_TOKEN: "token",
