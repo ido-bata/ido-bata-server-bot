@@ -2,16 +2,21 @@
 #
 # Multi-stage Containerfile for ido-bata-server-bot.
 #
-#   base       — Node 22-slim runtime base, Bun installer, tsx runtime helper.
+#   base       — Node 22-alpine runtime base. Switched from -slim in
+#                round-5 because the slim base (~180 MiB) plus prod deps
+#                landed at 347 MiB after the prod-deps split, which
+#                still failed the < 300 MiB gate. Alpine (~50 MiB base)
+#                plus `libc6-compat` for opusscript's glibc native module
+#                keeps the runtime image under budget.
 #   deps       — base + `bun install --frozen-lockfile` (prod + dev, for build).
 #   build      — deps + TypeScript compile to dist/.
 #   prod-deps  — base + `bun install --production` (prod-only). Provides
 #                the runtime node_modules so the devDependencies that
 #                `deps` materialised for the build stage are NOT carried
 #                into the runtime image (saves ~300 MiB).
-#   runtime    — slim Node 22-slim + dist (from build) + production
-#                node_modules (from prod-deps). This is the image Compose
-#                uses by default.
+#   runtime    — alpine + dist (from build) + production node_modules
+#                (from prod-deps). This is the image Compose uses by
+#                default.
 #
 # Compose builds `runtime`; the production entrypoint runs the compiled
 # `dist/index.js` so the runtime image does not need tsx or the TypeScript
@@ -24,10 +29,10 @@
 #   - `runtime`            → only `package.json` is copied, the rest is
 #                            `--from=...`.
 #
-# Image size target: < 300 MB. node:22-slim is ~180 MB; production deps
+# Image size target: < 300 MB. node:22-alpine is ~50 MB; production deps
 # (`discord.js`, `@discordjs/voice`, `ffmpeg-static`, `opusscript`, `zod`,
 # `dotenv`) push the total to ~250-280 MB on amd64.
-ARG NODE_IMAGE=node:22-slim
+ARG NODE_IMAGE=node:22-alpine
 
 # ---- base ----
 FROM ${NODE_IMAGE} AS base
@@ -46,18 +51,18 @@ ENV NPM_CONFIG_LOGLEVEL=warn \
 # stage can compile).
 FROM base AS deps
 ARG BUN_VERSION=1.3.10
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
         ca-certificates \
         curl \
         unzip \
+        bash \
     && curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" -o /tmp/bun.zip \
     && unzip /tmp/bun.zip -d /tmp/bun \
     && mv /tmp/bun/bun-linux-x64/bun /usr/local/bin/bun \
     && rm -rf /tmp/bun /tmp/bun.zip \
     && npm install -g tsx@4.23.9 \
-    && apt-get purge -y --auto-remove curl unzip \
-    && rm -rf /var/lib/apt/lists/*
+    && apk del curl unzip \
+    && rm -rf /var/cache/apk/*
 COPY package.json bun.lock ./
 # `NODE_ENV` is unset in this stage (it is set in `runtime` only), so
 # devDependencies (`tsc`, `vitest`, ...) are installed for the build stage.
@@ -78,7 +83,7 @@ RUN bun run build
 FROM base AS prod-deps
 ARG BUN_VERSION=1.3.10
 # Reuses the cached Bun install from `deps` (above) — Bun is identical,
-# so re-installing via the same path would just double the apt layer.
+# so re-installing via the same path would just double the apk layer.
 COPY --from=deps /usr/local/bin/bun /usr/local/bin/bun
 COPY package.json bun.lock ./
 ENV NODE_ENV=production
@@ -88,10 +93,14 @@ RUN bun install --production --frozen-lockfile \
 # ---- runtime ----
 FROM ${NODE_IMAGE} AS runtime
 WORKDIR /app
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+# `libc6-compat` ships glibc compatibility shims so opusscript's prebuilt
+# NASM native module (loaded when WASM is unavailable) can resolve its
+# dynamic symbols on Alpine's musl libc. Without it the audio path
+# crashes on first voice session.
+RUN apk add --no-cache \
         ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+        libc6-compat \
+    && rm -rf /var/cache/apk/*
 # NODE_ENV=production belongs here, not in `base` — see the comment above.
 ENV NODE_ENV=production \
     CONTAINER=true
