@@ -1,3 +1,4 @@
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import {
   ConfigStore,
   type ConfigStoreLogger,
@@ -14,10 +15,12 @@ function createFsWatcherFactory(): FileWatcherFactory {
   return (filePath, onChange) => createFsWatcher(filePath, onChange);
 }
 
+const configHotReloadLogger = childFor(getRootLogger(), "config-hot-reload");
+
 const consoleConfigStoreLogger: ConfigStoreLogger = {
-  info: (message, meta) => console.log(`[config-hot-reload] ${message}`, meta ?? ""),
-  warn: (message, meta) => console.warn(`[config-hot-reload] ${message}`, meta ?? ""),
-  error: (message, meta) => console.error(`[config-hot-reload] ${message}`, meta ?? ""),
+  info: (message, meta) => configHotReloadLogger.info(meta ? { ...meta } : undefined, message),
+  warn: (message, meta) => configHotReloadLogger.warn(meta ? { ...meta } : undefined, message),
+  error: (message, meta) => configHotReloadLogger.error(meta ? { ...meta } : undefined, message),
 };
 
 type RegisterConfigHotReloadOptions = {

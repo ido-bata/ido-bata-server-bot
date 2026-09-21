@@ -1,6 +1,7 @@
 import type { Client } from "discord.js";
 import { EmbedBuilder, type TextChannel } from "discord.js";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { errorForwarderConfig, isErrorForwarderConfigured } from "./config.js";
 import {
   type ErrorContext,
@@ -38,10 +39,12 @@ export type ErrorReporterOptions = {
   exitProcess?: (code: number) => never;
 };
 
+const errorForwarderLogger = childFor(getRootLogger(), "error-forwarder");
+
 const DEFAULT_LOGGER: LoggerLike = {
-  info: (message, meta) => console.log(`[error-forwarder] ${message}`, meta ?? {}),
-  warn: (message, meta) => console.warn(`[error-forwarder] ${message}`, meta ?? {}),
-  error: (message, meta) => console.error(`[error-forwarder] ${message}`, meta ?? {}),
+  info: (message, meta) => errorForwarderLogger.info(meta ? { ...meta } : undefined, message),
+  warn: (message, meta) => errorForwarderLogger.warn(meta ? { ...meta } : undefined, message),
+  error: (message, meta) => errorForwarderLogger.error(meta ? { ...meta } : undefined, message),
 };
 
 const DEFAULT_CONTEXT_BUILDER =

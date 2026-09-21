@@ -1,7 +1,10 @@
 import type { ChatInputCommandInteraction, Client, Interaction } from "discord.js";
 import { SlashCommandBuilder } from "discord.js";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import type { CalendarService } from "./service.js";
+
+const logger = childFor(getRootLogger(), "ical-calendar");
 
 type ReplyableInteraction = {
   reply: (options: string | { content?: string; ephemeral?: boolean }) => Promise<unknown>;
@@ -86,7 +89,7 @@ export function bindDiscordCalendarCommands(
             ephemeral: true,
           });
         } catch (error) {
-          console.error("[ical-calendar] failed to handle interaction", error);
+          logger.error({ err: error }, "failed to handle interaction");
         }
       });
     },

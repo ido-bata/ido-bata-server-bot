@@ -1,3 +1,4 @@
+import { childFor, getRootLogger, type Logger as RootLogger } from "../../lib/logger/index.js";
 import type { GuildConfig } from "./config.js";
 import type { GuildContext, GuildListener } from "./listener.js";
 import type { ConfigStore } from "./store.js";
@@ -11,12 +12,14 @@ export type RegistryEvent =
 
 export type RegistryEventListener = (event: RegistryEvent) => void;
 
+export type RegistryLogger = Pick<RootLogger, "info" | "warn" | "error">;
+
 export type RegistryOptions = {
   store: ConfigStore;
   /** When a guild mounts a listener, also subscribe to lifecycle events. */
   onEvent?: RegistryEventListener;
-  /** Optional logger for diagnostics; defaults to console. */
-  logger?: Pick<Console, "log" | "warn" | "error">;
+  /** Optional logger for diagnostics; defaults to a structured logger. */
+  logger?: RegistryLogger;
 };
 
 export type GuildRegistry = {
@@ -36,14 +39,14 @@ export function createGuildRegistry(options: RegistryOptions): GuildRegistry {
   const listeners = new Map<string, GuildListener>();
   const mountedConfigs = new Map<string, GuildConfig>();
   const eventListeners = new Set<RegistryEventListener>();
-  const logger = options.logger ?? console;
+  const logger = options.logger ?? childFor(getRootLogger(), "multi-guild");
 
   function emit(event: RegistryEvent): void {
     for (const handler of eventListeners) {
       try {
         handler(event);
       } catch (error) {
-        logger.error(`[multi-guild] event handler for ${event.kind} threw`, error);
+        logger.error({ event: event.kind, err: error }, "multi-guild event handler threw");
       }
     }
   }
@@ -54,7 +57,10 @@ export function createGuildRegistry(options: RegistryOptions): GuildRegistry {
       try {
         await listener.onMount?.(ctx);
       } catch (error) {
-        logger.error(`[multi-guild] listener ${id} failed to mount for ${guildId}`, error);
+        logger.error(
+          { listenerId: id, guildId, err: error },
+          "multi-guild listener failed to mount",
+        );
       }
     }
   }
@@ -64,7 +70,10 @@ export function createGuildRegistry(options: RegistryOptions): GuildRegistry {
       try {
         await listener.onUnmount?.({ guildId });
       } catch (error) {
-        logger.error(`[multi-guild] listener ${id} failed to unmount for ${guildId}`, error);
+        logger.error(
+          { listenerId: id, guildId, err: error },
+          "multi-guild listener failed to unmount",
+        );
       }
     }
   }
@@ -81,8 +90,8 @@ export function createGuildRegistry(options: RegistryOptions): GuildRegistry {
       for (const [guildId, config] of mountedConfigs) {
         Promise.resolve(listener.onMount?.({ guildId, config })).catch((error) => {
           logger.error(
-            `[multi-guild] late-mount of listener ${listener.id} for ${guildId} failed`,
-            error,
+            { listenerId: listener.id, guildId, err: error },
+            "multi-guild late-mount of listener failed",
           );
         });
       }
@@ -97,8 +106,8 @@ export function createGuildRegistry(options: RegistryOptions): GuildRegistry {
       for (const guildId of mountedConfigs.keys()) {
         Promise.resolve(listener.onUnmount?.({ guildId })).catch((error) => {
           logger.error(
-            `[multi-guild] unmount of listener ${id} for ${guildId} during unregister failed`,
-            error,
+            { listenerId: id, guildId, err: error },
+            "multi-guild unmount during unregister failed",
           );
         });
       }
@@ -124,7 +133,7 @@ export function createGuildRegistry(options: RegistryOptions): GuildRegistry {
       }
 
       mountedConfigs.set(guildId, resolved);
-      logger.log(`[multi-guild] guild added: ${guildId}`);
+      logger.info(`[multi-guild] guild added: ${guildId}`);
       await mountForGuild(guildId, resolved);
       emit({ kind: "guild-added", guildId });
     },
@@ -135,7 +144,7 @@ export function createGuildRegistry(options: RegistryOptions): GuildRegistry {
       }
       await unmountForGuild(guildId);
       mountedConfigs.delete(guildId);
-      logger.log(`[multi-guild] guild removed: ${guildId}`);
+      logger.info(`[multi-guild] guild removed: ${guildId}`);
       emit({ kind: "guild-removed", guildId });
     },
 

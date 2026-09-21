@@ -1,8 +1,11 @@
 import type { Client, GuildMember, PartialGuildMember } from "discord.js";
 import { ChannelType, Events } from "discord.js";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { isWelcomeConfigured, type WelcomeConfig, welcomeConfig } from "./config.js";
 import { buildWelcomeMessage, type WelcomeMember } from "./messages.js";
+
+const logger = childFor(getRootLogger(), "welcome");
 
 type SendableTextChannel = {
   send: (content: string) => Promise<unknown>;
@@ -52,7 +55,7 @@ export function createWelcomeHandler(deps: HandlerDependencies = {}) {
         await channel.send(buildWelcomeMessage(event.member, config));
         return "sent";
       } catch (error) {
-        console.error("[welcome] Failed to send welcome message", error);
+        logger.error({ err: error }, "failed to send welcome message");
         return "send-failed";
       }
     },

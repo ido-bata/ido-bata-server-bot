@@ -12,6 +12,13 @@ const configSchema = z
     // Optional: audit log channel for `/role` slash command usage. When set,
     // the bot forwards a structured entry to the channel after each command.
     ROLE_AUDIT_CHANNEL_ID: z.string().optional(),
+    // Structured logger configuration. `LOG_LEVEL` is forwarded to pino;
+    // `LOG_RING_SIZE` bounds the in-memory ring buffer that powers the
+    // recent-events stream (TUI log panel, etc.).
+    LOG_LEVEL: z
+      .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
+      .default("info"),
+    LOG_RING_SIZE: z.coerce.number().int().min(10).max(10_000).default(200),
   })
   .refine((env) => parseGuildList(env.DISCORD_GUILD_ID, env.DISCORD_GUILD_IDS).length > 0, {
     message:
@@ -29,6 +36,10 @@ export type BotConfig = {
   enableGuildMembersIntent: boolean;
   enablePresenceIntent: boolean;
   roleAuditChannelId: string | null;
+  /** Pino level forwarded to the structured logger. */
+  logLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+  /** Capacity of the in-memory ring buffer backing the recent-events stream. */
+  logRingSize: number;
 };
 
 function parseGuildList(guildId?: string, guildIds?: string): string[] {
@@ -67,5 +78,7 @@ export function readConfig(env: NodeJS.ProcessEnv): BotConfig {
     enableGuildMembersIntent,
     enablePresenceIntent,
     roleAuditChannelId,
+    logLevel: parsed.LOG_LEVEL,
+    logRingSize: parsed.LOG_RING_SIZE,
   };
 }

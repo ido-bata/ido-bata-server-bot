@@ -1,6 +1,7 @@
 import type { Client } from "discord.js";
 import { Events } from "discord.js";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import {
   findWhitelistedGame,
   type GameActivityConfig,
@@ -55,7 +56,8 @@ export type GameActivityDependencies = {
    */
   now?: () => number;
   /**
-   * Optional logger hook. Defaults to `console.log` / `console.warn`.
+   * Optional logger hook. Defaults to a structured child logger bound to
+   * the "game-activity" component.
    */
   logger?: {
     info: (message: string) => void;
@@ -107,9 +109,10 @@ export function createGameActivityHandler(
   let inFlightRefresh: Promise<void> | null = null;
 
   function defaultLogger() {
+    const logger = childFor(getRootLogger(), "game-activity");
     return {
-      info: (message: string) => console.log(`[game-activity] ${message}`),
-      warn: (message: string) => console.warn(`[game-activity] ${message}`),
+      info: (message: string) => logger.info(message),
+      warn: (message: string) => logger.warn(message),
     };
   }
 
@@ -310,7 +313,7 @@ export function registerGameActivity(
     }));
 
     void handler.handlePresenceUpdate({ userId, activities }).catch((error: unknown) => {
-      console.error("[game-activity] presence handler failed", error);
+      childFor(getRootLogger(), "game-activity").error({ err: error }, "presence handler failed");
     });
   });
 

@@ -1,6 +1,7 @@
 import type { ChatInputCommandInteraction, Client } from "discord.js";
 import { Events } from "discord.js";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { findReactionRoleRuleByRoleId, isSlashAssignable } from "../reaction-roles/config.js";
 import { createChannelAuditLogger } from "./audit.js";
 import { replyForResult, runRoleAssignment } from "./commands.js";
@@ -104,11 +105,11 @@ export function registerRoleSlashHandlers(
   deps: RegisterRoleSlashHandlersDeps = {},
 ): void {
   // Audit sink: posts structured entries to the configured channel when set,
-  // otherwise falls back to console. Mirrors the role assignment result so
-  // operators can audit who triggered `/role assign` / `/role remove`.
+  // otherwise falls back to a structured logger. Mirrors the role assignment
+  // result so operators can audit who triggered `/role assign` / `/role remove`.
   const auditLogger = createChannelAuditLogger({
     fetchChannel: async (channelId) => client.channels.fetch(channelId),
-    logger: console,
+    logger: childFor(getRootLogger(), "role-slash"),
   })(deps.roleAuditChannelId ?? null);
 
   // Find a rule by roleId and only return it when `assignableViaSlash` is

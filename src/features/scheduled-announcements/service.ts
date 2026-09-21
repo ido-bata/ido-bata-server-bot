@@ -1,6 +1,7 @@
 import type { Client } from "discord.js";
 import { ChannelType, Events } from "discord.js";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import {
   type LoadOptions,
   loadScheduledAnnouncements,
@@ -23,10 +24,12 @@ type Logger = {
   error: (message: string) => void;
 };
 
+const scheduledAnnouncementsLogger = childFor(getRootLogger(), "scheduled-announcements");
+
 const defaultLogger: Logger = {
-  info: (message) => console.log(`[scheduled-announcements] ${message}`),
-  warn: (message) => console.warn(`[scheduled-announcements] ${message}`),
-  error: (message) => console.error(`[scheduled-announcements] ${message}`),
+  info: (message) => scheduledAnnouncementsLogger.info(message),
+  warn: (message) => scheduledAnnouncementsLogger.warn(message),
+  error: (message) => scheduledAnnouncementsLogger.error(message),
 };
 
 type ServiceOptions = {

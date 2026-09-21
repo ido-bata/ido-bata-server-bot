@@ -1,7 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "project": ["src/**/*.ts"],
-  "ignoreDependencies": ["ffmpeg-static", "opusscript"],
+  "ignoreDependencies": ["ffmpeg-static", "opusscript", "pino-pretty"],
   "ignoreExportsUsedInFile": true,
   "ignore": [
     "src/features/timekeeper-commands/config.ts",
