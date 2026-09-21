@@ -11,8 +11,8 @@ import {
 } from "@discordjs/voice";
 import type { Client, GuildMember, VoiceBasedChannel } from "discord.js";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, Events } from "discord.js";
-import type { ConsentService } from "../../consent/service.js";
 import type { BotConfig } from "../../config.js";
+import type { ConsentService } from "../../consent/service.js";
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { isTimekeeperConfigured, type TimekeeperConfig, timekeeperConfig } from "./config.js";
 
@@ -249,7 +249,9 @@ export function getActiveTimekeeperSessionCount(): number {
 
 export function registerTimekeeper(
   client: Client,
-  options: { botConfig: BotConfig; consentService?: ConsentService } = { botConfig: undefined as unknown as BotConfig },
+  options: { botConfig: BotConfig; consentService?: ConsentService } = {
+    botConfig: undefined as unknown as BotConfig,
+  },
 ): {
   detachConsent: () => void;
 } {

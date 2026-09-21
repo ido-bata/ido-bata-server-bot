@@ -321,7 +321,10 @@ async function main(): Promise<void> {
   registerRoleSlashHandlers(client, {
     roleAuditChannelId: config.roleAuditChannelId,
   });
-  registerTimekeeper(client, { consentService: privacyConsentService ?? undefined });
+  registerTimekeeper(client, {
+    botConfig: config,
+    consentService: privacyConsentService ?? undefined,
+  });
   statusStore.set({
     features: {
       ...statusStore.snapshot.features,
