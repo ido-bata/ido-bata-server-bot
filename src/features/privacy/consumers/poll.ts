@@ -2,16 +2,19 @@
  * Per-consumer delete adapter for the poll feature.
  *
  * Removes the user's votes from every poll in `data/polls.json` and, if the
- * user owns the poll, the whole poll record. The aggregator in
+ * user owns the poll, drops the whole poll record. The aggregator in
  * `src/features/privacy/clear.ts` runs the adapter for every user; deleting
  * owned polls here keeps the on-disk state self-consistent with what the
  * user sees in `/privacy status`.
  *
- * Corrupt or missing files are treated as soft success.
+ * Failures (read / parse / schema / write) surface as `{ ok: false, error }`
+ * — ENOENT (no persisted file) is treated as success, since there is
+ * nothing to remove.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { z } from "zod";
 
+import { mutateJsonFile } from "../../../lib/storage/atomic-json.js";
 import type { DeleteResult } from "../types.js";
 
 export type PollDeleteOptions = {
@@ -20,6 +23,18 @@ export type PollDeleteOptions = {
 
 const DEFAULT_RELATIVE_PATH = "data/polls.json";
 
+const pollSchema = z
+  .object({
+    creatorId: z.string(),
+    id: z.string(),
+    votes: z.record(z.string(), z.number()),
+  })
+  .passthrough();
+
+const storeSchema = z.object({
+  polls: z.array(pollSchema),
+});
+
 function resolveFilePath(options: PollDeleteOptions): string {
   if (options.filePath) {
     return options.filePath;
@@ -27,63 +42,46 @@ function resolveFilePath(options: PollDeleteOptions): string {
   return join(process.cwd(), DEFAULT_RELATIVE_PATH);
 }
 
-type PollEntry = {
-  id: string;
-  creatorId: string;
-  votes: Record<string, number>;
-  [key: string]: unknown;
-};
-type PollStore = { version?: number; polls?: PollEntry[] };
-
 export function deleteUserData(
   userId: string,
   options: PollDeleteOptions = {},
 ): Promise<DeleteResult> {
-  const filePath = resolveFilePath(options);
-
-  if (!existsSync(filePath)) {
-    return Promise.resolve({ ok: true });
-  }
-
-  try {
-    const raw = readFileSync(filePath, "utf8");
-    let parsed: PollStore;
-    try {
-      parsed = JSON.parse(raw) as PollStore;
-    } catch {
-      return Promise.resolve({ ok: true });
-    }
-    const polls = Array.isArray(parsed.polls) ? parsed.polls : [];
-    let changed = false;
-    const nextPolls: PollEntry[] = [];
-    for (const poll of polls) {
-      if (poll.creatorId === userId) {
-        // Drop polls the user created; votes for those polls cannot exist
-        // elsewhere once the parent record is gone.
-        changed = true;
-        continue;
-      }
-      if (userId in poll.votes) {
-        const nextVotes = { ...poll.votes };
-        delete nextVotes[userId];
-        changed = true;
-        nextPolls.push({ ...poll, votes: nextVotes });
-        continue;
-      }
-      nextPolls.push(poll);
-    }
-    if (!changed) {
-      return Promise.resolve({ ok: true });
-    }
-    const payload = JSON.stringify({ ...parsed, polls: nextPolls }, null, 2);
-    mkdirSync(dirname(filePath), { recursive: true });
-    writeFileSync(filePath, payload, "utf8");
-    return Promise.resolve({ ok: true });
-  } catch (error) {
-    return Promise.resolve({ ok: false, error: stringifyError(error) });
-  }
+  return runDelete(userId, options);
 }
 
-function stringifyError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+async function runDelete(userId: string, options: PollDeleteOptions): Promise<DeleteResult> {
+  const filePath = resolveFilePath(options);
+  const outcome = await mutateJsonFile({
+    filePath,
+    mutate: (current) => {
+      let changed = false;
+      const nextPolls: z.infer<typeof pollSchema>[] = [];
+      for (const poll of current.polls) {
+        if (poll.creatorId === userId) {
+          // Drop polls the user created; votes for those polls cannot exist
+          // elsewhere once the parent record is gone.
+          changed = true;
+          continue;
+        }
+        if (userId in poll.votes) {
+          const nextVotes = { ...poll.votes };
+          delete nextVotes[userId];
+          changed = true;
+          nextPolls.push({ ...poll, votes: nextVotes });
+          continue;
+        }
+        nextPolls.push(poll);
+      }
+      if (!changed) {
+        return current;
+      }
+      return { polls: nextPolls };
+    },
+    schema: storeSchema,
+  });
+
+  if (!outcome.ok) {
+    return { ok: false, error: outcome.error };
+  }
+  return { ok: true };
 }

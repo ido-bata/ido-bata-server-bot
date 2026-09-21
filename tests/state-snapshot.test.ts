@@ -20,12 +20,13 @@ import { getNextSnapshotStartAt } from "../src/features/state-snapshot/schedule.
 import {
   buildSnapshotId,
   createSnapshot,
+  type EncryptedSnapshot,
   ensureSnapshotDir,
   listSnapshots,
+  loadEncryptedSnapshot,
   readSnapshotMetadata,
   restoreSnapshot,
   type SnapshotFileEntry,
-  type SnapshotMetadata,
 } from "../src/features/state-snapshot/snapshot.js";
 import {
   createCompositeUploader,
@@ -368,18 +369,26 @@ describe("state-snapshot retention", () => {
 });
 
 describe("state-snapshot uploaders", () => {
-  function makeMetadata(path: string): SnapshotMetadata {
+  function makeEncrypted(snapshotPath: string): EncryptedSnapshot {
+    const id =
+      snapshotPath
+        .split(/[\\/]/)
+        .pop()
+        ?.replace(/\.snap\.enc$/, "") ?? "x";
     return {
-      createdAt: new Date().toISOString(),
-      files: [],
-      id: path,
-      path,
+      bytes: Buffer.from("encrypted-blob-bytes"),
+      meta: {
+        createdAt: new Date().toISOString(),
+        files: [],
+        id,
+        path: snapshotPath,
+      },
     };
   }
 
   it("noop uploader never throws", async () => {
     const uploader = createNoopUploader();
-    await expect(uploader.upload(makeMetadata("/tmp/nope.snap.enc"))).resolves.toBeUndefined();
+    await expect(uploader.upload(makeEncrypted("/tmp/nope.snap.enc"))).resolves.toBeUndefined();
   });
 
   it("composite uploader aggregates names", () => {
@@ -401,14 +410,9 @@ describe("state-snapshot uploaders", () => {
       upload: () => Promise.reject(new Error("boom")),
     };
     const composite = createCompositeUploader([failing]);
-    await expect(
-      composite.upload({
-        createdAt: new Date().toISOString(),
-        files: [],
-        id: "x",
-        path: "/tmp/missing.snap.enc",
-      }),
-    ).rejects.toThrow(/All snapshot uploaders failed|boom/i);
+    await expect(composite.upload(makeEncrypted("/tmp/missing.snap.enc"))).rejects.toThrow(
+      /All snapshot uploaders failed|boom/i,
+    );
   });
 
   it("composite uploader tolerates partial failures", async () => {
@@ -425,37 +429,17 @@ describe("state-snapshot uploaders", () => {
       },
     };
     const composite = createCompositeUploader([failing, good]);
-    await expect(
-      composite.upload({
-        createdAt: new Date().toISOString(),
-        files: [],
-        id: "x",
-        path: "/tmp/x.snap.enc",
-      }),
-    ).resolves.toBeUndefined();
+    await expect(composite.upload(makeEncrypted("/tmp/x.snap.enc"))).resolves.toBeUndefined();
     expect(goodCalled).toBe(true);
-  });
-
-  it("github-api uploader throws when the snapshot file is missing", async () => {
-    const uploader = createGitHubApiUploader({
-      branch: "state-snapshots",
-      repo: "ido-bata/ido-bata-server-bot",
-      token: "ghp_test",
-    });
-    await expect(
-      uploader.upload({
-        createdAt: new Date().toISOString(),
-        files: [],
-        id: "x",
-        path: "/nonexistent.snap.enc",
-      }),
-    ).rejects.toThrow(/no longer exists/);
   });
 
   it("github-api uploader drives the Git Data API end-to-end", async () => {
     const workDir = createTempDir("gh-api-");
     const snapshotPath = join(workDir, "demo.snap.enc");
-    writeFileSync(snapshotPath, Buffer.from("encrypted-blob-bytes"));
+    // 60 random bytes — comfortably above the 12+16+1 minimum, so the
+    // container-shape sanity check inside the uploader boundary (or its
+    // callers) accepts it as an encrypted blob.
+    writeFileSync(snapshotPath, randomBytes(60));
 
     const headSha = "headcommit123";
     const treeSha = "basetree123";
@@ -496,12 +480,7 @@ describe("state-snapshot uploaders", () => {
       token: "ghp_test",
     });
 
-    await uploader.upload({
-      createdAt: new Date().toISOString(),
-      files: [],
-      id: "demo",
-      path: snapshotPath,
-    });
+    await uploader.upload(loadEncryptedSnapshot(snapshotPath));
 
     const expected = [
       { method: "GET", path: "/repos/o/r/git/ref/heads/main" },
@@ -519,7 +498,7 @@ describe("state-snapshot uploaders", () => {
   it("github-api uploader surfaces non-2xx responses", async () => {
     const workDir = createTempDir("gh-api-err-");
     const snapshotPath = join(workDir, "demo.snap.enc");
-    writeFileSync(snapshotPath, Buffer.from("encrypted-blob-bytes"));
+    writeFileSync(snapshotPath, randomBytes(60));
 
     const fetchImpl = async (): Promise<Response> =>
       new Response(JSON.stringify({ message: "boom" }), { status: 401 });
@@ -531,15 +510,45 @@ describe("state-snapshot uploaders", () => {
       token: "ghp_test",
     });
 
-    await expect(
-      uploader.upload({
-        createdAt: new Date().toISOString(),
-        files: [],
-        id: "demo",
-        path: snapshotPath,
-      }),
-    ).rejects.toThrow(/401|boom/);
+    await expect(uploader.upload(loadEncryptedSnapshot(snapshotPath))).rejects.toThrow(/401|boom/);
 
     rmSync(workDir, { recursive: true, force: true });
+  });
+});
+
+describe("state-snapshot encrypted loader", () => {
+  let workDir: string;
+
+  beforeEach(() => {
+    workDir = createTempDir("snap-loader-");
+  });
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("rejects a missing file", () => {
+    expect(() => loadEncryptedSnapshot(join(workDir, "missing.snap.enc"))).toThrow();
+  });
+
+  it("rejects a file that is too small to be an encrypted container", () => {
+    const tooSmall = join(workDir, "tiny.snap.enc");
+    writeFileSync(tooSmall, Buffer.from([1, 2, 3]));
+    expect(() => loadEncryptedSnapshot(tooSmall)).toThrow(/too small/);
+  });
+
+  it("rejects a file whose bytes start with the unencrypted manifest prefix", () => {
+    const unencrypted = join(workDir, "plaintext.snap.enc");
+    writeFileSync(unencrypted, Buffer.concat([Buffer.from("SNAP1\n"), Buffer.alloc(64, 0xab)]));
+    expect(() => loadEncryptedSnapshot(unencrypted)).toThrow(/unencrypted manifest/);
+  });
+
+  it("accepts a file that looks like a valid encrypted container", () => {
+    const encrypted = join(workDir, "ok.snap.enc");
+    writeFileSync(encrypted, randomBytes(60));
+    const result = loadEncryptedSnapshot(encrypted);
+    expect(result.bytes.length).toBe(60);
+    expect(result.meta.id).toBe("ok");
+    expect(result.meta.path).toBe(encrypted);
   });
 });

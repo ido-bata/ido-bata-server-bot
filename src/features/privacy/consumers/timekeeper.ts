@@ -2,13 +2,15 @@
  * Per-consumer delete adapter for the timekeeper attendance history.
  *
  * Removes the user's entry from `data/timekeeper-history.json` if present.
- * Failures are surfaced via the standard `{ ok: false, error }` shape; the
- * aggregator (`src/features/privacy/clear.ts`) treats any non-ok entry as a
- * partial failure.
+ * Failures (read / parse / schema / write errors) are surfaced via
+ * `{ ok: false, error }` so the aggregator (`src/features/privacy/clear.ts`)
+ * can report a partial failure to `/privacy delete` instead of declaring
+ * success on a corrupted store.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 
+import { mutateJsonFile } from "../../../lib/storage/atomic-json.js";
 import type { DeleteResult } from "../types.js";
 
 export type TimekeeperDeleteOptions = {
@@ -16,6 +18,8 @@ export type TimekeeperDeleteOptions = {
 };
 
 const DEFAULT_RELATIVE_PATH = "data/timekeeper-history.json";
+
+const historySchema = z.record(z.string(), z.array(z.string()));
 
 function resolveFilePath(options: TimekeeperDeleteOptions): string {
   if (options.filePath) {
@@ -28,37 +32,29 @@ export function deleteUserData(
   userId: string,
   options: TimekeeperDeleteOptions = {},
 ): Promise<DeleteResult> {
-  const filePath = resolveFilePath(options);
-
-  if (!existsSync(filePath)) {
-    // Nothing to delete; report success so a missing file does not surface
-    // as a failure to the user.
-    return Promise.resolve({ ok: true });
-  }
-
-  try {
-    const raw = readFileSync(filePath, "utf8");
-    let parsed: Record<string, string[]>;
-    try {
-      parsed = JSON.parse(raw) as Record<string, string[]>;
-    } catch {
-      // Treat a corrupted file as a soft success: there is nothing to remove
-      // for this user anyway, and the aggregator will see the file integrity
-      // issue through a different lens (state-snapshot adapter).
-      return Promise.resolve({ ok: true });
-    }
-    if (!(userId in parsed)) {
-      return Promise.resolve({ ok: true });
-    }
-    const next = { ...parsed };
-    delete next[userId];
-    writeFileSync(filePath, JSON.stringify(next, null, 2), "utf8");
-    return Promise.resolve({ ok: true });
-  } catch (error) {
-    return Promise.resolve({ ok: false, error: stringifyError(error) });
-  }
+  return runDelete(userId, options);
 }
 
-function stringifyError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+async function runDelete(userId: string, options: TimekeeperDeleteOptions): Promise<DeleteResult> {
+  const filePath = resolveFilePath(options);
+  const outcome = await mutateJsonFile({
+    filePath,
+    mutate: (current) => {
+      if (!(userId in current)) {
+        // Returning the same reference signals "no change" — the
+        // helper skips the write so we do not touch mtime on disk
+        // for users with nothing to remove.
+        return current;
+      }
+      const next = { ...current };
+      delete next[userId];
+      return next;
+    },
+    schema: historySchema,
+  });
+
+  if (!outcome.ok) {
+    return { ok: false, error: outcome.error };
+  }
+  return { ok: true };
 }

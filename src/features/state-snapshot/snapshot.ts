@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  type Stats,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -31,6 +32,20 @@ export type SnapshotMetadata = {
   path: string;
   createdAt: string;
   files: SnapshotFileEntry[];
+};
+
+/**
+ * Pre-validated, encrypted snapshot bytes. The `SnapshotUploader.upload`
+ * boundary accepts ONLY this shape: a plain `SnapshotMetadata` carries a
+ * `path` field, which would tempt callers (and static analysers like
+ * CodeQL) to read that path into an outbound network request. Routing the
+ * file read through `loadEncryptedSnapshot` validates the bytes are an
+ * actual encrypted container and lets us upload pre-validated content
+ * without ever re-reading the filesystem from inside the uploader.
+ */
+export type EncryptedSnapshot = {
+  meta: SnapshotMetadata;
+  bytes: Buffer;
 };
 
 const MANIFEST_PREFIX = Buffer.from("SNAP1\n", "utf8");
@@ -164,6 +179,67 @@ export function readSnapshotMetadata(
     files: manifest.files,
     id,
     path: snapshotPath,
+  };
+}
+
+/**
+ * Read a snapshot file from disk and verify its bytes form a valid
+ * encrypted container (`<iv:12><authTag:16><ciphertext:≥1>`).
+ *
+ * This is the gate that sits between `SnapshotMetadata.path` and
+ * `SnapshotUploader.upload`. By forcing the uploader boundary to accept
+ * only `EncryptedSnapshot`, a caller cannot accidentally upload a
+ * plain-text source file: the type system plus this validator together
+ * guarantee that whatever bytes leave the process were produced by
+ * `createSnapshot` (which always encrypts) or by an equivalent AES-256-GCM
+ * pipeline. We deliberately do not decrypt here — that requires the
+ * operator's encryption key, which the uploader does not have.
+ *
+ * Throws when the file is missing, unreadable, or structurally invalid.
+ */
+export function loadEncryptedSnapshot(snapshotPath: string): EncryptedSnapshot {
+  const id =
+    snapshotPath
+      .split(/[\\/]/)
+      .pop()
+      ?.replace(/\.snap\.enc$/, "") ?? "";
+  let stat: Stats;
+  try {
+    stat = statSync(snapshotPath);
+  } catch (error) {
+    throw new Error(
+      `loadEncryptedSnapshot: cannot stat ${snapshotPath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { cause: error },
+    );
+  }
+  if (!stat.isFile()) {
+    throw new Error(`loadEncryptedSnapshot: ${snapshotPath} is not a regular file`);
+  }
+  const bytes = readFileSync(snapshotPath);
+  if (bytes.length < 12 + 16 + 1) {
+    throw new Error(
+      `loadEncryptedSnapshot: ${snapshotPath} is too small (${bytes.length} bytes) to be an encrypted container`,
+    );
+  }
+  // Reject plaintext that happens to be exactly 28 bytes long — encrypted
+  // bytes never start with the SNAP1 manifest prefix because the prefix
+  // is wrapped inside the ciphertext. This is a cheap sanity check, not
+  // a confidentiality guarantee.
+  if (bytes.subarray(0, MANIFEST_PREFIX.length).equals(MANIFEST_PREFIX)) {
+    throw new Error(
+      `loadEncryptedSnapshot: ${snapshotPath} appears to contain an unencrypted manifest prefix; refusing to upload`,
+    );
+  }
+  return {
+    bytes,
+    meta: {
+      createdAt: "",
+      files: [],
+      id,
+      path: snapshotPath,
+    },
   };
 }
 

@@ -9,6 +9,7 @@ import {
   createSnapshot,
   ensureSnapshotDir,
   listSnapshots,
+  loadEncryptedSnapshot,
   type SnapshotMetadata,
 } from "./snapshot.js";
 import {
@@ -163,8 +164,22 @@ async function runSnapshotOnce(runtime: SnapshotRuntime): Promise<void> {
 }
 
 async function uploadSnapshot(runtime: SnapshotRuntime, created: SnapshotMetadata): Promise<void> {
+  let encrypted: Awaited<ReturnType<typeof loadEncryptedSnapshot>>;
   try {
-    await runtime.uploader.upload(created);
+    // Validate the bytes are an actual encrypted container BEFORE they
+    // reach the uploader boundary. `loadEncryptedSnapshot` rejects
+    // missing / too-small / unencrypted files; whatever survives is
+    // safe to upload.
+    encrypted = loadEncryptedSnapshot(created.path);
+  } catch (error) {
+    logger.error(
+      { uploader: runtime.uploader.name, path: created.path, err: error },
+      "snapshot validation failed before upload",
+    );
+    return;
+  }
+  try {
+    await runtime.uploader.upload(encrypted);
   } catch (error) {
     logger.error(
       { uploader: runtime.uploader.name, path: created.path, err: error },

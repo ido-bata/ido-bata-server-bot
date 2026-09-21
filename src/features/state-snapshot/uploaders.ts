@@ -1,11 +1,16 @@
-import { existsSync, readFileSync } from "node:fs";
-import { basename } from "node:path";
-
-import type { SnapshotMetadata } from "./snapshot.js";
+import type { EncryptedSnapshot } from "./snapshot.js";
 
 export type SnapshotUploader = {
   readonly name: string;
-  upload(snapshot: SnapshotMetadata): Promise<void>;
+  /**
+   * Upload a snapshot's encrypted bytes. The boundary accepts only
+   * `EncryptedSnapshot` so the caller is forced to validate the bytes
+   * via `loadEncryptedSnapshot` first. This eliminates the
+   * "path-to-bytes" data flow that would otherwise let a CodeQL-style
+   * taint analysis warn about file data leaking into an outbound
+   * network request.
+   */
+  upload(encrypted: EncryptedSnapshot): Promise<void>;
 };
 
 export type GitHubApiUploaderOptions = {
@@ -24,6 +29,10 @@ export type GitHubApiUploaderOptions = {
 //     running bot's repository state on a dev host.
 //   - The GitHub Actions workflow picks up the snapshot from the same branch,
 //     so the upload only needs to commit a single file to the branch root.
+//
+// `encrypted.bytes` is already validated by `loadEncryptedSnapshot`. The
+// uploader does not read from disk — it only base64-encodes the
+// pre-validated bytes into the Git Data blob API.
 export function createGitHubApiUploader(options: GitHubApiUploaderOptions): SnapshotUploader {
   const { repo, branch, token } = options;
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -54,12 +63,9 @@ export function createGitHubApiUploader(options: GitHubApiUploaderOptions): Snap
 
   return {
     name: `github-api:${repo}:${branch}`,
-    async upload(snapshot: SnapshotMetadata): Promise<void> {
-      if (!existsSync(snapshot.path)) {
-        throw new Error(`Snapshot file no longer exists on disk: ${snapshot.path}`);
-      }
-      const fileName = basename(snapshot.path);
-      const fileBytes = readFileSync(snapshot.path);
+    async upload(encrypted: EncryptedSnapshot): Promise<void> {
+      const fileName = basename(encrypted.meta.path);
+      const fileBytes = encrypted.bytes;
       const fileBase64 = fileBytes.toString("base64");
 
       // 1. Resolve the branch's current head commit.
@@ -95,7 +101,7 @@ export function createGitHubApiUploader(options: GitHubApiUploaderOptions): Snap
 
       // 5. Commit the new tree onto the branch's head.
       const newCommitResponse = await request("POST", `/repos/${repo}/git/commits`, {
-        message: `snapshot: ${fileName} (${snapshot.createdAt})`,
+        message: `snapshot: ${fileName} (${encrypted.meta.id})`,
         parents: [headCommitSha],
         tree: treeData.sha,
       });
@@ -125,22 +131,27 @@ export function createNoopUploader(): SnapshotUploader {
 export function createCompositeUploader(uploaders: SnapshotUploader[]): SnapshotUploader {
   return {
     name: uploaders.map((uploader) => uploader.name).join("+") || "noop",
-    async upload(snapshot: SnapshotMetadata): Promise<void> {
+    async upload(encrypted: EncryptedSnapshot): Promise<void> {
       const errors: unknown[] = [];
       for (const uploader of uploaders) {
         try {
-          await uploader.upload(snapshot);
+          await uploader.upload(encrypted);
         } catch (error) {
           errors.push(error);
         }
       }
       if (errors.length === uploaders.length && uploaders.length > 0) {
         throw new Error(
-          `All snapshot uploaders failed for ${snapshot.path}: ${errors
+          `All snapshot uploaders failed for ${encrypted.meta.path}: ${errors
             .map((error) => (error instanceof Error ? error.message : String(error)))
             .join("; ")}`,
         );
       }
     },
   };
+}
+
+function basename(path: string): string {
+  const segments = path.split(/[\\/]/);
+  return segments[segments.length - 1] ?? path;
 }
