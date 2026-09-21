@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { type ConsentConfig, readConsentConfig } from "./consent/config.js";
+
 const configSchema = z
   .object({
     DISCORD_TOKEN: z.string().min(1),
@@ -29,6 +31,8 @@ export type BotConfig = {
   enableGuildMembersIntent: boolean;
   enablePresenceIntent: boolean;
   roleAuditChannelId: string | null;
+  /** Consent registry config. `enabled` is false when `CONSENT_MESSAGE_ID` is empty. */
+  consent: ConsentConfig;
 };
 
 function parseGuildList(guildId?: string, guildIds?: string): string[] {
@@ -57,6 +61,14 @@ export function readConfig(env: NodeJS.ProcessEnv): BotConfig {
   const enablePresenceIntent = env.DISCORD_ENABLE_PRESENCE === "true";
   const roleAuditChannelId = parsed.ROLE_AUDIT_CHANNEL_ID?.trim() || null;
   const discordGuildIds = parseGuildList(parsed.DISCORD_GUILD_ID, parsed.DISCORD_GUILD_IDS);
+  const consent = readConsentConfig({
+    CONSENT_MESSAGE_ID: env.CONSENT_MESSAGE_ID,
+    CONSENT_CHANNEL_ID: env.CONSENT_CHANNEL_ID,
+    CONSENT_GUILD_ID: env.CONSENT_GUILD_ID,
+    CONSENT_EMOJI: env.CONSENT_EMOJI,
+    CONSENT_POLICY_VERSION: env.CONSENT_POLICY_VERSION,
+    DISCORD_GUILD_ID: env.DISCORD_GUILD_ID,
+  });
 
   return {
     discordToken: parsed.DISCORD_TOKEN,
@@ -67,5 +79,6 @@ export function readConfig(env: NodeJS.ProcessEnv): BotConfig {
     enableGuildMembersIntent,
     enablePresenceIntent,
     roleAuditChannelId,
+    consent,
   };
 }

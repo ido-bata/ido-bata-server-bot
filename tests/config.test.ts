@@ -19,6 +19,14 @@ describe("readConfig", () => {
       enableGuildMembersIntent: false,
       enablePresenceIntent: false,
       roleAuditChannelId: null,
+      consent: {
+        enabled: false,
+        messageId: "",
+        channelId: "",
+        guildId: "guild-id",
+        emojiToScope: {},
+        policyVersion: "v0.2.0",
+      },
     });
   });
 
