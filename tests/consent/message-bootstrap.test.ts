@@ -1,4 +1,4 @@
-import { Collection, type Client, type Message, type User } from "discord.js";
+import { type Client, Collection, type Message, type User } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ConsentConfig } from "../../src/consent/config.js";
@@ -23,11 +23,7 @@ const baseConfig: ConsentConfig = {
   policyVersion: "v0.2.0",
 };
 
-function makeMessage(options: {
-  id: string;
-  authorId?: string;
-  content?: string;
-}) {
+function makeMessage(options: { id: string; authorId?: string; content?: string }) {
   const message = {
     id: options.id,
     author: { id: options.authorId ?? "bot-1" },
