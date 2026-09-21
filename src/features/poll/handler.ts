@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 
-import type { Client } from "discord.js";
+import type {
+  Client,
+  RESTPostAPIChatInputApplicationCommandsJSONBody,
+} from "discord.js";
 import { Events, Routes } from "discord.js";
 import type { ConsentScope } from "../../consent/scopes.js";
 import type { ConsentService } from "../../consent/service.js";
@@ -456,9 +459,12 @@ export async function deployPollCommands(
 }
 
 // Internal-only: shapes the JSON body for the REST registration call. Kept as
-// a separate function so the payload is easy to unit-test, but it has no
-// public consumers so it is not re-exported.
-function buildPollCommandPayload(): Array<Record<string, unknown>> {
+// a separate function so the payload is easy to unit-test. Re-exported as a
+// building block for the aggregated `deployGuildCommands` call in
+// `src/index.ts` so per-feature deployers do not independently PUT to
+// `Routes.applicationGuildCommands` (which would race and overwrite each
+// other — see PR review VJn3).
+export function buildPollCommandPayload(): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
   return [
     {
       name: POLL_COMMAND_NAME,

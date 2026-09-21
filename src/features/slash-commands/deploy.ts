@@ -28,18 +28,18 @@ export function toApplicationCommandPayload(
   return value;
 }
 
-export async function deploySlashCommands(deps: DeployCommandsDeps): Promise<DeployCommandsResult> {
-  if (!deps.token) {
-    throw new Error("deploySlashCommands: token is required");
-  }
-  if (!deps.clientId) {
-    throw new Error("deploySlashCommands: clientId is required");
-  }
-  if (!deps.guildId) {
-    throw new Error("deploySlashCommands: guildId is required");
-  }
-
-  const payload = deps.registry.definitions.map((definition: SlashCommandDefinition) => {
+/**
+ * Build the JSON payload for the slash-command registry. Used in the
+ * aggregated `deployGuildCommands` path so the slash deployer does not
+ * issue an independent bulk PUT (which would race with the other
+ * per-feature deployers and overwrite each other — see PR review VJn3).
+ */
+export function buildSlashCommandPayloads(
+  registry: SlashCommandRegistry,
+): (RESTPostAPIChatInputApplicationCommandsJSONBody & {
+  default_member_permissions: string;
+})[] {
+  return registry.definitions.map((definition: SlashCommandDefinition) => {
     const base = toApplicationCommandPayload(definition.buildPayload());
     // Apply `default_member_permissions` so Discord enforces the same tier
     // everywhere the rule map declares. Without this, the GUI permission
@@ -53,6 +53,20 @@ export async function deploySlashCommands(deps: DeployCommandsDeps): Promise<Dep
       default_member_permissions: string;
     };
   });
+}
+
+export async function deploySlashCommands(deps: DeployCommandsDeps): Promise<DeployCommandsResult> {
+  if (!deps.token) {
+    throw new Error("deploySlashCommands: token is required");
+  }
+  if (!deps.clientId) {
+    throw new Error("deploySlashCommands: clientId is required");
+  }
+  if (!deps.guildId) {
+    throw new Error("deploySlashCommands: guildId is required");
+  }
+
+  const payload = buildSlashCommandPayloads(deps.registry);
 
   const rest = deps.rest ?? new RestClass({ version: "10" }).setToken(deps.token);
 

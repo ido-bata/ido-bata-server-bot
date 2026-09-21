@@ -34,6 +34,21 @@ export function toApplicationCommandPayload(
   return value as RESTPostAPIChatInputApplicationCommandsJSONBody;
 }
 
+/**
+ * Build the JSON payload for the birthday-role registry. Used by the
+ * aggregated `deployGuildCommands` path in `src/index.ts` so the
+ * birthday deployer does not independently bulk-PUT
+ * `Routes.applicationGuildCommands` and race with the other deployers
+ * (PR review VJn3 sibling).
+ */
+export function buildBirthdayPayloads(
+  registry: BirthdayCommandRegistry,
+): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
+  return registry.definitions.map((definition: BirthdayCommandDefinition) =>
+    toApplicationCommandPayload(definition.buildPayload()),
+  );
+}
+
 export async function deployBirthdayCommands(
   deps: DeployBirthdayCommandsDeps,
 ): Promise<DeployBirthdayCommandsResult> {

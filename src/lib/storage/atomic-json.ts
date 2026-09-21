@@ -49,6 +49,21 @@ export type MutateJsonFileOptions<T> = {
    * helper skips the write in that case.
    */
   mutate: (current: T) => T | Promise<T>;
+  /**
+   * When true, a missing file is treated as the value supplied via
+   * `initial` rather than a no-op. The mutate function is then called
+   * with `initial` as its argument and the result is written through
+   * the atomic write path. Defaults to false to preserve historical
+   * semantics for the privacy-delete adapter (a missing file with no
+   * data is already a successful no-op there).
+   */
+  createIfMissing?: boolean;
+  /**
+   * The value used as the starting point when `createIfMissing` is
+   * true and the file does not exist on disk. Required iff
+   * `createIfMissing` is true.
+   */
+  initial?: T;
 };
 
 export type MutateJsonFileResult = { ok: true; mutated: boolean } | { ok: false; error: string };
@@ -94,13 +109,28 @@ export function readJsonFile<T>(options: {
 export async function mutateJsonFile<T>(
   options: MutateJsonFileOptions<T>,
 ): Promise<MutateJsonFileResult> {
-  const { filePath, schema, mutate } = options;
+  const { filePath, schema, mutate, createIfMissing, initial } = options;
 
   const existing = readExisting(filePath, schema);
   if (!existing.ok) {
-    return existing.error === "ENOENT"
-      ? { mutated: false, ok: true }
-      : { error: existing.error, ok: false };
+    if (existing.error !== "ENOENT") {
+      return { error: existing.error, ok: false };
+    }
+    if (!createIfMissing) {
+      return { mutated: false, ok: true };
+    }
+    if (initial === undefined) {
+      return {
+        error: `${filePath}: ENOENT — createIfMissing requires an initial value`,
+        ok: false,
+      };
+    }
+    // Promote the missing-file case to an explicit first-write path
+    // so a fresh deployment that registers its first record actually
+    // materialises on disk.
+    const next = await mutate(initial);
+    const writeResult = atomicWriteJson(filePath, next);
+    return writeResult.ok ? { mutated: true, ok: true } : writeResult;
   }
 
   const current = existing.value;

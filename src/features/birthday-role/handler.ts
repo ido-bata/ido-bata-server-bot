@@ -113,8 +113,19 @@ export function createBirthdayRoleHandler(deps: HandlerDependencies): BirthdayRo
     try {
       const store = await storage.load();
       const next = setBirthday(store, userId, canonical, now());
-      await storage.save(next);
-    } catch {
+      const saved = await storage.save(next);
+      if (!saved.ok) {
+        logger.warn(
+          { userId, error: saved.error },
+          "birthday-role: failed to persist registration",
+        );
+        return { ok: false as const, reason: "storage-failed" as const };
+      }
+    } catch (error) {
+      logger.warn(
+        { userId, err: error },
+        "birthday-role: unexpected storage error during registration",
+      );
       return { ok: false as const, reason: "storage-failed" as const };
     }
 
@@ -136,7 +147,14 @@ export function createBirthdayRoleHandler(deps: HandlerDependencies): BirthdayRo
     }
 
     const next = removeBirthday(store, userId);
-    await storage.save(next);
+    const saved = await storage.save(next);
+    if (!saved.ok) {
+      logger.warn(
+        { userId, error: saved.error },
+        "birthday-role: failed to persist removal",
+      );
+      return { removed: false };
+    }
     return { removed: true };
   }
 

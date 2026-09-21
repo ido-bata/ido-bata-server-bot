@@ -31,6 +31,20 @@ export function toApplicationCommandPayload(
   return value as RESTPostAPIChatInputApplicationCommandsJSONBody;
 }
 
+/**
+ * Build the JSON payload for the role-slash registry. Useful in the
+ * aggregated `deployGuildCommands` path so callers do not issue an
+ * independent bulk PUT (which would race with the other per-feature
+ * deployers and overwrite each other — PR review VK2P).
+ */
+export function buildRoleSlashPayloads(
+  registry: SlashCommandRegistry,
+): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
+  return registry.definitions.map((definition: SlashCommandDefinition) =>
+    toApplicationCommandPayload(definition.buildPayload()),
+  );
+}
+
 export async function deployRoleSlashCommands(
   deps: DeployRoleCommandsDeps,
 ): Promise<DeployRoleCommandsResult> {

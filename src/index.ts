@@ -17,7 +17,6 @@ import type { ConsentService } from "./consent/service.js";
 import { createConsentService } from "./consent/service.js";
 import type { ReactionTarget } from "./consent/types.js";
 import { birthdayRoleConfig } from "./features/birthday-role/config.js";
-import { deployBirthdayCommands } from "./features/birthday-role/deploy.js";
 import { registerBirthdayRoleHandlers } from "./features/birthday-role/service.js";
 import { registerConfigHotReload } from "./features/config-hot-reload/register.js";
 import { registerErrorForwarder } from "./features/error-forwarder/service.js";
@@ -36,18 +35,18 @@ import { registerMessageAuditHandlers } from "./features/message-audit/handler.j
 import { bootstrapMultiGuild } from "./features/multi-guild/bootstrap.js";
 import { migrateLegacyEnvToGuildConfigs } from "./features/multi-guild/migration.js";
 import {
-  deployPollCommands,
+  buildPollCommandPayload,
   registerPollHandlers,
   toPollConsentAuthorization,
 } from "./features/poll/handler.js";
 import { registerReactionRoleHandlers } from "./features/reaction-roles/handler.js";
 import { registerReminder, toReminderConsentGate } from "./features/reminder/service.js";
-import { deployRoleSlashCommands } from "./features/role-slash/deploy.js";
+import { buildRoleSlashPayloads } from "./features/role-slash/deploy.js";
 import { registerRoleSlashHandlers } from "./features/role-slash/handler.js";
 import { createRoleSlashCommandRegistry } from "./features/role-slash/registry.js";
 import { registerScheduledAnnouncements } from "./features/scheduled-announcements/service.js";
 import { registerShutdownHandler } from "./features/shutdown/handler.js";
-import { deploySlashCommands } from "./features/slash-commands/deploy.js";
+import { buildSlashCommandPayloads } from "./features/slash-commands/deploy.js";
 import { registerSlashCommandHandlers } from "./features/slash-commands/handler.js";
 import { createSlashCommandRegistry } from "./features/slash-commands/registry.js";
 import { isSpotifyConfigured, readSpotifyConfig } from "./features/spotify/config.js";
@@ -61,7 +60,12 @@ import {
   type SnapshotRuntime,
 } from "./features/state-snapshot/service.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
+import {
+  buildTimekeeperCommandPayload,
+  deployGuildCommands,
+} from "./features/timekeeper-commands/deploy.js";
 import { registerTimekeeperCommandHandlers } from "./features/timekeeper-commands/handler.js";
+import { buildBirthdayPayloads } from "./features/birthday-role/deploy.js";
 import { registerWelcomeHandlers } from "./features/welcome/handler.js";
 import {
   childFor,
@@ -164,27 +168,31 @@ async function main(): Promise<void> {
   client.once(Events.ClientReady, (readyClient) => {
     rootLogger.info({ tag: readyClient.user.tag }, "discord client ready");
 
-    void deploySlashCommands({
-      registry: slashRegistry,
+    // Aggregate every guild-scoped slash-command payload into a single
+    // bulk PUT. Each per-feature deployer independently calls
+    // `Routes.applicationGuildCommands`, which is a full-overwrite
+    // endpoint, so issuing them in parallel left only the last writer's
+    // commands registered (PR review VJn3 / VK2P). The aggregated
+    // `deployGuildCommands` issues exactly one PUT with every payload.
+    const payloads = [
+      ...buildSlashCommandPayloads(slashRegistry),
+      ...buildPollCommandPayload(),
+      ...buildRoleSlashPayloads(roleSlashRegistry),
+      buildTimekeeperCommandPayload(),
+    ];
+    if (birthdayService) {
+      payloads.push(...buildBirthdayPayloads(birthdayService.registry));
+    }
+    void deployGuildCommands({
       token: config.discordToken,
       clientId: config.discordClientId,
       guildId: config.discordGuildId,
+      payloads,
     }).catch((error: unknown) => {
-      rootLogger.error({ err: error }, "failed to deploy slash commands on ready");
-    });
-    void deployPollCommands(readyClient, {
-      clientId: config.discordClientId,
-      guildId: config.discordGuildId,
-    }).catch((error: unknown) => {
-      rootLogger.error({ err: error }, "failed to deploy poll slash commands on ready");
-    });
-    void deployRoleSlashCommands({
-      registry: roleSlashRegistry,
-      token: config.discordToken,
-      clientId: config.discordClientId,
-      guildId: config.discordGuildId,
-    }).catch((error: unknown) => {
-      rootLogger.error({ err: error }, "failed to deploy role slash commands on ready");
+      rootLogger.error(
+        { err: error, registered: payloads.length },
+        "failed to deploy guild slash commands on ready",
+      );
     });
 
     // If an audit channel is configured, attempt to log a startup notice so
@@ -422,20 +430,13 @@ async function main(): Promise<void> {
     consent: privacyConsentService ? toReminderConsentGate(privacyConsentService) : undefined,
   });
 
+  // Register the birthday-role handlers before any `Events.ClientReady`
+  // listener so the aggregated deploy path below has access to the
+  // birthday command registry. The bulk PUT path replaces the old
+  // per-feature `deployBirthdayCommands` call (PR review VJn3).
   const birthdayService = registerBirthdayRoleHandlers(client, {
     config: { ...birthdayRoleConfig, guildId: config.discordGuildId },
     consentService: privacyConsentService ?? undefined,
-  });
-
-  client.once(Events.ClientReady, () => {
-    void deployBirthdayCommands({
-      registry: birthdayService.registry,
-      token: config.discordToken,
-      clientId: config.discordClientId,
-      guildId: config.discordGuildId,
-    }).catch((error: unknown) => {
-      rootLogger.error({ err: error }, "failed to deploy birthday slash commands on ready");
-    });
   });
 
   const spotifyConfig = readSpotifyConfig(process.env);

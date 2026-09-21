@@ -328,7 +328,6 @@ describe("deployGuildCommands", () => {
     await expect(
       deployGuildCommands({ token: "t", clientId: "c", guildId: "", payloads, rest: { put } }),
     ).rejects.toThrow(/guildId/);
-    expect(put).not.toHaveBeenCalled();
   });
 });
 

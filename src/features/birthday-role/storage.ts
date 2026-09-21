@@ -63,6 +63,12 @@ export function createFileBirthdayStorage(filePath: string): BirthdayStorage {
     return mutateJsonFile({
       filePath,
       schema: birthdayStoreSchema,
+      // Create the file on first write; a missing registry must not
+      // silently succeed. Otherwise the very first birthday
+      // registration after deployment would be acknowledged but never
+      // persisted.
+      createIfMissing: true,
+      initial: EMPTY_STORE,
       mutate: () => ({ birthdays: { ...store.birthdays } }),
     });
   }
