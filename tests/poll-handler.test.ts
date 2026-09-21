@@ -90,7 +90,14 @@ afterEach(() => {
 });
 
 function newHandler(overrides: Partial<PollHandlerDependencies> = {}) {
-  return createPollHandler({ store: createFilePollStore(storePath), ...overrides });
+  // v0.2.0: every poll handler test wires a permit-all consent gate so
+  // the gating semantics don't drown out the rest of the suite. The
+  // privacy gate itself is covered by `tests/privacy/poll-gate.test.ts`.
+  return createPollHandler({
+    store: createFilePollStore(storePath),
+    consent: { authorize: async () => ({ ok: true }) },
+    ...overrides,
+  });
 }
 
 describe("poll handler", () => {

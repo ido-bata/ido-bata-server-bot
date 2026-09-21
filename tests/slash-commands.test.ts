@@ -12,9 +12,14 @@ describe("slash command registry", () => {
   it("exposes the seed ping and help commands", () => {
     const registry = createSlashCommandRegistry();
 
-    expect(registry.definitions.map((definition) => definition.name)).toEqual(["ping", "help"]);
+    expect(registry.definitions.map((definition) => definition.name)).toEqual([
+      "ping",
+      "help",
+      "privacy",
+    ]);
     expect(registry.find("ping")?.name).toBe("ping");
     expect(registry.find("help")?.name).toBe("help");
+    expect(registry.find("privacy")?.name).toBe("privacy");
     expect(registry.find("nope")).toBeUndefined();
   });
 

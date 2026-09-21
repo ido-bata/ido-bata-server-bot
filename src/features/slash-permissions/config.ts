@@ -67,6 +67,11 @@ export const slashPermissionRules: SlashPermissionRule[] = [
     level: "administrator",
     reason: "Stops the bot process; never expose to non-administrators.",
   },
+  {
+    commandName: "privacy",
+    level: "everyone",
+    reason: "Personal data access/delete; safe per-member self-service.",
+  },
 ];
 
 const rulesByCommand = new Map<string, SlashPermissionRule>(

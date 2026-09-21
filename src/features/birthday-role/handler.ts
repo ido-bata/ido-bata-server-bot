@@ -2,6 +2,7 @@
 // (role assignments, channel messages) are funneled through DI seams so
 // tests can exercise the logic without a live Client.
 
+import type { ConsentScope } from "../../consent/scopes.js";
 import { type BirthdayRoleConfig, isBirthdayRoleConfigured } from "./config.js";
 import { type JstDate, parseBirthdayDate } from "./date.js";
 import { selectBirthdaysOnDate } from "./schedule.js";
@@ -27,6 +28,15 @@ type TextChannelLike = {
   send: (content: string) => Promise<unknown>;
 };
 
+/**
+ * Consent gate used by `setBirthday`. Fail-closed: any `{ ok: false }` from
+ * `authorize` is treated as a no-op (returns a `consent-denied` reason to
+ * the caller so the slash command can render a friendly message).
+ */
+export type BirthdayConsentAuthorization = {
+  authorize: (subjectId: string, scope: ConsentScope) => Promise<{ ok: boolean }>;
+};
+
 export type HandlerDependencies = {
   config: BirthdayRoleConfig;
   storage?: BirthdayStorage;
@@ -37,6 +47,9 @@ export type HandlerDependencies = {
   fetchAnnouncementChannel?: () => Promise<TextChannelLike | null>;
   // Lets tests intercept the wall-clock without touching Date.
   now?: () => Date;
+  // Optional v0.2.0 consent gate. When provided, `setBirthday` refuses to
+  // persist without an active `profile` grant.
+  consent?: BirthdayConsentAuthorization;
 };
 
 export type BirthdayRoleHandler = {
@@ -44,7 +57,8 @@ export type BirthdayRoleHandler = {
     userId: string,
     dateInput: string,
   ) => Promise<
-    { ok: true; entry: BirthdayEntry } | { ok: false; reason: "invalid-date" | "storage-failed" }
+    | { ok: true; entry: BirthdayEntry }
+    | { ok: false; reason: "invalid-date" | "storage-failed" | "consent-denied" }
   >;
   removeBirthday: (userId: string) => Promise<{ removed: boolean }>;
   runAssignTick: (target: JstDate) => Promise<AssignTickResult>;
@@ -80,6 +94,15 @@ export function createBirthdayRoleHandler(deps: HandlerDependencies): BirthdayRo
 
     if (!parsed) {
       return { ok: false as const, reason: "invalid-date" as const };
+    }
+
+    // v0.2.0: birthday is a `profile` consent-gated consumer. The gate
+    // runs BEFORE we touch storage so a denied user never reaches disk.
+    if (deps.consent) {
+      const decision = await deps.consent.authorize(userId, "profile");
+      if (!decision.ok) {
+        return { ok: false as const, reason: "consent-denied" as const };
+      }
     }
 
     const canonical = `${pad(parsed.year, 4)}-${pad(parsed.month, 2)}-${pad(parsed.day, 2)}`;

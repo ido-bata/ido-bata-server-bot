@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import type { Client, DMChannel, User } from "discord.js";
 import { Events } from "discord.js";
-
+import type { ConsentScope } from "../../consent/scopes.js";
+import type { ConsentService } from "../../consent/service.js";
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { executeRemindCommand, type RemindCommandDeps } from "./command.js";
 import { reminderConfig } from "./config.js";
@@ -34,6 +35,22 @@ export type AddReminderResult =
   | { ok: true; reminder: PersistedReminder }
   | { ok: false; error: string };
 
+/**
+ * Convenience adapter: wrap a `ConsentService` in the gate shape the
+ * reminder queue expects. Kept module-local so tests can build a fake
+ * without importing the consent subsystem.
+ */
+export function toReminderConsentGate(
+  service: ConsentService,
+): Required<ReminderQueueOptions>["consent"] {
+  return {
+    authorize: async (subjectId, scope) => {
+      const decision = await service.authorize(subjectId, scope);
+      return { ok: decision.ok };
+    },
+  };
+}
+
 type DmSurface = {
   send: (body: string) => Promise<unknown>;
 };
@@ -54,10 +71,18 @@ export type ReminderQueueOptions = {
    * `client.users.fetch(...).createDM()` when not provided.
    */
   openDm?: OpenDm;
+  /**
+   * v0.2.0: consent-gate reminder persistence. The gate runs BEFORE any
+   * `saveReminders` call. If absent, the queue remains functional but every
+   * `add` returns `consent-denied` — fail-closed.
+   */
+  consent?: {
+    authorize: (subjectId: string, scope: ConsentScope) => Promise<{ ok: boolean }>;
+  };
 };
 
 export type ReminderQueue = {
-  add: (input: AddReminderInput) => AddReminderResult;
+  add: (input: AddReminderInput) => AddReminderResult | Promise<AddReminderResult>;
   countForUser: (userId: string) => number;
   list: () => PersistedReminder[];
   /**
@@ -142,7 +167,7 @@ export function createReminderQueue(
     });
   }
 
-  function add(input: AddReminderInput): AddReminderResult {
+  function add(input: AddReminderInput): AddReminderResult | Promise<AddReminderResult> {
     const message = input.message.trim();
     if (message.length === 0) {
       return { ok: false, error: "message is empty" };
@@ -173,12 +198,23 @@ export function createReminderQueue(
       createdAt: createdAt.toISOString(),
     };
 
-    reminders = [...reminders, reminder];
-    persist();
-    // Wake the scheduler loop so the new reminder is evaluated on the next
-    // tick instead of waiting for the current sleep to finish.
-    wakeScheduler();
-    return { ok: true, reminder };
+    // v0.2.0: the consent gate runs synchronously *before* we mutate the
+    // in-memory queue. If no gate is configured we fail closed: every
+    // reminder is denied so the operator must wire the gate explicitly
+    // when enabling the consent subsystem.
+    if (!options.consent) {
+      return { ok: false, error: "consent gate not configured" };
+    }
+    const gate = options.consent;
+    return gate.authorize(input.userId, "activity-history").then((decision) => {
+      if (!decision.ok) {
+        return { ok: false, error: "consent denied" } satisfies AddReminderResult;
+      }
+      reminders = [...reminders, reminder];
+      persist();
+      wakeScheduler();
+      return { ok: true, reminder } satisfies AddReminderResult;
+    });
   }
 
   function countForUser(userId: string): number {

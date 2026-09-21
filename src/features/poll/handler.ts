@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import type { Client } from "discord.js";
 import { Events, Routes } from "discord.js";
-
+import type { ConsentScope } from "../../consent/scopes.js";
+import type { ConsentService } from "../../consent/service.js";
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { applyVote, buildTallyRows, clearVote } from "./aggregate.js";
 import { buildPollEmbed, buildPollMessageComponents, parsePollButtonCustomId } from "./build.js";
@@ -62,6 +63,15 @@ export type PollInteractionLike = {
   update: (options: ReplyOptions) => Promise<unknown>;
 };
 
+/**
+ * v0.2.0: poll votes and creator gating share the `activity-history`
+ * scope. When the gate is omitted the handler refuses every persistent
+ * mutation (fail-closed).
+ */
+export type PollConsentAuthorization = {
+  authorize: (subjectId: string, scope: ConsentScope) => Promise<{ ok: boolean }>;
+};
+
 export type PollHandlerDependencies = {
   store?: PollStore;
   now?: () => string;
@@ -71,6 +81,9 @@ export type PollHandlerDependencies = {
   // `null` means the message is unavailable; the close flow degrades to
   // state-only and reports that to the user.
   fetchPollMessage?: (channelId: string, messageId: string) => Promise<PollMessageTarget | null>;
+  // v0.2.0 consent gate. When omitted the handler behaves as if every
+  // request was denied — see `fail-closed` invariant.
+  consent?: PollConsentAuthorization;
 };
 
 export type PollHandler = {
@@ -80,11 +93,52 @@ export type PollHandler = {
   handleInteraction: (interaction: unknown) => Promise<void>;
 };
 
+/**
+ * Adapter that lifts a `ConsentService` into the shape the poll handler
+ * expects. Used by `index.ts` to wire the v0.2.0 gate into the live handler.
+ */
+export function toPollConsentAuthorization(service: ConsentService): PollConsentAuthorization {
+  return {
+    authorize: async (subjectId, scope) => {
+      const decision = await service.authorize(subjectId, scope);
+      return { ok: decision.ok };
+    },
+  };
+}
+
 export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandler {
   const store = deps.store ?? createFilePollStore("data/polls.json");
   const now = deps.now ?? (() => new Date().toISOString());
   const generateId = deps.generateId ?? (() => randomUUID());
   const fetchPollMessage = deps.fetchPollMessage;
+  const consent = deps.consent;
+
+  async function authorizeOrReply(
+    interaction: PollInteractionLike,
+    subjectId: string,
+  ): Promise<boolean> {
+    if (!consent) {
+      // Fail-closed: refuse persistence when the gate is not wired.
+      if (interaction.isRepliable()) {
+        await interaction.reply({
+          content: "Poll の投票・作成には同意 (activity-history) が必要です。",
+          ephemeral: true,
+        });
+      }
+      return false;
+    }
+    const decision = await consent.authorize(subjectId, "activity-history");
+    if (decision.ok) {
+      return true;
+    }
+    if (interaction.isRepliable()) {
+      await interaction.reply({
+        content: "activity-history の同意がないため、Poll への投票を保存できません。",
+        ephemeral: true,
+      });
+    }
+    return false;
+  }
 
   function loadState(): PollStateFile {
     return store.load();
@@ -113,6 +167,12 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
         content: `選択肢の形式が不正です: ${parsedOptions.error.issues[0]?.message ?? "unknown error"}`,
         ephemeral: true,
       });
+      return;
+    }
+
+    // v0.2.0: creator must have an active activity-history grant before
+    // the poll record (which carries their userId as `creatorId`) is written.
+    if (!(await authorizeOrReply(interaction, interaction.user.id))) {
       return;
     }
 
@@ -201,6 +261,12 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
     pollId: string,
     optionIndex: number,
   ): Promise<void> {
+    // v0.2.0: voter must have an active activity-history grant before
+    // their vote is persisted to `data/polls.json`.
+    if (!(await authorizeOrReply(interaction, interaction.user.id))) {
+      return;
+    }
+
     const state = loadState();
     const poll = state.polls.find((entry) => entry.id === pollId);
 
@@ -262,6 +328,12 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
     interaction: PollInteractionLike,
     pollId: string,
   ): Promise<void> {
+    // v0.2.0: clearing a vote still mutates the persisted record, so the
+    // activity-history gate applies symmetrically to add and clear.
+    if (!(await authorizeOrReply(interaction, interaction.user.id))) {
+      return;
+    }
+
     const state = loadState();
     const poll = state.polls.find((entry) => entry.id === pollId);
 

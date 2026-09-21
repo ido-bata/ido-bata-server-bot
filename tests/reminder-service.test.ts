@@ -18,6 +18,13 @@ function makeTempDir(): { options: LoadOptions; cleanup: () => void } {
   };
 }
 
+// v0.2.0: every test wires a permit-all consent gate so the queue
+// behaviour stays focused on scheduling logic. The privacy gate is
+// covered by `tests/privacy/reminder-gate.test.ts`.
+const permitAllConsent = {
+  authorize: async () => ({ ok: true as const }),
+};
+
 function makeFakeClient(): Client {
   return {
     users: {
@@ -46,12 +53,13 @@ describe("reminder queue", () => {
     cleanup();
   });
 
-  it("rejects past fire times", () => {
+  it("rejects past fire times", async () => {
     const queue = createReminderQueue(client, {
+      consent: permitAllConsent,
       loadOptions: options,
       now: () => now,
     });
-    const result = queue.add({
+    const result = await queue.add({
       userId: "u1",
       message: "hi",
       fireAt: new Date(now.getTime() - 1_000),
@@ -59,22 +67,24 @@ describe("reminder queue", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("rejects durations beyond the configured maximum", () => {
+  it("rejects durations beyond the configured maximum", async () => {
     const queue = createReminderQueue(client, {
+      consent: permitAllConsent,
       loadOptions: options,
       now: () => now,
     });
     const farFuture = new Date(now.getTime() + reminderConfig.maxDurationMs + 60_000);
-    const result = queue.add({ userId: "u1", message: "hi", fireAt: farFuture });
+    const result = await queue.add({ userId: "u1", message: "hi", fireAt: farFuture });
     expect(result.ok).toBe(false);
   });
 
-  it("rejects empty messages", () => {
+  it("rejects empty messages", async () => {
     const queue = createReminderQueue(client, {
+      consent: permitAllConsent,
       loadOptions: options,
       now: () => now,
     });
-    const result = queue.add({
+    const result = await queue.add({
       userId: "u1",
       message: "   ",
       fireAt: new Date(now.getTime() + 60_000),
@@ -82,14 +92,15 @@ describe("reminder queue", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("rejects new reminders beyond the per-user limit", () => {
+  it("rejects new reminders beyond the per-user limit", async () => {
     const queue = createReminderQueue(client, {
+      consent: permitAllConsent,
       loadOptions: options,
       now: () => now,
     });
 
     for (let i = 0; i < reminderConfig.maxPerUser; i += 1) {
-      const result = queue.add({
+      const result = await queue.add({
         userId: "u1",
         message: `msg-${i}`,
         fireAt: new Date(now.getTime() + 60_000 + i * 1_000),
@@ -97,7 +108,7 @@ describe("reminder queue", () => {
       expect(result.ok).toBe(true);
     }
 
-    const over = queue.add({
+    const over = await queue.add({
       userId: "u1",
       message: "one too many",
       fireAt: new Date(now.getTime() + 60_000),
@@ -105,12 +116,13 @@ describe("reminder queue", () => {
     expect(over.ok).toBe(false);
   });
 
-  it("persists reminders through the save hook", () => {
+  it("persists reminders through the save hook", async () => {
     const queue = createReminderQueue(client, {
+      consent: permitAllConsent,
       loadOptions: options,
       now: () => now,
     });
-    const result = queue.add({
+    const result = await queue.add({
       userId: "u1",
       message: "remember",
       fireAt: new Date(now.getTime() + 60_000),
@@ -121,7 +133,7 @@ describe("reminder queue", () => {
     expect(persisted.reminders[0]?.message).toBe("remember");
   });
 
-  it("loads existing reminders on construction (reload-on-boot pattern)", () => {
+  it("loads existing reminders on construction (reload-on-boot pattern)", async () => {
     saveReminders(
       [
         {
@@ -136,6 +148,7 @@ describe("reminder queue", () => {
     );
 
     const queue = createReminderQueue(client, {
+      consent: permitAllConsent,
       loadOptions: options,
       now: () => now,
     });
@@ -165,6 +178,7 @@ describe("reminder queue", () => {
     );
 
     const queue = createReminderQueue(client, {
+      consent: permitAllConsent,
       loadOptions: options,
       now: () => now,
       openDm,
@@ -198,6 +212,7 @@ describe("reminder queue", () => {
     );
 
     const queue = createReminderQueue(client, {
+      consent: permitAllConsent,
       loadOptions: options,
       now: () => now,
       openDm,
@@ -208,15 +223,16 @@ describe("reminder queue", () => {
     expect(persisted.reminders).toHaveLength(1);
   });
 
-  it("keeps cross-user limits independent", () => {
+  it("keeps cross-user limits independent", async () => {
     const queue = createReminderQueue(client, {
+      consent: permitAllConsent,
       loadOptions: options,
       now: () => now,
     });
 
     // Fill up user u1
     for (let i = 0; i < reminderConfig.maxPerUser; i += 1) {
-      const result = queue.add({
+      const result = await queue.add({
         userId: "u1",
         message: `msg-${i}`,
         fireAt: new Date(now.getTime() + 60_000 + i * 1_000),
@@ -226,7 +242,7 @@ describe("reminder queue", () => {
     expect(queue.countForUser("u1")).toBe(reminderConfig.maxPerUser);
 
     // User u2 should still have headroom
-    const result = queue.add({
+    const result = await queue.add({
       userId: "u2",
       message: "fresh",
       fireAt: new Date(now.getTime() + 60_000),
