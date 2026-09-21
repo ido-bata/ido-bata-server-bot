@@ -19,6 +19,8 @@ describe("readConfig", () => {
       enableGuildMembersIntent: false,
       enablePresenceIntent: false,
       roleAuditChannelId: null,
+      logLevel: "info",
+      logRingSize: 200,
     });
   });
 
@@ -116,5 +118,46 @@ describe("readConfig", () => {
         DISCORD_GUILD_IDS: " , ",
       }),
     ).toThrow(/guild id/i);
+  });
+
+  it("defaults logLevel to 'info' and logRingSize to 200", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_ID: "guild-id",
+    });
+    expect(config.logLevel).toBe("info");
+    expect(config.logRingSize).toBe(200);
+  });
+
+  it("parses LOG_LEVEL when explicitly provided", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_ID: "guild-id",
+      LOG_LEVEL: "debug",
+    });
+    expect(config.logLevel).toBe("debug");
+  });
+
+  it("coerces LOG_RING_SIZE from string and clamps to >=10", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_ID: "guild-id",
+      LOG_RING_SIZE: "500",
+    });
+    expect(config.logRingSize).toBe(500);
+  });
+
+  it("rejects LOG_RING_SIZE below 10", () => {
+    expect(() =>
+      readConfig({
+        DISCORD_TOKEN: "token",
+        DISCORD_CLIENT_ID: "client-id",
+        DISCORD_GUILD_ID: "guild-id",
+        LOG_RING_SIZE: "5",
+      }),
+    ).toThrow();
   });
 });
