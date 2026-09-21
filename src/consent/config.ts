@@ -3,10 +3,9 @@ import { type ConsentScope, DEFAULT_POLICY_VERSION, isConsentScope } from "./sco
 /**
  * Runtime configuration for the consent registry.
  *
- * `enabled` flips to `false` when the operator has not configured a
- * `CONSENT_MESSAGE_ID`. In that mode the bot still starts but the
- * reaction handler is a no-op — no message is treated as a consent
- * source, no grants are issued.
+ * `enabled` becomes true when a guild + channel are configured. The
+ * message id is optional: when omitted the bot bootstraps and maintains
+ * its own consent message in the configured channel.
  */
 export type ConsentConfig = {
   enabled: boolean;
@@ -19,16 +18,12 @@ export type ConsentConfig = {
   policyVersion: string;
 };
 
-const noopLogger = {
-  info: () => undefined,
-  warn: () => undefined,
-  error: () => undefined,
-  debug: () => undefined,
-  child() {
-    return noopLogger;
-  },
+export const DEFAULT_CONSENT_EMOJI_TO_SCOPE: Readonly<Record<string, ConsentScope>> = {
+  "📊": "activity-history",
+  "🟢": "presence-history",
+  "👤": "profile",
+  "💬": "message-history",
 };
-void noopLogger;
 
 export type RawConsentEnv = {
   CONSENT_MESSAGE_ID?: string;
@@ -50,17 +45,6 @@ export function readConsentConfig(env: RawConsentEnv): ConsentConfig {
   const channelId = (env.CONSENT_CHANNEL_ID ?? "").trim();
   const guildId = (env.CONSENT_GUILD_ID ?? "").trim() || (env.DISCORD_GUILD_ID ?? "").trim();
 
-  if (messageId.length === 0) {
-    return {
-      enabled: false,
-      messageId: "",
-      channelId: "",
-      guildId,
-      emojiToScope: {},
-      policyVersion,
-    };
-  }
-
   if (channelId.length === 0 || guildId.length === 0) {
     return {
       enabled: false,
@@ -74,7 +58,7 @@ export function readConsentConfig(env: RawConsentEnv): ConsentConfig {
 
   const emojiToScope = parseEmojiToScope(env.CONSENT_EMOJI);
   return {
-    enabled: true,
+    enabled: Object.keys(emojiToScope).length > 0,
     messageId,
     channelId,
     guildId,
@@ -84,13 +68,14 @@ export function readConsentConfig(env: RawConsentEnv): ConsentConfig {
 }
 
 /**
- * Parse `CONSENT_EMOJI` into a Record<emoji, scope>. Supports either a
- * single emoji (default → `profile`) or a comma-separated list of
- * `<emoji>:<scope>` pairs (`✅:profile, ⭐:activity-history`).
+ * Parse `CONSENT_EMOJI` into a Record<emoji, scope>. When omitted, all
+ * four v0.2.0 scopes receive a default emoji so CONSENT_CHANNEL_ID alone
+ * is sufficient to bootstrap the consent UI. A single explicit emoji maps
+ * to `profile`; comma-separated `<emoji>:<scope>` pairs customize it.
  */
 export function parseEmojiToScope(raw: string | undefined): Record<string, ConsentScope> {
   if (!raw || raw.trim().length === 0) {
-    return {};
+    return { ...DEFAULT_CONSENT_EMOJI_TO_SCOPE };
   }
   const result: Record<string, ConsentScope> = {};
   for (const token of raw.split(",")) {

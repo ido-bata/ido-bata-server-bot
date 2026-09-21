@@ -1,19 +1,21 @@
 import "dotenv/config";
 
 import { join } from "node:path";
-import type { TextChannel } from "discord.js";
+import type { Client, TextChannel } from "discord.js";
 import { ChannelType, Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
 import type { ConsentConfig } from "./consent/config.js";
 import { createConsentLogger } from "./consent/logger.js";
+import { createDiscordReactionFetcher, ensureConsentMessage } from "./consent/message-bootstrap.js";
 import { createReactionHandler } from "./consent/reaction-handler.js";
 import { reconcileConsentsOnReady } from "./consent/reconciliation.js";
 import { createJsonConsentRepository } from "./consent/repository-json.js";
 import type { ConsentScope } from "./consent/scopes.js";
 import type { ConsentService } from "./consent/service.js";
 import { createConsentService } from "./consent/service.js";
+import type { ReactionTarget } from "./consent/types.js";
 import { birthdayRoleConfig } from "./features/birthday-role/config.js";
 import { deployBirthdayCommands } from "./features/birthday-role/deploy.js";
 import { registerBirthdayRoleHandlers } from "./features/birthday-role/service.js";
@@ -209,21 +211,20 @@ async function main(): Promise<void> {
   // so every consumer registration can pass the same instance in.
   let privacyConsentService: ConsentService | null = null;
   if (config.consent.enabled) {
+    const consentLogger = createConsentLogger();
+    const consentTargets: ReactionTarget[] = [];
     privacyConsentService = buildConsentService({
       config: config.consent,
+      client,
     });
     const reactionHandler = createReactionHandler({
-      fetcher: {
-        async fetchMessageReactions() {
-          return new Set<string>();
-        },
-      },
+      fetcher: createDiscordReactionFetcher(client),
       service: privacyConsentService,
-      targets: buildReactionTargets(config.consent),
+      targets: consentTargets,
       emojiToScope: new Map<string, (typeof config.consent.emojiToScope)[string]>(
         Object.entries(config.consent.emojiToScope),
       ),
-      log: createConsentLogger(),
+      log: consentLogger,
     });
     client.on(Events.MessageReactionAdd, (reaction, user) => {
       const guildId = reaction.message.guildId ?? config.consent.guildId;
@@ -255,13 +256,45 @@ async function main(): Promise<void> {
         Boolean(user.bot),
       );
     });
-    client.once(Events.ClientReady, async () => {
-      await reconcileConsentsOnReady({
-        client,
-        service: privacyConsentService!,
-        config: config.consent,
-        logger: createConsentLogger(),
-      });
+    client.once(Events.ClientReady, async (readyClient) => {
+      try {
+        const resolvedConsentConfig = await ensureConsentMessage({
+          client: readyClient,
+          config: config.consent,
+          logger: consentLogger,
+        });
+        consentTargets.splice(
+          0,
+          consentTargets.length,
+          ...buildReactionTargets(resolvedConsentConfig),
+        );
+        await reconcileConsentsOnReady({
+          client: readyClient,
+          service: privacyConsentService!,
+          config: resolvedConsentConfig,
+          logger: consentLogger,
+        });
+        statusStore.set({
+          features: {
+            ...statusStore.snapshot.features,
+            consent: {
+              state: "enabled",
+              meta: {
+                messageId: resolvedConsentConfig.messageId,
+                policyVersion: resolvedConsentConfig.policyVersion,
+              },
+            },
+          },
+        });
+      } catch (error) {
+        rootLogger.error({ err: error }, "failed to bootstrap consent message");
+        statusStore.set({
+          features: {
+            ...statusStore.snapshot.features,
+            consent: { state: "degraded", meta: { reason: "bootstrap-failed" } },
+          },
+        });
+      }
     });
   }
   // `registerShutdownHandler` owns the SIGINT/SIGTERM listeners — anything
@@ -507,12 +540,13 @@ main().catch((error: unknown) => {
  * the composition root in `main()` and the privacy-clear test fixtures stay
  * in lock-step.
  */
-function buildConsentService(options: { config: ConsentConfig }): ConsentService {
+function buildConsentService(options: { config: ConsentConfig; client: Client }): ConsentService {
   const emojiToScope = new Map<string, ConsentScope>(Object.entries(options.config.emojiToScope));
   return createConsentService({
     repository: createJsonConsentRepository({
       filePath: join(process.cwd(), "data", "consent.json"),
     }),
+    fetcher: createDiscordReactionFetcher(options.client),
     logger: createConsentLogger(),
     policyVersion: options.config.policyVersion,
     emojiToScope,

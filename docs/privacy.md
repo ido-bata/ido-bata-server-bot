@@ -147,13 +147,26 @@ Discord API failure during reconciliation adds the affected guild id to
 
 ## 8. Operator-facing config
 
-| Env var                    | Effect                                                       |
-| -------------------------- | ------------------------------------------------------------ |
-| `CONSENT_MESSAGE_ID`       | discord message id to watch for reactions. Empty disables the consent subsystem. |
-| `CONSENT_EMOJI`            | emoji (single unicode or `unicode:scope` pairs)             |
-| `CONSENT_POLICY_VERSION`   | string. Default `v0.2.0`. Bumped on privacy-policy changes. |
-| `CONSENT_GUILD_ID`         | (optional) guild id; defaults to `DISCORD_GUILD_ID`         |
-| `CONSENT_CHANNEL_ID`       | (optional) channel id; defaults to `DISCORD_GUILD_ID` channel |
+| Env var | Effect |
+| --- | --- |
+| `CONSENT_CHANNEL_ID` | Consent UI を置く Discord text channel。設定すると consent subsystem が有効になる。 |
+| `CONSENT_GUILD_ID` | optional guild override。未指定時は `DISCORD_GUILD_ID`。 |
+| `CONSENT_MESSAGE_ID` | optional existing-message override。通常は不要。 |
+| `CONSENT_EMOJI` | optional emoji/scope mapping。未指定時は4 scope の既定 mapping を使用する。 |
+| `CONSENT_POLICY_VERSION` | current policy version。Default `v0.2.0`。 |
 
-Without `CONSENT_MESSAGE_ID` the bot starts but consent-gated consumers
-treat every subject as not-granted. This is the documented fail-safe.
+`CONSENT_MESSAGE_ID` が空の場合、bot は ClientReady 時に
+`CONSENT_CHANNEL_ID` 内の bot-authored managed consent message を探す。
+見つかれば current template / policy version に更新して再利用し、
+見つからなければ bot 自身が新規投稿する。各 scope の reaction も bot
+自身が付与するため、operator 個人の投稿に reaction する必要はない。
+
+既定 mapping:
+
+- 📊 → `activity-history`
+- 🟢 → `presence-history`
+- 👤 → `profile`
+- 💬 → `message-history`
+
+明示した `CONSENT_MESSAGE_ID` が取得不能な場合は、誤って別の consent
+message を作らず fail closed とする。

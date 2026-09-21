@@ -34,6 +34,48 @@ describe("readConfig", () => {
     });
   });
 
+  it("enables consent from CONSENT_CHANNEL_ID without a message id", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_ID: "guild-id",
+      CONSENT_CHANNEL_ID: "consent-channel",
+    });
+
+    expect(config.consent).toEqual({
+      enabled: true,
+      messageId: "",
+      channelId: "consent-channel",
+      guildId: "guild-id",
+      emojiToScope: {
+        "📊": "activity-history",
+        "🟢": "presence-history",
+        "👤": "profile",
+        "💬": "message-history",
+      },
+      policyVersion: "v0.2.0",
+    });
+  });
+
+  it("keeps CONSENT_MESSAGE_ID as an optional existing-message override", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_ID: "guild-id",
+      CONSENT_CHANNEL_ID: "consent-channel",
+      CONSENT_MESSAGE_ID: "message-1",
+      CONSENT_EMOJI: "✅:profile",
+    });
+
+    expect(config.consent).toMatchObject({
+      enabled: true,
+      messageId: "message-1",
+      channelId: "consent-channel",
+      guildId: "guild-id",
+      emojiToScope: { "✅": "profile" },
+    });
+  });
+
   it("enables message content intent only when explicitly configured", () => {
     const config = readConfig({
       DISCORD_TOKEN: "token",
