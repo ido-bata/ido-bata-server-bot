@@ -8,12 +8,11 @@ import type {
  * Runtime deps the dispatcher forwards to a command's `execute`. Each
  * command picks the subset it needs and ignores the rest; the union type
  * keeps the dispatcher from needing per-command switch logic.
+ *
+ * `SlashCommandDeps` was deleted in v0.2.0 round-5 cleanup: the
+ * dispatcher forwards `unknown` to commands, so no typed wrapper was
+ * needed and Knip flagged the unused export.
  */
-export type SlashCommandDeps = {
-  /** Forwarded to `/privacy` (ConsentService + test seams). */
-  privacy?: unknown;
-};
-
 export type SlashCommandDefinition = {
   // Stable id used both as the registration payload name and the dispatch key.
   name: string;

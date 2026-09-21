@@ -1,26 +1,20 @@
-// REST deployer for the birthday slash command. Mirrors the minimal shape
-// used by slash-commands base (#13) so the future migration is mechanical.
+// REST payload builder for the birthday-role slash commands.
+//
+// The aggregated `deployGuildCommands` path in `src/index.ts` consumes the
+// JSON payloads produced here, so the birthday deployer does NOT
+// independently bulk-PUT `Routes.applicationGuildCommands` (which would
+// race with the other deployers and overwrite them — PR review VJn3).
+// Earlier revisions exposed `deployBirthdayCommands` directly; that
+// function was deleted in v0.2.0 round-5 cleanup because nothing wired it
+// after the aggregator landed.
 
 import type {
-  REST,
   RESTPostAPIChatInputApplicationCommandsJSONBody,
   SlashCommandSubcommandsOnlyBuilder,
 } from "discord.js";
-import { REST as RestClass, Routes, SlashCommandBuilder } from "discord.js";
+import { SlashCommandBuilder } from "discord.js";
 
 import type { BirthdayCommandDefinition, BirthdayCommandRegistry } from "./commands.js";
-
-export type DeployBirthdayCommandsDeps = {
-  registry: BirthdayCommandRegistry;
-  token: string;
-  clientId: string;
-  guildId: string;
-  rest?: Pick<REST, "put">;
-};
-
-export type DeployBirthdayCommandsResult = {
-  registered: number;
-};
 
 export function toApplicationCommandPayload(
   value:
@@ -47,21 +41,4 @@ export function buildBirthdayPayloads(
   return registry.definitions.map((definition: BirthdayCommandDefinition) =>
     toApplicationCommandPayload(definition.buildPayload()),
   );
-}
-
-export async function deployBirthdayCommands(
-  deps: DeployBirthdayCommandsDeps,
-): Promise<DeployBirthdayCommandsResult> {
-  if (!deps.token) throw new Error("deployBirthdayCommands: token is required");
-  if (!deps.clientId) throw new Error("deployBirthdayCommands: clientId is required");
-  if (!deps.guildId) throw new Error("deployBirthdayCommands: guildId is required");
-
-  const payload = deps.registry.definitions.map((definition: BirthdayCommandDefinition) =>
-    toApplicationCommandPayload(definition.buildPayload()),
-  );
-
-  const rest = deps.rest ?? new RestClass({ version: "10" }).setToken(deps.token);
-  await rest.put(Routes.applicationGuildCommands(deps.clientId, deps.guildId), { body: payload });
-
-  return { registered: payload.length };
 }

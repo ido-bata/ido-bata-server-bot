@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { Client, RESTPostAPIChatInputApplicationCommandsJSONBody } from "discord.js";
-import { Events, Routes } from "discord.js";
+import { Events } from "discord.js";
 import type { ConsentScope } from "../../consent/scopes.js";
 import type { ConsentService } from "../../consent/service.js";
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
@@ -426,41 +426,16 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
   };
 }
 
-export type DeployCommandsDependencies = {
-  rest?: Pick<typeof Client.prototype.rest, "put">;
-  clientId?: string;
-  guildId?: string;
-};
-
-export async function deployPollCommands(
-  client: Client,
-  deps: DeployCommandsDependencies = {},
-): Promise<{ registered: number }> {
-  const clientId = deps.clientId ?? client.user?.id ?? "";
-  const guildId = deps.guildId ?? client.guilds.cache.first()?.id ?? "";
-
-  if (!clientId) {
-    throw new Error("deployPollCommands: clientId is required");
-  }
-
-  if (!guildId) {
-    throw new Error("deployPollCommands: guildId is required");
-  }
-
-  const rest = deps.rest ?? client.rest;
-  const payload = buildPollCommandPayload();
-
-  await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: payload });
-
-  return { registered: payload.length };
-}
-
 // Internal-only: shapes the JSON body for the REST registration call. Kept as
 // a separate function so the payload is easy to unit-test. Re-exported as a
 // building block for the aggregated `deployGuildCommands` call in
 // `src/index.ts` so per-feature deployers do not independently PUT to
 // `Routes.applicationGuildCommands` (which would race and overwrite each
 // other — see PR review VJn3).
+//
+// `deployPollCommands` previously lived here and was deleted in v0.2.0
+// round-5 cleanup: nothing wired it after the aggregator landed and Knip
+// flagged it as an unused export.
 export function buildPollCommandPayload(): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
   return [
     {
