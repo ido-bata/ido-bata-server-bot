@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "project": ["src/**/*.ts"],
+  "project": ["src/**/*.ts", "src/**/*.tsx"],
   "ignoreDependencies": ["ffmpeg-static", "opusscript", "pino-pretty"],
   "ignoreExportsUsedInFile": true,
   "ignore": [
@@ -9,6 +9,6 @@
   ],
   "vitest": {
     "config": ["vitest.config.ts"],
-    "entry": ["tests/**/*.test.ts"]
+    "entry": ["tests/**/*.test.ts", "tests/**/*.test.tsx"]
   }
 }

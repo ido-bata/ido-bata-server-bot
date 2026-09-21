@@ -47,7 +47,14 @@ import {
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 import { registerTimekeeperCommandHandlers } from "./features/timekeeper-commands/handler.js";
 import { registerWelcomeHandlers } from "./features/welcome/handler.js";
-import { childFor, createRootLogger, getRootLogger } from "./lib/logger/index.js";
+import {
+  childFor,
+  createRootLogger,
+  getRootLogger,
+  subscribe as subscribeLogger,
+} from "./lib/logger/index.js";
+import { createRuntimeStatusStore } from "./runtime/status-store.js";
+import { mountTui } from "./tui/render.jsx";
 
 async function main(): Promise<void> {
   const config = readConfig(process.env);
@@ -59,6 +66,31 @@ async function main(): Promise<void> {
   createRootLogger(process.env);
   const rootLogger = childFor(getRootLogger(), "composition-root");
 
+  // Runtime status store. The TUI is a read-only consumer of this store;
+  // feature handlers / event listeners below write into it.
+  const statusStore = createRuntimeStatusStore();
+  statusStore.setEventsCap(config.logRingSize);
+  statusStore.set({
+    app: {
+      ...statusStore.snapshot.app,
+      version: process.env.npm_package_version ?? "0.0.0",
+    },
+    runtime: {
+      ...statusStore.snapshot.runtime,
+      rssBytes: process.memoryUsage().rss,
+    },
+  });
+  // Push every structured log event into the store's ring buffer so the
+  // TUI events panel can tail them.
+  subscribeLogger((rec) => {
+    statusStore.appendEvent(rec);
+  });
+
+  // Mount the TUI early so operator can see boot progress. Returns null
+  // when BOT_TUI=off / non-TTY — logger keeps writing JSON Lines in that
+  // case.
+  const tuiInstance = mountTui(statusStore);
+
   const client = createDiscordClient({
     enableMessageContentIntent: config.enableMessageContentIntent,
     enableGuildMembersIntent: config.enableGuildMembersIntent,
@@ -66,6 +98,47 @@ async function main(): Promise<void> {
   });
   const slashRegistry = createSlashCommandRegistry();
   const roleSlashRegistry = createRoleSlashCommandRegistry();
+
+  const botStartedAt = Date.now();
+
+  // Wire Discord lifecycle into the status store so the TUI discord
+  // panel reflects connection state, guild count, and gateway ping.
+  const refreshDiscord = (): void => {
+    const ping = client.ws.ping;
+    statusStore.set({
+      discord: {
+        state: client.isReady() ? "ready" : "connecting",
+        user: client.user?.tag ?? null,
+        guildCount: client.guilds.cache.size,
+        pingMs: Number.isFinite(ping) ? ping : null,
+      },
+    });
+  };
+  client.on(Events.ClientReady, refreshDiscord);
+  client.on(Events.ShardReady, refreshDiscord);
+  client.on(Events.ShardDisconnect, () => {
+    statusStore.set({ discord: { ...statusStore.snapshot.discord, state: "disconnected" } });
+  });
+  client.on(Events.ShardReconnecting, () => {
+    statusStore.set({ discord: { ...statusStore.snapshot.discord, state: "connecting" } });
+  });
+
+  // Tick RSS / uptime every second so the runtime panel stays fresh even
+  // when no log events fire. The timer is cleared on shutdown.
+  const metricsTimer = setInterval(() => {
+    statusStore.set({
+      app: {
+        ...statusStore.snapshot.app,
+        uptimeMs: Date.now() - botStartedAt,
+        capturedAt: Date.now(),
+      },
+      runtime: {
+        ...statusStore.snapshot.runtime,
+        rssBytes: process.memoryUsage().rss,
+      },
+    });
+  }, 1000);
+  metricsTimer.unref?.();
 
   client.once(Events.ClientReady, (readyClient) => {
     rootLogger.info({ tag: readyClient.user.tag }, "discord client ready");
@@ -113,6 +186,12 @@ async function main(): Promise<void> {
   });
 
   registerErrorForwarder(client);
+  statusStore.set({
+    features: {
+      ...statusStore.snapshot.features,
+      "error-forwarder": { state: "enabled" },
+    },
+  });
   // `registerShutdownHandler` owns the SIGINT/SIGTERM listeners — anything
   // that needs explicit teardown on signal goes through its `onAfterTeardown`
   // hook (see `src/features/shutdown/handler.ts`). The configStore file
@@ -123,8 +202,16 @@ async function main(): Promise<void> {
   registerShutdownHandler(
     client,
     {
-      onAfterTeardown: () => {
+      onAfterTeardown: async () => {
+        clearInterval(metricsTimer);
         configStore.stop();
+        if (tuiInstance) {
+          // Drain pending renders before the process exits so the
+          // operator sees the final state instead of a truncated frame.
+          await tuiInstance.waitUntilExit().catch(() => undefined);
+          return;
+        }
+        statusStore.clearListeners();
       },
     },
     (message: string) => rootLogger.info(message),
@@ -141,6 +228,12 @@ async function main(): Promise<void> {
     },
   });
   registerSlashCommandHandlers(client);
+  statusStore.set({
+    features: {
+      ...statusStore.snapshot.features,
+      "slash-commands": { state: "enabled" },
+    },
+  });
   registerScheduledAnnouncements(client);
   registerMessageAuditHandlers(client, {
     config: messageAuditConfig,
@@ -157,8 +250,20 @@ async function main(): Promise<void> {
     roleAuditChannelId: config.roleAuditChannelId,
   });
   registerTimekeeper(client);
+  statusStore.set({
+    features: {
+      ...statusStore.snapshot.features,
+      timekeeper: { state: "enabled" },
+    },
+  });
   registerTimekeeperCommandHandlers(client);
   await registerHealthMetrics(client);
+  statusStore.set({
+    features: {
+      ...statusStore.snapshot.features,
+      "health-metrics": { state: "enabled", meta: { port: process.env.HEALTH_METRICS_PORT } },
+    },
+  });
   registerPollHandlers(client);
   registerWelcomeHandlers(client);
   registerReminder(client);
@@ -247,6 +352,12 @@ async function main(): Promise<void> {
       });
     },
   });
+  statusStore.set({
+    features: {
+      ...statusStore.snapshot.features,
+      "ical-calendar": { state: "enabled" },
+    },
+  });
 
   process.on("beforeExit", () => {
     icalService.stopScheduler();
@@ -255,8 +366,20 @@ async function main(): Promise<void> {
   if (process.env.GITHUB_WEBHOOK_SECRET) {
     try {
       await registerGitHubWebhook(client);
+      statusStore.set({
+        features: {
+          ...statusStore.snapshot.features,
+          "github-webhook": { state: "enabled" },
+        },
+      });
     } catch (error) {
       rootLogger.error({ err: error }, "failed to start GitHub webhook server");
+      statusStore.set({
+        features: {
+          ...statusStore.snapshot.features,
+          "github-webhook": { state: "degraded", meta: { reason: "start-failed" } },
+        },
+      });
     }
   } else {
     rootLogger.info("GitHub webhook server is disabled (set GITHUB_WEBHOOK_SECRET to enable).");
@@ -276,6 +399,12 @@ async function main(): Promise<void> {
     if (migration.added.length > 0) {
       rootLogger.info({ added: migration.added }, "multi-guild migration: added guild configs");
     }
+    statusStore.set({
+      features: {
+        ...statusStore.snapshot.features,
+        "multi-guild": { state: "enabled" },
+      },
+    });
   }
 
   await client.login(config.discordToken);
