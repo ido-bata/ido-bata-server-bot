@@ -108,8 +108,20 @@ export async function ensureConsentMessage(deps: BootstrapDeps): Promise<Consent
       );
     }
   } else {
-    const recent = await channel.messages.fetch({ limit: 100 });
-    message = recent.find((candidate) => isManagedConsentMessage(candidate, botUserId));
+    let before: string | undefined;
+    for (let page = 0; page < 10 && !message; page += 1) {
+      const recent = await channel.messages.fetch(
+        before ? { limit: 100, before } : { limit: 100 },
+      );
+      message = recent.find((candidate) => isManagedConsentMessage(candidate, botUserId));
+      if (message || recent.size < 100) {
+        break;
+      }
+      before = recent.last()?.id;
+      if (!before) {
+        break;
+      }
+    }
 
     if (!message) {
       message = await channel.send(renderConsentMessage(config));
