@@ -12,10 +12,9 @@ import {
 import { dirname } from "node:path";
 
 import { z } from "zod";
-
-import { CONSENT_SCOPES, type ConsentScope } from "./scopes.js";
 import type { ConsentRepository } from "./repository.js";
-import { type ConsentRecord, type ConsentSource } from "./types.js";
+import { CONSENT_SCOPES, type ConsentScope } from "./scopes.js";
+import type { ConsentRecord, ConsentSource } from "./types.js";
 
 const CURRENT_SCHEMA_VERSION = 1 as const;
 

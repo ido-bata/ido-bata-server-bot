@@ -3,9 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
-
-import { createConsentService } from "../../src/consent/service.js";
 import { createJsonConsentRepository } from "../../src/consent/repository-json.js";
+import { createConsentService } from "../../src/consent/service.js";
 import type { ConsentEvent } from "../../src/consent/types.js";
 
 function makeTempDir(): { filePath: string; cleanup: () => void } {

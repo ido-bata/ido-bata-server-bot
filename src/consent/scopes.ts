@@ -24,10 +24,7 @@ export const CONSENT_SCOPES = [
 export type ConsentScope = (typeof CONSENT_SCOPES)[number];
 
 export function isConsentScope(value: unknown): value is ConsentScope {
-  return (
-    typeof value === "string" &&
-    (CONSENT_SCOPES as readonly string[]).includes(value)
-  );
+  return typeof value === "string" && (CONSENT_SCOPES as readonly string[]).includes(value);
 }
 
 /** Default policy version for v0.2.0. Bump on privacy-policy changes. */

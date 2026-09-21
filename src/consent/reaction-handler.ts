@@ -77,7 +77,9 @@ export function createReactionHandler(deps: ReactionHandlerDeps): ReactionHandle
     if (isBot) {
       return;
     }
-    if (!deps.targets.some((target) => targetMatches(target, messageId, channelId, guildId, emoji))) {
+    if (
+      !deps.targets.some((target) => targetMatches(target, messageId, channelId, guildId, emoji))
+    ) {
       return;
     }
     const scope = deps.emojiToScope.get(emoji);
@@ -109,7 +111,9 @@ export function createReactionHandler(deps: ReactionHandlerDeps): ReactionHandle
     if (isBot) {
       return;
     }
-    if (!deps.targets.some((target) => targetMatches(target, messageId, channelId, guildId, emoji))) {
+    if (
+      !deps.targets.some((target) => targetMatches(target, messageId, channelId, guildId, emoji))
+    ) {
       return;
     }
     const scope = deps.emojiToScope.get(emoji);

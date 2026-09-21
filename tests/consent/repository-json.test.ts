@@ -49,7 +49,10 @@ describe("JSON consent repository", () => {
     const { filePath, cleanup } = makeTempDir();
     try {
       const repository = createJsonConsentRepository({ filePath });
-      const records = [makeRecord(), makeRecord({ subjectId: "user-2", scope: "activity-history" })];
+      const records = [
+        makeRecord(),
+        makeRecord({ subjectId: "user-2", scope: "activity-history" }),
+      ];
       await repository.save(records);
       const loaded = await repository.load();
       expect(loaded).toEqual(records);
@@ -103,9 +106,7 @@ describe("JSON consent repository", () => {
     try {
       const repository = createJsonConsentRepository({ filePath });
       await repository.upsert(makeRecord({ subjectId: "user-1", scope: "profile" }));
-      await repository.upsert(
-        makeRecord({ subjectId: "user-1", scope: "activity-history" }),
-      );
+      await repository.upsert(makeRecord({ subjectId: "user-1", scope: "activity-history" }));
       await repository.remove("user-1", "profile");
       const loaded = await repository.load();
       expect(loaded).toHaveLength(1);
@@ -120,15 +121,11 @@ describe("JSON consent repository", () => {
     try {
       const repository = createJsonConsentRepository({ filePath });
       await repository.upsert(makeRecord({ subjectId: "user-1", scope: "profile" }));
-      await repository.upsert(
-        makeRecord({ subjectId: "user-1", scope: "activity-history" }),
-      );
+      await repository.upsert(makeRecord({ subjectId: "user-1", scope: "activity-history" }));
       await repository.upsert(makeRecord({ subjectId: "user-2", scope: "profile" }));
       await repository.clearSubject("user-1");
       const loaded = await repository.load();
-      expect(loaded).toEqual([
-        makeRecord({ subjectId: "user-2", scope: "profile" }),
-      ]);
+      expect(loaded).toEqual([makeRecord({ subjectId: "user-2", scope: "profile" })]);
     } finally {
       cleanup();
     }

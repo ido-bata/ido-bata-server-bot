@@ -1,4 +1,4 @@
-import { type ConsentScope, isConsentScope } from "./scopes.js";
+import { type ConsentScope, DEFAULT_POLICY_VERSION, isConsentScope } from "./scopes.js";
 
 /**
  * Runtime configuration for the consent registry.
@@ -45,11 +45,10 @@ export type RawConsentEnv = {
  * bot still boots, but no consent message is recognised.
  */
 export function readConsentConfig(env: RawConsentEnv): ConsentConfig {
-  const policyVersion = (env.CONSENT_POLICY_VERSION ?? "").trim() || "v0.2.0";
+  const policyVersion = (env.CONSENT_POLICY_VERSION ?? "").trim() || DEFAULT_POLICY_VERSION;
   const messageId = (env.CONSENT_MESSAGE_ID ?? "").trim();
   const channelId = (env.CONSENT_CHANNEL_ID ?? "").trim();
-  const guildId =
-    (env.CONSENT_GUILD_ID ?? "").trim() || (env.DISCORD_GUILD_ID ?? "").trim();
+  const guildId = (env.CONSENT_GUILD_ID ?? "").trim() || (env.DISCORD_GUILD_ID ?? "").trim();
 
   if (messageId.length === 0) {
     return {

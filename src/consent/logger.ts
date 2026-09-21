@@ -1,4 +1,4 @@
-import { pino, type Logger as PinoLogger } from "pino";
+import { type Logger as PinoLogger, pino } from "pino";
 
 /**
  * Minimal local pino logger used by the consent module.

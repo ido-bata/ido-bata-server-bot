@@ -1,13 +1,13 @@
-import type { ConsentScope } from "./scopes.js";
 import { type ConsentLogger, createConsentLogger } from "./logger.js";
 import type { ConsentRepository } from "./repository.js";
-import {
-  type ClearReport,
-  type ConsentEvent,
-  type ConsentRecord,
-  type ConsentSource,
-  type ReactionTarget,
-  type ReconcileReport,
+import type { ConsentScope } from "./scopes.js";
+import type {
+  ClearReport,
+  ConsentEvent,
+  ConsentRecord,
+  ConsentSource,
+  ReactionTarget,
+  ReconcileReport,
 } from "./types.js";
 
 /**
@@ -21,10 +21,7 @@ export type ConsentDecision =
   | { ok: false; reason: "no-grant" | "wrong-policy" | "service-unavailable" };
 
 export type ScopeDeleteResult = { ok: boolean; error?: string };
-export type ScopeDeleteFn = (
-  subjectId: string,
-  scope: ConsentScope,
-) => Promise<ScopeDeleteResult>;
+export type ScopeDeleteFn = (subjectId: string, scope: ConsentScope) => Promise<ScopeDeleteResult>;
 
 export type ReactionFetcher = {
   /**
@@ -125,10 +122,7 @@ export function createConsentService(options: ConsentServiceOptions): ConsentSer
     return repository.load();
   }
 
-  async function authorize(
-    subjectId: string,
-    scope: ConsentScope,
-  ): Promise<ConsentDecision> {
+  async function authorize(subjectId: string, scope: ConsentScope): Promise<ConsentDecision> {
     let records: ConsentRecord[];
     try {
       records = await loadAll();
@@ -258,9 +252,7 @@ export function createConsentService(options: ConsentServiceOptions): ConsentSer
     return emojiToScope.get(emoji) ?? null;
   }
 
-  async function reconcile(
-    targets: ReadonlyArray<ReactionTarget>,
-  ): Promise<ReconcileReport> {
+  async function reconcile(targets: ReadonlyArray<ReactionTarget>): Promise<ReconcileReport> {
     const report: ReconcileReport = {
       appliedGrants: [],
       appliedRevokes: [],
