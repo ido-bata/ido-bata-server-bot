@@ -30,6 +30,10 @@ data/polls.json
 # Local persisted state files (runtime only — these are never committed)
 data/reminders.json
 
+# Consent registry — user-keyed grants persisted by ConsentService.
+# Subject identifiers and revocation timestamps must never be committed.
+data/consent.json
+
 # Local persisted state for the iCal calendar feature
 data/calendars.json
 data/calendar-cache.json
