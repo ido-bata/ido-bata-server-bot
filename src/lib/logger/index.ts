@@ -7,6 +7,8 @@ import { RING_MAX, RING_MIN, type RingLogEvent } from "./ring-buffer.js";
 
 export type { RingLogEvent } from "./ring-buffer.js";
 export { LogRingBuffer, RING_MAX, RING_MIN } from "./ring-buffer.js";
+export type Logger = pinoType.Logger;
+export type { pinoType };
 
 /**
  * A normalized log record that has been parsed off the pino stream and is
