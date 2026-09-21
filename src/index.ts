@@ -8,10 +8,7 @@ import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
 import type { ConsentConfig } from "./consent/config.js";
 import { createConsentLogger } from "./consent/logger.js";
-import {
-  createDiscordReactionFetcher,
-  ensureConsentMessage,
-} from "./consent/message-bootstrap.js";
+import { createDiscordReactionFetcher, ensureConsentMessage } from "./consent/message-bootstrap.js";
 import { createReactionHandler } from "./consent/reaction-handler.js";
 import { reconcileConsentsOnReady } from "./consent/reconciliation.js";
 import { createJsonConsentRepository } from "./consent/repository-json.js";
@@ -543,10 +540,7 @@ main().catch((error: unknown) => {
  * the composition root in `main()` and the privacy-clear test fixtures stay
  * in lock-step.
  */
-function buildConsentService(options: {
-  config: ConsentConfig;
-  client: Client;
-}): ConsentService {
+function buildConsentService(options: { config: ConsentConfig; client: Client }): ConsentService {
   const emojiToScope = new Map<string, ConsentScope>(Object.entries(options.config.emojiToScope));
   return createConsentService({
     repository: createJsonConsentRepository({
