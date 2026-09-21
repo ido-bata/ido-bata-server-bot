@@ -1,9 +1,19 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "project": ["src/**/*.ts"],
-  "ignoreDependencies": ["ffmpeg-static", "opusscript"],
+  "project": ["src/**/*.ts", "src/**/*.tsx"],
+  "ignoreDependencies": ["ffmpeg-static", "opusscript", "pino-pretty"],
+  "ignoreExportsUsedInFile": true,
+  "ignore": [
+    "src/features/timekeeper-commands/config.ts",
+    "src/features/multi-guild/index.ts"
+  ],
   "vitest": {
     "config": ["vitest.config.ts"],
-    "entry": ["tests/**/*.test.ts"]
+    "entry": [
+      "tests/**/*.test.ts",
+      "tests/**/*.test.tsx",
+      "src/**/__tests__/**/*.test.ts",
+      "src/**/__tests__/**/*.test.tsx"
+    ]
   }
 }

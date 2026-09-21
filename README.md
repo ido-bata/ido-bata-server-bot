@@ -4,9 +4,22 @@ Discord server bot for local development first, with future hosted deployment.
 
 ## Setup
 
+Pick one of two paths. The Docker path produces a reproducible runtime that matches CI; the local path keeps iteration tight.
+
+### Local (Bun + tsx watch)
+
 1. Install Bun 1.3 or later.
 2. Run `bun install`.
 3. Provide the required environment variables — see [Environment](#environment). The exact source is left to the host (CI secret, secret manager, exported shell variables, or — only as a last resort — a local `.env` file that **is not committed**). `.env.example` documents the schema and is the source of truth; do not rely on it for real secrets.
+
+### Container (Docker Compose)
+
+1. Install Docker Engine 24+ and the Compose v2 plugin.
+2. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_GUILD_ID`. Compose loads it via `env_file:`; the secrets never enter the image layer.
+3. `docker compose up --build`. The `bot` service builds the `runtime` stage of `Containerfile`, listens on port `8080` for `/health`, and persists `data/` in a named volume (`bot-data`).
+4. `docker compose logs -f bot` to follow logs. `docker compose down` to stop.
+
+The Compose path targets `runtime` — the slim Node 22 image with the compiled `dist/index.js`. For source iteration with hot reload, fall back to the local path (`bun run dev`); the dev container target is not part of issue #27's scope.
 
 If a bot token is ever pasted into chat, logs, a commit, or an agent result, rotate it immediately in the Discord Developer Portal and re-source the new value from your secret manager.
 
@@ -19,6 +32,11 @@ If a bot token is ever pasted into chat, logs, a commit, or an agent result, rot
 | `DISCORD_GUILD_ID` | yes | Development guild ID |
 | `DISCORD_ENABLE_MESSAGE_CONTENT` | no | Set to `true` to enable the privileged Message Content intent (also enable it on the Developer Portal side) |
 | `TIMEKEEPER_RUN_ON_READY` | no | `true` runs the timekeeper session immediately on `ClientReady` and compresses in-session minutes to 1 second for testing. Without it the timekeeper schedules for the next 21:00 JST. |
+| `CONSENT_CHANNEL_ID` | no | Enables the consent registry. The bot reuses or creates its own consent message in this channel and adds scope reactions automatically. |
+| `CONSENT_GUILD_ID` | no | Guild override for the consent channel. Defaults to `DISCORD_GUILD_ID`. |
+| `CONSENT_MESSAGE_ID` | no | Optional existing-message override. Normally leave unset and let the bot manage its own message. |
+| `CONSENT_EMOJI` | no | Optional emoji-to-scope mapping. Defaults to 📊 activity, 🟢 presence, 👤 profile, 💬 message history. |
+| `CONSENT_POLICY_VERSION` | no | Current consent policy version. Defaults to `v0.2.0`. |
 | `VOICE_CONNECTION_TIMEOUT_MS` | no | Maximum milliseconds to wait for a voice connection to reach the `Ready` state before giving up (and triggering a stage reconnect). Defaults to `30000`. |
 
 Validation lives in `src/config.ts` (Zod). The bot refuses to start with a clear error if a required variable is missing or empty.

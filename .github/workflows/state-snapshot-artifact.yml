@@ -1,0 +1,48 @@
+name: State snapshot artifact
+
+# Uploads every encrypted snapshot pushed to the configured snapshot branch
+# (default: state-snapshots) as a GitHub Actions artifact with 30-day
+# retention. This satisfies the GitHub artifact backup path required by the
+# state-snapshot acceptance criteria; host-disk loss no longer means losing
+# every snapshot because the artifact copies live in repository storage.
+
+on:
+  push:
+    branches:
+      - state-snapshots
+  workflow_dispatch:
+
+permissions:
+  # Explicit scopes: `contents: read` for `actions/checkout@v4`,
+  # `actions: write` for `actions/upload-artifact@v4` (without it the
+  # upload step fails with 403 because the explicit permissions block
+  # revokes every other default scope).
+  contents: read
+  actions: write
+
+# Avoid piling up redundant runs when several snapshots land on the branch in
+# quick succession; the most recent push already covers every file on HEAD.
+concurrency:
+  group: state-snapshot-artifact-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upload:
+    name: Upload encrypted snapshots as artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: state-snapshots
+
+      - name: Upload encrypted snapshots (30-day retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-snapshots
+          path: |
+            *.snap.enc
+          if-no-files-found: error
+          retention-days: 30

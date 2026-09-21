@@ -1,0 +1,65 @@
+# Files / directories that must NOT enter the build context for
+# Containerfile / compose.yml. Anything listed here is excluded even if a
+# later COPY in the Containerfile would have asked for it — `.dockerignore`
+# is checked first, before the daemon streams the context tarball.
+#
+# Goal: keep the build context small and free of secrets / source-control
+# metadata. The runtime image only needs `package.json`, `bun.lock`,
+# `tsconfig.json`, `src/`, `tmp-audio/` plus the artifacts produced by the
+# `deps` and `build` stages.
+
+# Local node_modules — never bake into the image; the `deps` stage rebuilds
+# them against the slim Node base.
+node_modules
+
+# Build output — the `runtime` stage pulls `dist/` from the `build` stage,
+# not from the build context.
+dist
+
+# VCS metadata and worktrees. `.worktrees/` is created by `git worktree
+# add` for in-flight tickets and can balloon the build context if present.
+.git
+.github
+.worktrees
+.claude
+
+# Runtime persisted state (gitignored). The bot writes to `data/` at
+# runtime; the compose file mounts a named volume so the directory lives
+# inside the container, not in the image.
+data
+
+# `.env` carries `DISCORD_TOKEN` and friends — must never be baked into a
+# layer. Compose loads it via `env_file:` instead.
+.env
+.env.*
+!.env.example
+
+# Generated / cached artifacts.
+coverage
+.tmp
+.reference
+*.log
+*.tsbuildinfo
+
+# Editor / OS noise.
+.DS_Store
+.idea
+.vscode
+
+# Documentation and human-facing meta — not needed by the runtime image.
+# Keep them out of the build context for faster `docker build` transfers.
+README.md
+AGENTS.md
+CLAUDE.md
+CHANGELOG.md
+CONTRIBUTING.md
+SECURITY.md
+docs
+
+# The container definition itself and any override files. Compose picks them
+# up from the project root, not from the image build context.
+Containerfile
+compose.yml
+compose.*.yml
+compose.*.yaml
+.dockerignore

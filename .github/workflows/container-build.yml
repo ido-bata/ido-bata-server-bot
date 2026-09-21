@@ -1,0 +1,69 @@
+name: Container build smoke
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - Containerfile
+      - compose.yml
+      - .dockerignore
+      - src/features/container/**
+      - .github/workflows/container-build.yml
+
+# Cancel superseded runs on the same PR / branch.
+concurrency:
+  group: container-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  container-build:
+    name: Container build smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build runtime image (smoke)
+        # Pull the base image so the smoke build isn't gated on a cold cache.
+        # `--load` makes the artifact visible to `docker image ls` for the
+        # size check that follows.
+        run: |
+          docker buildx build \
+            --file Containerfile \
+            --target runtime \
+            --tag ido-bata-server-bot:ci-smoke \
+            --load \
+            .
+
+      - name: Verify image size budget (< 300 MB)
+        # `docker image inspect --format` returns bytes. Compare the raw
+        # byte count against the 300 MiB (300 * 1024 * 1024) budget — the
+        # IEC suffix that `numfmt --to=iec-i` appends (e.g. `287MiB`) would
+        # break an integer-only `[ ... -ge ]` test.
+        run: |
+          size_bytes=$(docker image inspect ido-bata-server-bot:ci-smoke --format '{{.Size}}')
+          size_mib=$(numfmt --to=iec-i --suffix=B "$size_bytes" | awk '{print $1}')
+          echo "Runtime image size: ${size_mib}"
+          budget_bytes=$((300 * 1024 * 1024))
+          if [ "${size_bytes}" -ge "${budget_bytes}" ]; then
+            echo "::error::Image size ${size_mib} exceeds 300 MB budget"
+            exit 1
+          fi
+
+      - name: Validate compose.yml
+        # `docker compose config` parses the file and resolves env_file
+        # references. The smoke runs without secrets — only schema validation
+        # is exercised here, never the runtime image.
+        run: |
+          touch .env
+          docker compose --file compose.yml config > /dev/null
