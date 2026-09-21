@@ -32,7 +32,10 @@ function makeMessage(options: { id: string; authorId?: string; content?: string 
       message.content = content;
       return message;
     }),
-    react: vi.fn(async (_emoji: string) => message),
+    react: vi.fn(async (emoji: string) => {
+      void emoji;
+      return message;
+    }),
     reactions: {
       resolve: vi.fn(),
       cache: new Collection(),
