@@ -51,6 +51,12 @@ ENV NPM_CONFIG_LOGLEVEL=warn \
 # stage can compile).
 FROM base AS deps
 ARG BUN_VERSION=1.3.10
+# curl + unzip + bash are kept in the `deps` stage: removing them after
+# Bun is installed used to be a nice-to-have but the apk del runs in the
+# same layer as the Bun install, and the post-install scripts on newer
+# Alpine images occasionally invalidate the moved /usr/local/bin/bun
+# symlink (the build fails with `bun: not found` on the next RUN).
+# The build stage is throw-away so the extra ~6 MiB of apk cache is fine.
 RUN apk add --no-cache \
         ca-certificates \
         curl \
@@ -61,7 +67,6 @@ RUN apk add --no-cache \
     && mv /tmp/bun/bun-linux-x64/bun /usr/local/bin/bun \
     && rm -rf /tmp/bun /tmp/bun.zip \
     && npm install -g tsx@4.23.9 \
-    && apk del curl unzip \
     && rm -rf /var/cache/apk/*
 COPY package.json bun.lock ./
 # `NODE_ENV` is unset in this stage (it is set in `runtime` only), so
