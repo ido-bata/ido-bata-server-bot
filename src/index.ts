@@ -6,6 +6,11 @@ import { ChannelType, Events } from "discord.js";
 
 import { createDiscordClient } from "./bot/create-discord-client.js";
 import { readConfig } from "./config.js";
+import { createConsentLogger } from "./consent/logger.js";
+import { createReactionHandler } from "./consent/reaction-handler.js";
+import { reconcileConsentsOnReady } from "./consent/reconciliation.js";
+import { createJsonConsentRepository } from "./consent/repository-json.js";
+import { createConsentService } from "./consent/service.js";
 import { birthdayRoleConfig } from "./features/birthday-role/config.js";
 import { deployBirthdayCommands } from "./features/birthday-role/deploy.js";
 import { registerBirthdayRoleHandlers } from "./features/birthday-role/service.js";
@@ -280,6 +285,87 @@ async function main(): Promise<void> {
       rootLogger.error({ err: error }, "failed to deploy birthday slash commands on ready");
     });
   });
+
+  // Consent registry is opt-in. When `CONSENT_MESSAGE_ID` is configured,
+  // the bot starts collecting `(emoji → ConsentScope)` grants from
+  // reactions on that message. Leave `CONSENT_MESSAGE_ID` empty to keep
+  // the consent flow disabled (no storage, no listeners, no fetcher).
+  if (config.consent.enabled) {
+    const consentLog = createConsentLogger();
+    const consentRepository = createJsonConsentRepository({
+      filePath: join(process.cwd(), "data", "consent.json"),
+    });
+    const emojiToScope = new Map<string, (typeof config.consent.emojiToScope)[string]>(
+      Object.entries(config.consent.emojiToScope),
+    );
+    const consentService = createConsentService({
+      repository: consentRepository,
+      logger: consentLog,
+      policyVersion: config.consent.policyVersion,
+      emojiToScope,
+    });
+    const reactionTargets = [
+      {
+        guildId: config.consent.guildId,
+        channelId: config.consent.channelId,
+        messageId: config.consent.messageId,
+      },
+    ].flatMap((base) =>
+      Object.keys(config.consent.emojiToScope).map((emoji) => ({
+        ...base,
+        emoji,
+      })),
+    );
+    const reactionHandler = createReactionHandler({
+      fetcher: {
+        async fetchMessageReactions() {
+          return new Set<string>();
+        },
+      },
+      service: consentService,
+      targets: reactionTargets,
+      emojiToScope,
+      log: consentLog,
+    });
+    client.on(Events.MessageReactionAdd, (reaction, user) => {
+      const guildId = reaction.message.guildId ?? config.consent.guildId;
+      const emojiKey = reaction.emoji.id ?? reaction.emoji.name ?? "";
+      if (!guildId || !emojiKey) {
+        return;
+      }
+      void reactionHandler.onAdd(
+        reaction.message.id,
+        reaction.message.channelId,
+        guildId,
+        user.id,
+        emojiKey,
+        Boolean(user.bot),
+      );
+    });
+    client.on(Events.MessageReactionRemove, (reaction, user) => {
+      const guildId = reaction.message.guildId ?? config.consent.guildId;
+      const emojiKey = reaction.emoji.id ?? reaction.emoji.name ?? "";
+      if (!guildId || !emojiKey) {
+        return;
+      }
+      void reactionHandler.onRemove(
+        reaction.message.id,
+        reaction.message.channelId,
+        guildId,
+        user.id,
+        emojiKey,
+        Boolean(user.bot),
+      );
+    });
+    client.once(Events.ClientReady, async () => {
+      await reconcileConsentsOnReady({
+        client,
+        service: consentService,
+        config: config.consent,
+        logger: consentLog,
+      });
+    });
+  }
 
   // State snapshots are opt-in. They run when the bot is ready if
   // STATE_SNAPSHOT_ENCRYPTION_KEY is set; otherwise the scheduler no-ops.

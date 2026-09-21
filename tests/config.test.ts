@@ -22,6 +22,14 @@ describe("readConfig", () => {
       logLevel: "info",
       logRingSize: 200,
       tuiMode: "auto",
+      consent: {
+        enabled: false,
+        messageId: "",
+        channelId: "",
+        guildId: "guild-id",
+        emojiToScope: {},
+        policyVersion: "v0.2.0",
+      },
     });
   });
 
