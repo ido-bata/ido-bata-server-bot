@@ -2,8 +2,12 @@
 // Discord user id. The on-disk format is intentionally simple so it can be
 // inspected and edited by hand during recovery.
 
-import { promises as fs } from "node:fs";
-import { dirname } from "node:path";
+import { z } from "zod";
+import {
+  type MutateJsonFileResult,
+  mutateJsonFile,
+  readJsonFile,
+} from "../../lib/storage/atomic-json.js";
 
 export type BirthdayEntry = {
   // Discord user id (snowflake).
@@ -20,39 +24,47 @@ export type BirthdayStore = {
 
 export type BirthdayStorage = {
   load: () => Promise<BirthdayStore>;
-  save: (store: BirthdayStore) => Promise<void>;
+  /**
+   * Persist `store` to disk via the shared atomic JSON helper. Returns the
+   * underlying result so callers can distinguish mutation success from a
+   * schema mismatch on the on-disk file.
+   */
+  save: (store: BirthdayStore) => Promise<MutateJsonFileResult>;
 };
+
+const birthdayEntrySchema = z.object({
+  userId: z.string().min(1),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD"),
+  updatedAt: z.string().min(1),
+});
+
+const birthdayStoreSchema = z.object({
+  birthdays: z.record(z.string(), birthdayEntrySchema),
+});
+
+const EMPTY_STORE: BirthdayStore = { birthdays: {} };
 
 export function createFileBirthdayStorage(filePath: string): BirthdayStorage {
   async function load(): Promise<BirthdayStore> {
-    try {
-      const raw = await fs.readFile(filePath, "utf8");
-      const parsed = JSON.parse(raw) as unknown;
-
-      if (!parsed || typeof parsed !== "object") {
-        return { birthdays: {} };
+    const result = readJsonFile({ filePath, schema: birthdayStoreSchema });
+    if (!result.ok) {
+      if (result.error === "ENOENT") {
+        return EMPTY_STORE;
       }
-
-      const record = parsed as Partial<BirthdayStore>;
-      const birthdays = record.birthdays;
-
-      if (!birthdays || typeof birthdays !== "object") {
-        return { birthdays: {} };
-      }
-
-      return { birthdays: { ...birthdays } };
-    } catch (error: unknown) {
-      if (isMissingFileError(error)) {
-        return { birthdays: {} };
-      }
-      throw error;
+      // A non-ENOENT read failure (corrupt JSON, schema mismatch, permission
+      // error, etc.) must surface — silent swallowing would let a bot
+      // restart with a truncated file nuke the persisted registry.
+      throw new Error(`birthday storage: load failed: ${result.error}`);
     }
+    return result.value;
   }
 
-  async function save(store: BirthdayStore): Promise<void> {
-    await fs.mkdir(dirname(filePath), { recursive: true });
-    const payload = JSON.stringify(store, null, 2);
-    await fs.writeFile(filePath, `${payload}\n`, "utf8");
+  async function save(store: BirthdayStore): Promise<MutateJsonFileResult> {
+    return mutateJsonFile({
+      filePath,
+      schema: birthdayStoreSchema,
+      mutate: () => ({ birthdays: { ...store.birthdays } }),
+    });
   }
 
   return { load, save };
@@ -69,17 +81,9 @@ export function createInMemoryBirthdayStorage(
     load: async () => ({ birthdays: { ...state.birthdays } }),
     save: async (next) => {
       state = { birthdays: { ...next.birthdays } };
+      return { ok: true, mutated: true };
     },
   };
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code: unknown }).code === "ENOENT"
-  );
 }
 
 export function setBirthday(

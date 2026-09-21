@@ -25,6 +25,27 @@ const subscribers = new Set<(rec: NormalizedLogEvent) => void>();
 const ring: NormalizedLogEvent[] = [];
 
 const parser = split2((line: string) => JSON.parse(line) as NormalizedLogEvent);
+// `parser` fans out to two destinations: the structured-event sink
+// (ring buffer + subscribers) AND, when the composition root opted in to
+// stdout output, a tiny Writable that re-emits each parsed record as a
+// JSON Line. Doing the tee after the split (rather than as a pino
+// multistream) keeps a single parse/normalize path so the `receivedAt`
+// stamp is added exactly once.
+const stdoutTee = new Writable({
+  objectMode: true,
+  write(rec: NormalizedLogEvent, _enc, cb) {
+    process.stdout.write(`${JSON.stringify(rec)}\n`);
+    cb();
+  },
+});
+let stdoutTeePiped = false;
+
+function pipeStdoutTee(): void {
+  if (stdoutTeePiped) return;
+  stdoutTeePiped = true;
+  parser.pipe(stdoutTee);
+}
+
 const sink = new Writable({
   objectMode: true,
   write(rec: NormalizedLogEvent, _enc, cb) {
@@ -49,10 +70,38 @@ let rootLogger: pinoType.Logger | null = null;
 
 export type CreateRootLoggerEnv = NodeJS.ProcessEnv;
 
-export function createRootLogger(env: CreateRootLoggerEnv): pinoType.Logger {
+export type CreateRootLoggerOptions = {
+  /**
+   * When `true` (default), log records are also written to
+   * `process.stdout` as JSON Lines. Set to `false` when an Ink TUI is
+   * mounting on stdout — the TUI owns the terminal and any JSON Lines
+   * from pino would corrupt the dashboard render. In Docker / headless
+   * mode leave this `true` so `docker compose logs -f bot` shows real
+   * JSON Lines.
+   */
+  writeToStdout?: boolean;
+};
+
+/**
+ * Enable stdout tee after the logger has been built. Used by the
+ * composition root when the TUI is confirmed off and operators want
+ * `docker compose logs` to show JSON Lines.
+ */
+export function enableStdoutTee(): void {
+  pipeStdoutTee();
+}
+
+export function createRootLogger(
+  env: CreateRootLoggerEnv,
+  options: CreateRootLoggerOptions = {},
+): pinoType.Logger {
   const level = ((env.LOG_LEVEL as pinoType.LevelWithSilent | undefined) ??
     "info") as pinoType.LevelWithSilent;
   maxRing = env.LOG_RING_SIZE ? Math.max(10, Math.min(10_000, Number(env.LOG_RING_SIZE))) : 200;
+  const writeToStdout = options.writeToStdout ?? true;
+  if (writeToStdout) {
+    pipeStdoutTee();
+  }
   const logger = pino(
     {
       level,

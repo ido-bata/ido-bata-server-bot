@@ -40,7 +40,47 @@ export type FormattedErrorEmbed = {
   truncated: boolean;
   /** True when an `uncaughtException` was captured (process may need a restart). */
   requiresRestart: boolean;
+  /** True when at least one secret-shaped token was redacted from the embed. */
+  redacted: boolean;
 };
+
+/**
+ * Patterns that look like credentials. We match on shape rather than
+ * config keys so accidental string interpolation of a raw secret in an
+ * error message or stack trace is scrubbed before the embed leaves the
+ * process. Mirrors the pino redaction paths in `src/lib/logger/index.ts`.
+ */
+const SECRET_PATTERNS: ReadonlyArray<{ name: string; regex: RegExp }> = [
+  // Discord bot tokens (classic and newer prefix forms).
+  { name: "discordToken", regex: /[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}/g },
+  // Generic bearer / Authorization header values.
+  {
+    name: "authorization",
+    regex: /(?:bearer|token)\s+[A-Za-z0-9._\-+/=]{12,}/gi,
+  },
+  // `password=...` / `pwd=...` style URL or form params.
+  {
+    name: "passwordParam",
+    regex: /\b(password|pwd|passwd|secret|api[_-]?key)\s*[:=]\s*["']?[^\s"',;&]{4,}/gi,
+  },
+  // STATE_SNAPSHOT_ENCRYPTION_KEY (32-byte hex / base64).
+  {
+    name: "encryptionKey",
+    regex: /\b[A-Fa-f0-9]{64}\b/g,
+  },
+];
+
+function redactSecrets(input: string): { text: string; redacted: boolean } {
+  let redacted = false;
+  let text = input;
+  for (const { name, regex } of SECRET_PATTERNS) {
+    text = text.replace(regex, () => {
+      redacted = true;
+      return `[REDACTED:${name}]`;
+    });
+  }
+  return { text, redacted };
+}
 
 /**
  * Build a stable signature for an unknown error value so identical stacks share
@@ -123,6 +163,10 @@ export function formatErrorEmbed(
   options: { maxDescriptionLength: number },
 ): FormattedErrorEmbed {
   const normalized = normalizeError(error);
+  // The stack hash is computed against the *raw* (pre-redaction) signature
+  // so identical errors keep the same hash across runs regardless of which
+  // patterns happen to fire. Redaction only affects what leaves the
+  // process — it never changes the diagnostic identity of the error.
   const stackHash = hashStack(error);
 
   const title =
@@ -139,11 +183,16 @@ export function formatErrorEmbed(
 
   const bodySections: string[] = [];
   bodySections.push(`**Type**: \`${normalized.name}\``);
-  bodySections.push(`**Message**: ${normalized.message || "<empty>"}`);
+  const redactedMessage = redactSecrets(normalized.message || "<empty>");
+  bodySections.push(`**Message**: ${redactedMessage.text}`);
+  const redactedFooter = redactSecrets(footerParts.join(" | "));
+  const redactedStack = normalized.stack
+    ? redactSecrets(normalized.stack)
+    : { text: "", redacted: false };
 
   if (normalized.stack) {
     bodySections.push("**Stack**:");
-    bodySections.push(`\`\`\`\n${normalized.stack}\n\`\`\``);
+    bodySections.push(`\`\`\`\n${redactedStack.text}\n\`\`\``);
   } else {
     bodySections.push("**Stack**: <none>");
   }
@@ -160,6 +209,7 @@ export function formatErrorEmbed(
   if (context.kind === "uncaughtException") {
     fields.push({ name: "Restart required", value: "yes", inline: true });
   }
+  const redacted = redactedMessage.redacted || redactedFooter.redacted || redactedStack.redacted;
 
   return {
     embed: {
@@ -167,11 +217,12 @@ export function formatErrorEmbed(
       description,
       color: 0xff4d4f,
       timestamp: context.timestamp,
-      footer: { text: footerParts.join(" | ") },
+      footer: { text: redactedFooter.text },
       fields,
     },
     stackHash,
     truncated,
     requiresRestart: context.kind === "uncaughtException",
+    redacted,
   };
 }

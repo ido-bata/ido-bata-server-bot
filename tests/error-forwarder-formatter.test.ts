@@ -133,4 +133,32 @@ describe("error-forwarder formatter", () => {
     expect(result.stackHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.requiresRestart).toBe(false);
   });
+
+  it("redacts secrets that leak through the error message", () => {
+    // Classic Discord bot token shape + bearer header embedded in the
+    // message. Both must be replaced with a [REDACTED:*] marker before
+    // the embed leaves the process; the stack hash stays stable because
+    // it is computed against the unredacted signature.
+    const secretToken =
+      "MTIzNDU2Nzg5MC5hYmNkZWYuZ2hpamtsbW5vcC5xcnpzdHV2d3h5eg.AAAA.BBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+    const error = new Error(`login failed for Authorization: Bearer ${secretToken}`);
+    error.stack = "Error: boom\n    at /app/foo.ts:1:1";
+
+    const result = formatErrorEmbed(
+      error,
+      {
+        kind: "unhandledRejection",
+        timestamp: new Date(),
+        source: "ido-bata-server-bot@0.1.0",
+      },
+      { maxDescriptionLength: 4096 },
+    );
+
+    expect(result.redacted).toBe(true);
+    expect(result.embed.description).toContain("[REDACTED:");
+    // The token's base64 prefix is unique enough that none of it should
+    // survive — the `Bearer ...` capture scrubs everything up to the next
+    // whitespace.
+    expect(result.embed.description).not.toContain("MTIzNDU2Nzg5MC");
+  });
 });

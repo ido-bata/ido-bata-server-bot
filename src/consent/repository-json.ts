@@ -49,13 +49,20 @@ export type JsonConsentRepositoryOptions = {
 
 type LoadedFile = {
   records: ConsentRecord[];
-  /** Did we recognise the file format? Used to skip writing the empty default. */
+  /**
+   * `true` only when the on-disk file existed and we successfully parsed
+   * it. `false` covers both "fresh start — no file" (writes are fine) and
+   * "file exists but failed validation" (writes must refuse to clobber
+   * the backup). The two cases are distinguished by `existed`.
+   */
   recognised: boolean;
+  /** Did a file exist on disk before this load attempt? */
+  existed: boolean;
 };
 
 function loadFromDisk(filePath: string): LoadedFile {
   if (!existsSync(filePath)) {
-    return { records: [], recognised: false };
+    return { records: [], recognised: false, existed: false };
   }
 
   let raw: string;
@@ -64,7 +71,7 @@ function loadFromDisk(filePath: string): LoadedFile {
   } catch {
     // Unreadable file is treated as empty so a corrupted/missing file never
     // crashes the service. Operators can investigate via filesystem logs.
-    return { records: [], recognised: false };
+    return { records: [], recognised: false, existed: true };
   }
 
   let payload: unknown;
@@ -73,15 +80,25 @@ function loadFromDisk(filePath: string): LoadedFile {
   } catch {
     // Corrupt JSON → empty store. Same fail-open-for-read principle as
     // `features/ical-calendar/cache.ts`.
-    return { records: [], recognised: false };
+    return { records: [], recognised: false, existed: true };
   }
 
   const parsed = storeSchema.safeParse(payload);
   if (!parsed.success) {
-    return { records: [], recognised: false };
+    // The on-disk file failed schema validation (future `schemaVersion`
+    // bump, partial write, unexpected shape). Preserve the bytes so an
+    // operator can recover, and flag the cache so subsequent persists
+    // refuse to clobber them — silent data loss is unacceptable for a
+    // privacy SoT.
+    try {
+      renameSync(filePath, `${filePath}.unrecognised-${Date.now()}.bak`);
+    } catch {
+      // best-effort backup; fall through with the empty cache + recognised=false
+    }
+    return { records: [], recognised: false, existed: true };
   }
 
-  return { records: parsed.data.records, recognised: true };
+  return { records: parsed.data.records, recognised: true, existed: true };
 }
 
 function ensureDir(filePath: string): void {
@@ -130,20 +147,46 @@ export function createJsonConsentRepository(
   // Cache records in memory; persist on every mutation. `load()` re-reads
   // from disk so a fresh process picks up the latest persisted state.
   let records: ConsentRecord[] = [];
+  // `true` means writes are allowed. Defaults to `true` so a brand-new
+  // repository (or a repository the caller never called `load()` on)
+  // can persist immediately. `load()` flips it to `false` only when an
+  // existing on-disk file failed schema validation — in that case
+  // mutations refuse to clobber the backup that `loadFromDisk` left
+  // next to the original path. A fresh "file does not exist" load does
+  // NOT flip the flag (the file isn't there to be clobbered).
+  let lastLoadRecognised = true;
+  // Tracks whether the most recent `load()` actually read a file off
+  // disk. Used to disambiguate "fresh start" from "existing unreadable
+  // file" in the silent-data-loss unit test.
+  let lastLoadExisted = false;
 
   async function load(): Promise<ConsentRecord[]> {
     const result = loadFromDisk(filePath);
     records = [...result.records];
+    lastLoadExisted = result.existed;
+    lastLoadRecognised = result.recognised;
     return [...records];
   }
 
   async function persist(next: ConsentRecord[]): Promise<void> {
+    if (lastLoadExisted && !lastLoadRecognised) {
+      // The most recent disk read failed schema validation; the original
+      // bytes have been renamed to `<file>.unrecognised-<ts>.bak`. Refuse
+      // to write — an operator must either inspect the backup or rotate
+      // to a known-good file before persistence can resume.
+      throw new Error(
+        `consent repository: refusing to persist after unrecognised disk read at ${filePath} ` +
+          `(a backup was preserved alongside the original file)`,
+      );
+    }
     ensureDir(filePath);
     atomicWriteJson(filePath, {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       records: next,
     });
     records = [...next];
+    lastLoadExisted = true;
+    lastLoadRecognised = true;
   }
 
   function findIndex(subjectId: string, scope: ConsentScope): number {
@@ -167,14 +210,15 @@ export function createJsonConsentRepository(
     await persist(next);
   }
 
-  async function remove(subjectId: string, scope: ConsentScope): Promise<void> {
+  async function remove(subjectId: string, scope: ConsentScope): Promise<boolean> {
     const index = findIndex(subjectId, scope);
     if (index < 0) {
-      return;
+      return false;
     }
     const next = [...records];
     next.splice(index, 1);
     await persist(next);
+    return true;
   }
 
   async function clearSubject(subjectId: string): Promise<void> {

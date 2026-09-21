@@ -3,6 +3,7 @@
 // tests can exercise the logic without a live Client.
 
 import type { ConsentScope } from "../../consent/scopes.js";
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { type BirthdayRoleConfig, isBirthdayRoleConfigured } from "./config.js";
 import { type JstDate, parseBirthdayDate } from "./date.js";
 import { selectBirthdaysOnDate } from "./schedule.js";
@@ -27,6 +28,8 @@ type MemberLike = {
 type TextChannelLike = {
   send: (content: string) => Promise<unknown>;
 };
+
+const logger = childFor(getRootLogger(), "birthday-role-handler");
 
 /**
  * Consent gate used by `setBirthday`. Fail-closed: any `{ ok: false }` from
@@ -143,15 +146,32 @@ export function createBirthdayRoleHandler(deps: HandlerDependencies): BirthdayRo
       .map((userId) => store.birthdays[userId])
       .filter((entry): entry is BirthdayEntry => entry !== undefined);
 
+    // v0.2.0: birthday is a `profile` consent-gated consumer. Refuse to
+    // apply the role for users who have revoked (or never granted) consent
+    // — the persisted registry is just a hint, the consent gate is the
+    // authorization decision.
+    const consented: BirthdayEntry[] = [];
+    const revoked: string[] = [];
+    for (const entry of todays) {
+      if (deps.consent) {
+        const decision = await deps.consent.authorize(entry.userId, "profile");
+        if (!decision.ok) {
+          revoked.push(entry.userId);
+          continue;
+        }
+      }
+      consented.push(entry);
+    }
+
     const result: AssignTickResult = {
-      attempted: todays.map((entry) => entry.userId),
+      attempted: consented.map((entry) => entry.userId),
       granted: [],
       skippedAlreadyHadRole: [],
       failed: [],
       announcedTo: null,
     };
 
-    for (const entry of todays) {
+    for (const entry of consented) {
       const member = deps.fetchMember ? await deps.fetchMember(entry.userId) : null;
 
       if (!member) {
@@ -191,6 +211,16 @@ export function createBirthdayRoleHandler(deps: HandlerDependencies): BirthdayRo
       }
     }
 
+    // Surface a soft signal when revocations caused us to skip members so
+    // operators can audit the registry. Empty array when nobody was
+    // revoked (the common case).
+    if (revoked.length > 0) {
+      logger.warn(
+        { skipped: revoked },
+        "birthday-role: skipped revoked member(s) during assign tick",
+      );
+    }
+
     return result;
   }
 
@@ -200,14 +230,29 @@ export function createBirthdayRoleHandler(deps: HandlerDependencies): BirthdayRo
       .map((userId) => store.birthdays[userId])
       .filter((entry): entry is BirthdayEntry => entry !== undefined);
 
+    // v0.2.0: the role-strip pass must also honour consent — stripping
+    // the role from a member who never granted `profile` would re-introduce
+    // the bypass we just closed on the assign side. Skipping on no-grant
+    // is safe (no role assigned either).
+    const consented: BirthdayEntry[] = [];
+    for (const entry of targets) {
+      if (deps.consent) {
+        const decision = await deps.consent.authorize(entry.userId, "profile");
+        if (!decision.ok) {
+          continue;
+        }
+      }
+      consented.push(entry);
+    }
+
     const result: RemoveTickResult = {
-      attempted: targets.map((entry) => entry.userId),
+      attempted: consented.map((entry) => entry.userId),
       removed: [],
       skippedNoRole: [],
       failed: [],
     };
 
-    for (const entry of targets) {
+    for (const entry of consented) {
       const member = deps.fetchMember ? await deps.fetchMember(entry.userId) : null;
 
       if (!member) {

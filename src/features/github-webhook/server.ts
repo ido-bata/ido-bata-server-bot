@@ -288,20 +288,32 @@ function readBody(req: RequestBodySource): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
+    // Once `overLimit` flips, additional `data` events must NOT push into
+    // `chunks` — otherwise an unauthenticated attacker can grow memory
+    // unboundedly by sending a single oversized request, since signature
+    // verification happens AFTER the full body is read. We still need to
+    // consume the stream so the socket doesn't stall.
+    let overLimit = false;
 
     req.on("data", (chunk: Buffer) => {
+      if (overLimit) {
+        return;
+      }
       total += chunk.length;
       if (total > MAX_BODY_BYTES) {
-        reject(new Error("payload_too_large"));
-        req.on("data", () => {
-          // keep draining so the socket doesn't stall.
-        });
+        overLimit = true;
+        // Reject the promise but defer it until the next tick so the
+        // socket's `data` listener keeps draining without re-entering us.
+        queueMicrotask(() => reject(new Error("payload_too_large")));
         return;
       }
       chunks.push(chunk);
     });
 
     req.on("end", () => {
+      if (overLimit) {
+        return; // rejection already scheduled
+      }
       resolve(Buffer.concat(chunks).toString("utf8"));
     });
 

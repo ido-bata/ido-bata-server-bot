@@ -108,6 +108,24 @@ export function createConsentService(options: ConsentServiceOptions): ConsentSer
 
   const listeners = new Set<(event: ConsentEvent) => void>();
 
+  // In-memory snapshot cache. `authorize()` is on the hot path (every
+  // privacy-gated consumer hits it) and the previous implementation did a
+  // full `repository.load()` (readFileSync + Zod parse of the entire
+  // record set) on every call. We invalidate the cache whenever any
+  // mutation function runs so the snapshot stays consistent.
+  let cache: ConsentRecord[] | null = null;
+
+  function invalidate(): void {
+    cache = null;
+  }
+
+  async function loadAll(): Promise<ConsentRecord[]> {
+    if (cache === null) {
+      cache = await repository.load();
+    }
+    return cache;
+  }
+
   function emit(event: ConsentEvent): void {
     for (const listener of listeners) {
       try {
@@ -116,10 +134,6 @@ export function createConsentService(options: ConsentServiceOptions): ConsentSer
         logger.warn("consent event listener threw", { error: stringifyError(error) });
       }
     }
-  }
-
-  async function loadAll(): Promise<ConsentRecord[]> {
-    return repository.load();
   }
 
   async function authorize(subjectId: string, scope: ConsentScope): Promise<ConsentDecision> {
@@ -164,6 +178,7 @@ export function createConsentService(options: ConsentServiceOptions): ConsentSer
       logger.error("grant: repository upsert failed", { error: stringifyError(error) });
       throw error;
     }
+    invalidate();
     emit({
       kind: "grant",
       subjectId: record.subjectId,
@@ -175,26 +190,22 @@ export function createConsentService(options: ConsentServiceOptions): ConsentSer
   }
 
   async function revoke(subjectId: string, scope: ConsentScope): Promise<void> {
-    let records: ConsentRecord[];
+    // Let `repository.remove()` be the single source of truth: it reports
+    // whether the row was present so we do not emit a phantom `revoke`
+    // event for an already-revoked scope (the previous pre-load had a
+    // TOCTOU race that allowed two concurrent revokes to double-emit).
+    let removed: boolean;
     try {
-      records = await loadAll();
-    } catch (error) {
-      logger.error("revoke: repository load failed", { error: stringifyError(error) });
-      throw error;
-    }
-    const match = records.find(
-      (record) => record.subjectId === subjectId && record.scope === scope && isActive(record),
-    );
-    if (!match) {
-      return;
-    }
-    const at = now().toISOString();
-    try {
-      await repository.remove(subjectId, scope);
+      removed = await repository.remove(subjectId, scope);
     } catch (error) {
       logger.error("revoke: repository remove failed", { error: stringifyError(error) });
       throw error;
     }
+    if (!removed) {
+      return;
+    }
+    invalidate();
+    const at = now().toISOString();
     emit({ kind: "revoke", subjectId, scope, at });
   }
 
@@ -241,6 +252,7 @@ export function createConsentService(options: ConsentServiceOptions): ConsentSer
     }
 
     if (results.some((result) => result.ok)) {
+      invalidate();
       const at = now().toISOString();
       emit({ kind: "clear", subjectId, at });
     }
@@ -277,6 +289,27 @@ export function createConsentService(options: ConsentServiceOptions): ConsentSer
       grouped.set(key, bucket);
     }
 
+    // Single load at the top of `reconcile()`. Subsequent `save()` calls
+    // are full-file replacements built from this snapshot, so we do not
+    // need to re-read between emojis. The cache from `loadAll()` already
+    // avoids re-reading the file across multiple emoji buckets, but we
+    // snapshot once here too so the in-memory mutation pass doesn't fight
+    // the cache's lazy-load semantics.
+    let snapshot: ConsentRecord[];
+    try {
+      snapshot = await loadAll();
+    } catch (error) {
+      logger.error("reconcile: repository load failed", {
+        error: stringifyError(error),
+      });
+      for (const target of targets) {
+        if (!report.failures.includes(target.guildId)) {
+          report.failures.push(target.guildId);
+        }
+      }
+      return report;
+    }
+
     for (const [, bucket] of grouped) {
       // Fetch each emoji separately so the fetcher can ask Discord for a
       // single emoji at a time. We deliberately do NOT short-circuit on
@@ -296,18 +329,7 @@ export function createConsentService(options: ConsentServiceOptions): ConsentSer
           continue;
         }
 
-        let records: ConsentRecord[];
-        try {
-          records = await loadAll();
-        } catch (error) {
-          logger.error("reconcile: repository load failed", {
-            error: stringifyError(error),
-          });
-          report.failures.push(target.guildId);
-          continue;
-        }
-
-        const active = records.filter(
+        const active = snapshot.filter(
           (record) =>
             record.source.guildId === target.guildId &&
             record.source.channelId === target.channelId &&
@@ -316,40 +338,9 @@ export function createConsentService(options: ConsentServiceOptions): ConsentSer
             isActive(record),
         );
 
-        const grantedNow = new Set<string>();
+        let reactors: Set<string>;
         try {
-          const reactors = await fetcher.fetchMessageReactions(target);
-          for (const userId of reactors) {
-            if (userId === botUserId) {
-              continue;
-            }
-            const existing = active.find((record) => record.subjectId === userId);
-            if (existing) {
-              grantedNow.add(userId);
-              continue;
-            }
-            try {
-              await grant({
-                subjectId: userId,
-                scope,
-                source: {
-                  guildId: target.guildId,
-                  channelId: target.channelId,
-                  messageId: target.messageId,
-                  emoji: target.emoji,
-                },
-              });
-              report.appliedGrants.push({ subjectId: userId, scope });
-              grantedNow.add(userId);
-            } catch (error) {
-              logger.error("reconcile: grant failed", {
-                error: stringifyError(error),
-                userId,
-                scope,
-              });
-              report.failures.push(target.guildId);
-            }
-          }
+          reactors = await fetcher.fetchMessageReactions(target);
         } catch (error) {
           logger.error("reconcile: discord fetch failed", {
             error: stringifyError(error),
@@ -360,22 +351,120 @@ export function createConsentService(options: ConsentServiceOptions): ConsentSer
           continue;
         }
 
+        // Build the next state for this emoji in memory: keep reactors,
+        // drop non-reactors. We never mutate `snapshot` directly — every
+        // emoji gets its own working copy.
+        const subjectToRecord = new Map<string, ConsentRecord>();
         for (const record of active) {
-          if (!grantedNow.has(record.subjectId)) {
-            try {
-              await revoke(record.subjectId, record.scope);
-              report.appliedRevokes.push({
-                subjectId: record.subjectId,
-                scope: record.scope,
-              });
-            } catch (error) {
-              logger.error("reconcile: revoke failed", {
-                error: stringifyError(error),
-                userId: record.subjectId,
-              });
-              report.failures.push(target.guildId);
-            }
+          subjectToRecord.set(record.subjectId, record);
+        }
+
+        const newRecords: ConsentRecord[] = [];
+        const grantedNow = new Set<string>();
+        // Per-emoji entries — flushed to `report` only after the save
+        // succeeds, so subscribers never see "applied" events for a
+        // mutation that ultimately failed and was rolled back.
+        const newGrants: Array<{ subjectId: string; scope: ConsentScope }> = [];
+        const newRevokes: Array<{ subjectId: string; scope: ConsentScope }> = [];
+        const at = now().toISOString();
+
+        for (const userId of reactors) {
+          if (userId === botUserId) {
+            continue;
           }
+          const existing = subjectToRecord.get(userId);
+          if (existing) {
+            // Already an active grant — preserve the original grantedAt
+            // so the persistence record matches what the operator saw
+            // before reconcile.
+            newRecords.push(existing);
+            grantedNow.add(userId);
+            continue;
+          }
+          const fresh: ConsentRecord = {
+            subjectId: userId,
+            scope,
+            policyVersion,
+            grantedAt: at,
+            revokedAt: null,
+            source: {
+              guildId: target.guildId,
+              channelId: target.channelId,
+              messageId: target.messageId,
+              emoji: target.emoji,
+            },
+          };
+          newRecords.push(fresh);
+          grantedNow.add(userId);
+          newGrants.push({ subjectId: userId, scope });
+        }
+
+        // Diff revokes: records in `active` whose subject isn't in
+        // `grantedNow`. We mark them as revoked rather than dropping
+        // them — the audit log (`ConsentRecord.revokedAt`) keeps the
+        // history of who was once granted and when.
+        for (const record of active) {
+          if (grantedNow.has(record.subjectId)) {
+            continue;
+          }
+          newRecords.push({ ...record, revokedAt: at });
+          newRevokes.push({ subjectId: record.subjectId, scope: record.scope });
+        }
+
+        // Reassemble the full snapshot: drop the active rows for this
+        // emoji (we just rebuilt them in `newRecords`), keep everything
+        // else verbatim. A single `save()` replaces the whole file.
+        const nextSnapshot: ConsentRecord[] = [
+          ...snapshot.filter(
+            (record) =>
+              !(
+                record.source.guildId === target.guildId &&
+                record.source.channelId === target.channelId &&
+                record.source.messageId === target.messageId &&
+                record.source.emoji === target.emoji
+              ),
+          ),
+          ...newRecords,
+        ];
+
+        try {
+          await repository.save(nextSnapshot);
+        } catch (error) {
+          logger.error("reconcile: repository save failed", {
+            error: stringifyError(error),
+            guildId: target.guildId,
+            emoji: target.emoji,
+          });
+          report.failures.push(target.guildId);
+          continue;
+        }
+
+        // Commit the new snapshot so the next emoji sees our writes
+        // and `authorize()` callers (after we return) see them too.
+        snapshot = nextSnapshot;
+        invalidate();
+
+        // Publish to the report + emit events for downstream subscribers
+        // (audit log, cascade deletes, etc.) — only after the save
+        // succeeded.
+        for (const entry of newGrants) {
+          report.appliedGrants.push(entry);
+          emit({
+            kind: "grant",
+            subjectId: entry.subjectId,
+            scope: entry.scope,
+            at,
+            source: {
+              guildId: target.guildId,
+              channelId: target.channelId,
+              messageId: target.messageId,
+              emoji: target.emoji,
+            },
+          });
+        }
+        for (const entry of newRevokes) {
+          report.appliedRevokes.push(entry);
+          emit({ kind: "revoke", subjectId: entry.subjectId, scope: entry.scope, at });
         }
       }
     }

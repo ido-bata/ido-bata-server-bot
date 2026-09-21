@@ -107,9 +107,14 @@ describe("privacy consumer delete adapters", () => {
   describe("poll", () => {
     it("removes the user's votes and drops polls they created", async () => {
       const filePath = join(workDir, "polls.json");
+      // Match the canonical `pollStateFileSchema` shape so the privacy
+      // adapter's Zod parse succeeds. A missing `version: 1` would cause
+      // the schema check to reject the file before the deletion ran — see
+      // PR #101 review (P1: poll adapter strips version).
       writeFileSync(
         filePath,
         JSON.stringify({
+          version: 1,
           polls: [
             { id: "p1", creatorId: "u3", votes: { u1: 0, u2: 1 } },
             { id: "p2", creatorId: "u1", votes: { u4: 0 } },
@@ -120,14 +125,39 @@ describe("privacy consumer delete adapters", () => {
       const outcome = await deletePoll("u1", { filePath });
       expect(outcome).toEqual({ ok: true });
       const after = JSON.parse(readFileSync(filePath, "utf8")) as {
+        version: number;
         polls: Array<{ id: string; creatorId: string; votes: Record<string, number> }>;
       };
+      // The privacy adapter must preserve `version: 1` so the next poll
+      // load doesn't reject the file as schema-mismatched.
+      expect(after.version).toBe(1);
       // u1's created poll (p2) is dropped entirely.
       // p1 keeps u2's vote but u1's vote is removed.
       // p3 keeps u2 as creator but u1's vote is removed.
       expect(after.polls.map((poll) => poll.id).sort()).toEqual(["p1", "p3"]);
       expect(after.polls.find((poll) => poll.id === "p1")?.votes).toEqual({ u2: 1 });
       expect(after.polls.find((poll) => poll.id === "p3")?.votes).toEqual({});
+    });
+
+    it("preserves version: 1 round-trip on files that match the canonical shape", async () => {
+      const filePath = join(workDir, "polls-versioned.json");
+      writeFileSync(
+        filePath,
+        JSON.stringify({
+          version: 1,
+          polls: [{ id: "p1", creatorId: "u3", votes: {} }],
+        }),
+      );
+      const outcome = await deletePoll("u3", { filePath });
+      expect(outcome).toEqual({ ok: true });
+      const after = JSON.parse(readFileSync(filePath, "utf8")) as {
+        version: number;
+        polls: unknown[];
+      };
+      // After deleting u3's poll the file should still load as
+      // `version: 1, polls: []` — the version wrapper is mandatory.
+      expect(after.version).toBe(1);
+      expect(after.polls).toEqual([]);
     });
 
     it("returns ok:false (NOT silent success) for corrupted JSON", async () => {

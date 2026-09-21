@@ -46,16 +46,17 @@ jobs:
             .
 
       - name: Verify image size budget (< 300 MB)
-        # `docker image inspect --format` returns bytes; `numfmt` converts to MB.
-        # Fail loudly if the runtime image exceeds the budget documented in
-        # issue #27 acceptance criteria.
+        # `docker image inspect --format` returns bytes. Compare the raw
+        # byte count against the 300 MiB (300 * 1024 * 1024) budget — the
+        # IEC suffix that `numfmt --to=iec-i` appends (e.g. `287MiB`) would
+        # break an integer-only `[ ... -ge ]` test.
         run: |
           size_bytes=$(docker image inspect ido-bata-server-bot:ci-smoke --format '{{.Size}}')
-          size_mb=$(numfmt --to=iec-i --suffix=B "$size_bytes" | awk '{print $1}')
-          size_mb_int=${size_mb%.*}
-          echo "Runtime image size: ${size_mb}"
-          if [ "${size_mb_int}" -ge 300 ]; then
-            echo "::error::Image size ${size_mb} exceeds 300 MB budget"
+          size_mib=$(numfmt --to=iec-i --suffix=B "$size_bytes" | awk '{print $1}')
+          echo "Runtime image size: ${size_mib}"
+          budget_bytes=$((300 * 1024 * 1024))
+          if [ "${size_bytes}" -ge "${budget_bytes}" ]; then
+            echo "::error::Image size ${size_mib} exceeds 300 MB budget"
             exit 1
           fi
 

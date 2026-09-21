@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { clearUserData } from "../../src/features/privacy/clear.js";
 import * as birthday from "../../src/features/privacy/consumers/birthday.js";
@@ -190,6 +190,53 @@ describe("clearUserData aggregator", () => {
   it("includes the user-supplied subjectId in the report", async () => {
     const report = await clearUserData("user-3");
     expect(report.subjectId).toBe("user-3");
+  });
+
+  it("calls ConsentService.clear when a service is provided and reports its outcome", async () => {
+    // Regression test for PR #101 review P1 #3 — `/privacy delete` previously
+    // only ran consumer adapters, leaving `data/consent.json` grants in
+    // place and never emitting the `clear` event the snapshot scheduler
+    // subscribes to.
+    const userId = "user-1";
+    const consentService = {
+      clear: vi.fn(async () => ({
+        results: [{ scope: "profile" as const, ok: true }],
+      })),
+    };
+    const report = await clearUserData(userId, {
+      consentService: consentService as unknown as Parameters<
+        typeof clearUserData
+      >[1] extends infer T
+        ? T extends { consentService?: infer S }
+          ? S
+          : never
+        : never,
+    });
+    expect(consentService.clear).toHaveBeenCalledWith(userId);
+    const consentSlot = report.results.find((r) => r.consumer === "consent-registry");
+    expect(consentSlot?.ok).toBe(true);
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports ok:false when ConsentService.clear fails", async () => {
+    const consentService = {
+      clear: vi.fn(async () => ({
+        results: [{ scope: "profile" as const, ok: false, error: "disk full" }],
+      })),
+    };
+    const report = await clearUserData("user-1", {
+      consentService: consentService as unknown as Parameters<
+        typeof clearUserData
+      >[1] extends infer T
+        ? T extends { consentService?: infer S }
+          ? S
+          : never
+        : never,
+    });
+    const consentSlot = report.results.find((r) => r.consumer === "consent-registry");
+    expect(consentSlot?.ok).toBe(false);
+    expect(consentSlot?.error).toContain("disk full");
+    expect(report.ok).toBe(false);
   });
 
   it("exports the expected adapter entry points", () => {

@@ -81,13 +81,32 @@ export function registerBirthdayRoleHandlers(
     if (!interaction.isChatInputCommand()) return;
     if (interaction.commandName !== birthdayCommand.name) return;
 
-    await birthdayCommand.execute(
-      {
-        interaction,
-        commandName: interaction.commandName,
-      },
-      { handler: service.handler },
-    );
+    try {
+      await birthdayCommand.execute(
+        {
+          interaction,
+          commandName: interaction.commandName,
+        },
+        { handler: service.handler },
+      );
+    } catch (error) {
+      // Without this guard a thrown handler becomes an unhandled
+      // rejection and the user gets no feedback (Discord will eventually
+      // mark the interaction as failed, but never with a meaningful
+      // error). Log + best-effort reply.
+      logger.error({ err: error }, "birthday command failed");
+      try {
+        if (interaction.isRepliable() && !interaction.replied) {
+          await interaction.reply({
+            content: "Internal error while processing the birthday command.",
+            ephemeral: true,
+          });
+        }
+      } catch {
+        // The reply itself failed (token expired, interaction already
+        // acknowledged, etc.) — there is nothing useful left to do.
+      }
+    }
   });
 
   client.once(Events.ClientReady, (readyClient) => {
@@ -161,7 +180,12 @@ export function createLiveHandlerDeps(
 ): Pick<HandlerDependencies, "fetchMember" | "fetchAnnouncementChannel"> {
   return {
     fetchMember: async (userId: string) => {
-      const guild = client.guilds.cache.first();
+      // Resolve the guild by id, not by cache ordering. In a multi-guild
+      // deployment `client.guilds.cache.first()` returns whichever guild
+      // happens to be at position 0, which silently applies the birthday
+      // role in the wrong guild.
+      if (!config.guildId) return null;
+      const guild = client.guilds.cache.get(config.guildId);
       if (!guild) return null;
       try {
         const member = (await guild.members.fetch(userId)) as GuildMember;

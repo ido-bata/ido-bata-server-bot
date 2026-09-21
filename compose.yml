@@ -33,9 +33,10 @@ services:
       # Persist the timekeeper attendance file across container restarts
       # (data/ is gitignored — see .gitignore).
       - bot-data:/app/data
-      # tmp-audio is mounted read-only so contributors can iterate on the
-      # WAV timeline without rebuilding the image.
-      - ./tmp-audio:/app/tmp-audio:ro
+      # tmp-audio is baked into the runtime image by the Containerfile
+      # (`COPY tmp-audio ./tmp-audio`). For local iteration, mount your
+      # host copy via a dedicated `compose.override.yml` instead of
+      # overriding the image copy in the production compose file.
     healthcheck:
       test:
         - "CMD"

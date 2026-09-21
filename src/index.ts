@@ -68,16 +68,21 @@ import {
   subscribe as subscribeLogger,
 } from "./lib/logger/index.js";
 import { createRuntimeStatusStore } from "./runtime/status-store.js";
-import { mountTui } from "./tui/render.jsx";
+import { mountTui, resolveTuiMode } from "./tui/render.jsx";
 
 async function main(): Promise<void> {
   const config = readConfig(process.env);
+  // Resolve the TUI mode BEFORE creating the root logger so the stdout
+  // tee destination is wired correctly: stdout gets JSON Lines when the
+  // TUI is off (Docker / headless), and stays silent (TUI owns the
+  // terminal) when it's on.
+  const tuiMode = resolveTuiMode(process.env);
   // Initialize the structured logger as the very first side effect so that
   // every subsequent feature registration (and any error thrown during it)
   // emits structured records into the ring buffer / subscribers instead of
   // raw console output. Must happen AFTER `readConfig` so LOG_LEVEL and
   // LOG_RING_SIZE are honored, but BEFORE any feature import side effect.
-  createRootLogger(process.env);
+  createRootLogger(process.env, { writeToStdout: tuiMode === "off" });
   const rootLogger = childFor(getRootLogger(), "composition-root");
 
   // Runtime status store. The TUI is a read-only consumer of this store;
@@ -332,7 +337,11 @@ async function main(): Promise<void> {
       await channel.send(content);
     },
   });
-  registerSlashCommandHandlers(client);
+  registerSlashCommandHandlers(client, {
+    commandDeps: {
+      privacy: privacyConsentService ? { consentService: privacyConsentService } : undefined,
+    },
+  });
   statusStore.set({
     features: {
       ...statusStore.snapshot.features,
@@ -381,7 +390,7 @@ async function main(): Promise<void> {
   });
 
   const birthdayService = registerBirthdayRoleHandlers(client, {
-    config: birthdayRoleConfig,
+    config: { ...birthdayRoleConfig, guildId: config.discordGuildId },
     consentService: privacyConsentService ?? undefined,
   });
 
@@ -554,13 +563,11 @@ function buildConsentService(options: { config: ConsentConfig; client: Client })
 }
 
 /**
- * Flatten the consent config into one `ReactionTarget` per configured
- * emoji so the reaction handler can resolve scope without re-parsing the
- * raw env value.
+ * Expand a resolved consent config into one ReactionTarget per declared
+ * emoji. The consent message is single-message, so each (guildId, channelId,
+ * messageId, emoji) tuple is the address of a single grant.
  */
-function buildReactionTargets(
-  config: ConsentConfig,
-): ReadonlyArray<{ channelId: string; emoji: string; guildId: string; messageId: string }> {
+function buildReactionTargets(config: ConsentConfig): ReactionTarget[] {
   const base = {
     guildId: config.guildId,
     channelId: config.channelId,

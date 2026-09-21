@@ -8,6 +8,7 @@ import { createBirthdayRoleHandler } from "../src/features/birthday-role/handler
 import { createInMemoryBirthdayStorage } from "../src/features/birthday-role/storage.js";
 
 const CONFIG: BirthdayRoleConfig = {
+  guildId: "guild-birthday",
   roleId: "role-birthday",
   announcementChannelId: "",
   dataFile: "unused",

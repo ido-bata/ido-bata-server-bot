@@ -7,6 +7,14 @@
  * owned polls here keeps the on-disk state self-consistent with what the
  * user sees in `/privacy status`.
  *
+ * The on-disk shape includes a `{ version: 1, polls: [...] }` wrapper. We
+ * require `version: 1` and a list of polls with the minimum fields the
+ * privacy adapter reads (creatorId, votes) — passing through every other
+ * poll field (question, options, createdAt, ...) so the rewritten file
+ * remains bit-for-bit identical apart from the dropped entries. The poll
+ * feature's own loader uses a stricter schema (`pollStateFileSchema`) and
+ * would reject the file as "schema mismatch" if we dropped `version`.
+ *
  * Failures (read / parse / schema / write) surface as `{ ok: false, error }`
  * — ENOENT (no persisted file) is treated as success, since there is
  * nothing to remove.
@@ -23,16 +31,22 @@ export type PollDeleteOptions = {
 
 const DEFAULT_RELATIVE_PATH = "data/polls.json";
 
-const pollSchema = z
+// Minimal-but-strict-enough schema for the privacy adapter: validates the
+// `version` wrapper (so the next `pollStateFileSchema` parse succeeds)
+// and the fields the deletion mutates (creatorId, votes). All other
+// fields pass through verbatim so the production poll loader can re-read
+// the file without surprises.
+const privacyPollSchema = z
   .object({
-    creatorId: z.string(),
-    id: z.string(),
+    creatorId: z.string().min(1),
+    id: z.string().min(1),
     votes: z.record(z.string(), z.number()),
   })
   .passthrough();
 
 const storeSchema = z.object({
-  polls: z.array(pollSchema),
+  version: z.literal(1),
+  polls: z.array(privacyPollSchema),
 });
 
 function resolveFilePath(options: PollDeleteOptions): string {
@@ -53,9 +67,10 @@ async function runDelete(userId: string, options: PollDeleteOptions): Promise<De
   const filePath = resolveFilePath(options);
   const outcome = await mutateJsonFile({
     filePath,
+    schema: storeSchema,
     mutate: (current) => {
       let changed = false;
-      const nextPolls: z.infer<typeof pollSchema>[] = [];
+      const nextPolls: z.infer<typeof privacyPollSchema>[] = [];
       for (const poll of current.polls) {
         if (poll.creatorId === userId) {
           // Drop polls the user created; votes for those polls cannot exist
@@ -75,9 +90,8 @@ async function runDelete(userId: string, options: PollDeleteOptions): Promise<De
       if (!changed) {
         return current;
       }
-      return { polls: nextPolls };
+      return { version: 1 as const, polls: nextPolls };
     },
-    schema: storeSchema,
   });
 
   if (!outcome.ok) {

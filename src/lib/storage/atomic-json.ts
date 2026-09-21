@@ -53,6 +53,30 @@ export type MutateJsonFileOptions<T> = {
 
 export type MutateJsonFileResult = { ok: true; mutated: boolean } | { ok: false; error: string };
 
+export type ReadJsonFileResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: "ENOENT" | string };
+
+/**
+ * Read a JSON file and validate it through the supplied schema. `ENOENT`
+ * (no persisted file yet) is reported as a failure with the literal
+ * `"ENOENT"` error so callers can decide whether to treat it as the
+ * empty/default value. Every other failure (parse error, schema mismatch,
+ * permission error) is surfaced as a string error — silent coercion of an
+ * unknown on-disk shape is never an option, because the privacy invariant
+ * (`/privacy delete` = partial failure = failure) demands it.
+ *
+ * Uses the same `openSync` + `readFileSync` single-syscall pattern as
+ * `mutateJsonFile` so we do not introduce a new TOCTOU window between an
+ * `existsSync` check and the subsequent read.
+ */
+export function readJsonFile<T>(options: {
+  filePath: string;
+  schema: ZodType<T>;
+}): ReadJsonFileResult<T> {
+  return readExisting(options.filePath, options.schema);
+}
+
 /**
  * Read-modify-write a JSON file safely.
  *

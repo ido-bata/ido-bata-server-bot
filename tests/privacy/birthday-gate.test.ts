@@ -11,6 +11,7 @@ const CONFIGURED_BIRTHDAY_CONFIG = {
   // The handler short-circuits to a noop when `roleId` is empty, so we
   // supply a placeholder that satisfies `isBirthdayRoleConfigured`. The
   // handler never reaches Discord in tests because `fetchMember` is unset.
+  guildId: "guild-test",
   roleId: "role-test",
   announcementChannelId: "",
   dataFile: "data/birthdays.json",

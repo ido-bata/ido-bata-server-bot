@@ -1,6 +1,6 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -107,10 +107,14 @@ describe("JSON consent repository", () => {
       const repository = createJsonConsentRepository({ filePath });
       await repository.upsert(makeRecord({ subjectId: "user-1", scope: "profile" }));
       await repository.upsert(makeRecord({ subjectId: "user-1", scope: "activity-history" }));
-      await repository.remove("user-1", "profile");
+      const removed = await repository.remove("user-1", "profile");
+      expect(removed).toBe(true);
       const loaded = await repository.load();
       expect(loaded).toHaveLength(1);
       expect(loaded[0]?.scope).toBe("activity-history");
+      // Second remove on the now-absent pair returns false.
+      const removedAgain = await repository.remove("user-1", "profile");
+      expect(removedAgain).toBe(false);
     } finally {
       cleanup();
     }
@@ -126,6 +130,34 @@ describe("JSON consent repository", () => {
       await repository.clearSubject("user-1");
       const loaded = await repository.load();
       expect(loaded).toEqual([makeRecord({ subjectId: "user-2", scope: "profile" })]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("preserves unrecognised bytes via a timestamped backup and refuses subsequent writes", async () => {
+    const { filePath, cleanup } = makeTempDir();
+    try {
+      // Bump the schema version to something the current schema does not
+      // recognise. The original bytes must survive via a backup file and
+      // a follow-up write must throw instead of clobbering them.
+      writeFileSync(
+        filePath,
+        JSON.stringify({ schemaVersion: 999, records: [{ legacy: true }] }, null, 2),
+        "utf8",
+      );
+      const repository = createJsonConsentRepository({ filePath });
+      const loaded = await repository.load();
+      expect(loaded).toEqual([]);
+      // Original file has been renamed to a `.unrecognised-<ts>.bak`.
+      const dirEntries = readdirSync(dirname(filePath));
+      expect(
+        dirEntries.some((name) => name.includes(".unrecognised-") && name.endsWith(".bak")),
+      ).toBe(true);
+      // Subsequent writes refuse to clobber the (now-missing) original
+      // until the operator has inspected the backup and removed the
+      // recognised=false state by writing a recognised file themselves.
+      await expect(repository.upsert(makeRecord())).rejects.toThrow(/refusing to persist/);
     } finally {
       cleanup();
     }

@@ -103,7 +103,7 @@ describe("consent service", () => {
       },
       save: async () => undefined,
       upsert: async () => undefined,
-      remove: async () => undefined,
+      remove: async () => false,
       clearSubject: async () => undefined,
     };
     const service = createConsentService({

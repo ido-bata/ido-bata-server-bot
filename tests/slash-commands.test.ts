@@ -113,6 +113,10 @@ describe("slash command handler", () => {
 
     expect(customDefinition.execute).toHaveBeenCalledWith(
       expect.objectContaining({ commandName: "echo" }),
+      // Dispatcher always passes the optional second arg (the per-command
+      // runtime deps); the custom definition doesn't use it but the call
+      // shape must remain stable for callers that do.
+      undefined,
     );
   });
 

@@ -88,7 +88,11 @@ export const privacyCommand: SlashCommandDefinition = {
       .addSubcommand((sub) =>
         sub.setName(SUBCOMMAND_DELETE).setDescription("Delete all data we have stored about you."),
       ) as unknown as SlashCommandBuilder,
-  execute: async (
+  // The dispatcher types `deps` as `unknown` (per-command deps are
+  // optional). Privacy narrows it to `PrivacyCommandDeps`; the cast
+  // bridges the two without losing runtime safety since the dispatcher
+  // forwards whatever was wired at registration time.
+  execute: (async (
     { interaction }: { interaction: ChatInputCommandInteraction; commandName: string },
     deps: PrivacyCommandDeps = {},
   ) => {
@@ -102,7 +106,7 @@ export const privacyCommand: SlashCommandDefinition = {
       return;
     }
     await interaction.reply({ content: `Unknown subcommand: ${sub}`, ephemeral: true });
-  },
+  }) as SlashCommandDefinition["execute"],
 };
 
 /**
@@ -117,7 +121,7 @@ export async function handlePrivacyButton(
 ): Promise<void> {
   if (interaction.customId.startsWith(DELETE_CONFIRM_PREFIX)) {
     const requestId = interaction.customId.slice(DELETE_CONFIRM_PREFIX.length);
-    await runClear(interaction, requestId);
+    await runClear(interaction, requestId, deps);
     return;
   }
   if (interaction.customId.startsWith(DELETE_CANCEL_PREFIX)) {
@@ -128,8 +132,7 @@ export async function handlePrivacyButton(
     });
     return;
   }
-  // Unknown button — ignore silently. `deps` is reserved for future
-  // consent integration; reference it here so the lint rule stays happy.
+  // Unknown button — ignore silently.
   void deps;
 }
 
@@ -176,8 +179,19 @@ async function handleDelete(
   });
 }
 
-async function runClear(interaction: InteractionLike, requestId: string): Promise<void> {
-  const report = await clearUserData(interaction.user.id);
+async function runClear(
+  interaction: InteractionLike,
+  requestId: string,
+  deps: PrivacyCommandDeps,
+): Promise<void> {
+  // Pass the live `ConsentService` so the clear step also purges
+  // `data/consent.json` and emits the `clear` event the snapshot
+  // scheduler listens for. Without this the consumer adapters would
+  // remove the cached state but the grant records would remain, leaving
+  // the user with a phantom authorization.
+  const report = await clearUserData(interaction.user.id, {
+    consentService: deps.consentService,
+  });
   if (report.ok) {
     await interaction.update({
       content: renderClearSuccessMessage(requestId, report),

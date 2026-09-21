@@ -4,14 +4,21 @@
  *
  * Invariants:
  *   - **Partial failure = failure.** `ok` on the returned report is `true`
- *     ONLY if every per-consumer adapter succeeded. A single non-ok entry
- *     marks the whole clear as a failure, so the slash command can warn
- *     the operator and the user instead of declaring victory.
+ *     ONLY if every per-consumer adapter succeeded AND the consent registry
+ *     itself cleared. A single non-ok entry marks the whole clear as a
+ *     failure, so the slash command can warn the operator and the user
+ *     instead of declaring victory.
  *   - **Adapters are run sequentially.** The privacy clear path is rare
  *     and not on a hot loop, so we keep this readable and let one
  *     permission failure surface before the next adapter runs.
+ *   - **Consent registry is also cleared.** `data/consent.json` holds the
+ *     user's grants; deleting only the consumer data leaves those records
+ *     intact, which would re-authorize the next scrape. The slash command
+ *     passes the live `ConsentService` so we can run `clear()` and emit
+ *     the `clear` event the snapshot scheduler subscribes to.
  */
 
+import type { ConsentService } from "../../consent/service.js";
 import { deleteUserData as deleteBirthdayData } from "./consumers/birthday.js";
 import { deleteUserData as deletePollData } from "./consumers/poll.js";
 import { deleteUserData as deleteReminderData } from "./consumers/reminder.js";
@@ -28,9 +35,9 @@ export type ClearConsumerResult = {
 };
 
 export type ClearReport = {
-  /** True ONLY when every consumer returned ok: true. */
+  /** True ONLY when every consumer + the consent registry cleared. */
   ok: boolean;
-  /** Per-consumer outcomes in iteration order. */
+  /** Per-consumer outcomes in iteration order, plus the `consent-registry` slot. */
   results: ClearConsumerResult[];
   subjectId: string;
 };
@@ -48,7 +55,23 @@ const CONSUMER_ADAPTERS: ReadonlyArray<{ consumer: string; adapter: ConsumerDele
   { adapter: deleteSnapshotData, consumer: "state-snapshot" },
 ];
 
-export async function clearUserData(subjectId: string): Promise<ClearReport> {
+export type ClearUserDataOptions = {
+  /**
+   * Live consent service. When provided, `clearUserData` also calls
+   * `ConsentService.clear(subjectId)` so the grant records in
+   * `data/consent.json` are purged and the `clear` event fires (snapshot
+   * scheduler subscribes to it).
+   *
+   * When omitted (e.g. tests of consumer adapters in isolation), the
+   * consent step is skipped and the consumer results stand on their own.
+   */
+  consentService?: ConsentService;
+};
+
+export async function clearUserData(
+  subjectId: string,
+  options: ClearUserDataOptions = {},
+): Promise<ClearReport> {
   const results: ClearConsumerResult[] = [];
 
   for (const { consumer, adapter } of CONSUMER_ADAPTERS) {
@@ -61,6 +84,34 @@ export async function clearUserData(subjectId: string): Promise<ClearReport> {
     results.push(
       outcome.ok ? { consumer, ok: true } : { consumer, ok: false, error: outcome.error },
     );
+  }
+
+  // Consent registry last — if any consumer above failed, the operator
+  // already knows the clear is partial-failure. We still try the consent
+  // step because the user explicitly asked to be forgotten; the partial
+  // failure of a downstream consumer does not justify leaving the grant
+  // records in place.
+  if (options.consentService) {
+    try {
+      const clearReport = await options.consentService.clear(subjectId);
+      const allConsentOk = clearReport.results.every((r) => r.ok);
+      const firstError = clearReport.results.find((r) => !r.ok)?.error;
+      results.push(
+        allConsentOk
+          ? { consumer: "consent-registry", ok: true }
+          : {
+              consumer: "consent-registry",
+              ok: false,
+              error: firstError ?? "consent clear failed",
+            },
+      );
+    } catch (error) {
+      results.push({
+        consumer: "consent-registry",
+        ok: false,
+        error: stringifyError(error),
+      });
+    }
   }
 
   const ok = results.every((result) => result.ok);

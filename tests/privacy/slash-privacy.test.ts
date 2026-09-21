@@ -71,7 +71,7 @@ describe("/privacy status", () => {
         load: async () => [],
         save: async () => undefined,
         upsert: async () => undefined,
-        remove: async () => undefined,
+        remove: async () => false,
         clearSubject: async () => undefined,
       },
       policyVersion: "v0.2.0",

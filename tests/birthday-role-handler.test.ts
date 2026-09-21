@@ -12,9 +12,11 @@ import {
 } from "../src/features/birthday-role/storage.js";
 
 const ROLE_ID = "role-birthday";
+const GUILD_ID = "guild-birthday";
 
 function makeConfig(): BirthdayRoleConfig {
   return {
+    guildId: GUILD_ID,
     roleId: ROLE_ID,
     announcementChannelId: "channel-birthday-announce",
     dataFile: "ignored-for-tests",
@@ -222,7 +224,7 @@ describe("birthday-role handler", () => {
 
     it("does nothing when roleId is not configured", async () => {
       const handler = createBirthdayRoleHandler({
-        config: { roleId: "", announcementChannelId: "", dataFile: "unused" },
+        config: { guildId: "", roleId: "", announcementChannelId: "", dataFile: "unused" },
       });
 
       const result = await handler.runAssignTick({ year: 2026, month: 4, day: 2 });

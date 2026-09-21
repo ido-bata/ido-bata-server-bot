@@ -17,8 +17,13 @@ export interface ConsentRepository {
   save(records: ConsentRecord[]): Promise<void>;
   /** Add or replace a single `(subjectId, scope)` record. */
   upsert(record: ConsentRecord): Promise<void>;
-  /** Remove the active grant for `(subjectId, scope)`. No-op if absent. */
-  remove(subjectId: string, scope: ConsentScope): Promise<void>;
+  /**
+   * Remove the active grant for `(subjectId, scope)`. Returns `true` when
+   * the row was removed, `false` when it was already absent. Callers can
+   * use the boolean to avoid emitting duplicate side-effects (events,
+   * cascades) for no-op revokes.
+   */
+  remove(subjectId: string, scope: ConsentScope): Promise<boolean>;
   /** Remove every grant for `subjectId` regardless of scope. */
   clearSubject(subjectId: string): Promise<void>;
 }

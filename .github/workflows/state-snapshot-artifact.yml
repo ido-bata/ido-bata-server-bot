@@ -13,7 +13,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  # Explicit scopes: `contents: read` for `actions/checkout@v4`,
+  # `actions: write` for `actions/upload-artifact@v4` (without it the
+  # upload step fails with 403 because the explicit permissions block
+  # revokes every other default scope).
+  contents: read
+  actions: write
 
 # Avoid piling up redundant runs when several snapshots land on the branch in
 # quick succession; the most recent push already covers every file on HEAD.

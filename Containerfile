@@ -25,26 +25,36 @@ ARG NODE_IMAGE=node:22-slim
 # ---- base ----
 FROM ${NODE_IMAGE} AS base
 WORKDIR /app
-ENV NODE_ENV=production \
-    NPM_CONFIG_LOGLEVEL=warn \
+# `NODE_ENV=production` is set only in the `runtime` stage. Propagating it
+# to the `deps` stage would make `bun install --frozen-lockfile` skip
+# devDependencies (TypeScript, biome, eslint, knip, vitest, etc.) and the
+# subsequent `bun run build` would fail because `tsc` is a devDependency.
+ENV NPM_CONFIG_LOGLEVEL=warn \
     PATH="/usr/local/bin:${PATH}"
 
 # ---- deps ----
-# Install Bun (matches CI's `bun install --frozen-lockfile`) and tsx (matches
-# `bun run start` semantics). Then materialize the production dep tree.
+# Install Bun pinned to the version declared in `packageManager` (matches
+# CI's `bun install --frozen-lockfile`) and tsx (matches `bun run start`
+# semantics). Then materialize the full dep tree (prod + dev so the build
+# stage can compile).
 FROM base AS deps
+ARG BUN_VERSION=1.3.10
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         unzip \
-    && curl -fsSL https://bun.sh/install | bash \
-    && mv /root/.bun/bin/bun /usr/local/bin/bun \
+    && curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" -o /tmp/bun.zip \
+    && unzip /tmp/bun.zip -d /tmp/bun \
+    && mv /tmp/bun/bun-linux-x64/bun /usr/local/bin/bun \
+    && rm -rf /tmp/bun /tmp/bun.zip \
     && npm install -g tsx@4.23.9 \
     && apt-get purge -y --auto-remove curl unzip \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+# --production=false keeps devDependencies installed; we need `tsc` and
+# friends in the build stage.
+RUN bun install --frozen-lockfile --production=false
 
 # ---- build ----
 FROM deps AS build
@@ -58,13 +68,13 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
-    && npm install -g tsx@4.23.9 \
     && rm -rf /var/lib/apt/lists/*
+# NODE_ENV=production belongs here, not in `base` — see the comment above.
 ENV NODE_ENV=production \
     CONTAINER=true
 # Copy only the package.json so npm/bun don't see a missing "scripts" field
-# complaint — `tsx` is on PATH globally so `node dist/index.js` is the
-# canonical entrypoint.
+# complaint — `node dist/index.js` is the canonical entrypoint. No `tsx` in
+# the runtime image (it is a devDependency and the runtime does not need it).
 COPY package.json ./
 COPY --from=build /app/dist ./dist
 COPY --from=deps /app/node_modules ./node_modules
