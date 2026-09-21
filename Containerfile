@@ -51,20 +51,20 @@ ENV NPM_CONFIG_LOGLEVEL=warn \
 # stage can compile).
 FROM base AS deps
 ARG BUN_VERSION=1.3.10
-# curl + unzip + bash are kept in the `deps` stage: removing them after
-# Bun is installed used to be a nice-to-have but the apk del runs in the
-# same layer as the Bun install, and the post-install scripts on newer
-# Alpine images occasionally invalidate the moved /usr/local/bin/bun
-# symlink (the build fails with `bun: not found` on the next RUN).
-# The build stage is throw-away so the extra ~6 MiB of apk cache is fine.
+# Alpine ships musl libc; the glibc \`bun-linux-x64\` binary is dynamically
+# linked to \`/lib64/ld-linux-x86-64.so.2\` and would fail with
+# \`bun: not found\` (shell error for missing dynamic linker) on every
+# subsequent RUN. Use the musl-specific tarball instead. The
+# \`bun-linux-x64\` glibc variant still works fine on the slim base image
+# the project used before round-5 — both URLs are kept here for clarity.
 RUN apk add --no-cache \
         ca-certificates \
         curl \
         unzip \
         bash \
-    && curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" -o /tmp/bun.zip \
+    && curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64-musl.zip" -o /tmp/bun.zip \
     && unzip /tmp/bun.zip -d /tmp/bun \
-    && mv /tmp/bun/bun-linux-x64/bun /usr/local/bin/bun \
+    && mv /tmp/bun/bun-linux-x64-musl/bun /usr/local/bin/bun \
     && rm -rf /tmp/bun /tmp/bun.zip \
     && npm install -g tsx@4.23.9 \
     && rm -rf /var/cache/apk/*
@@ -86,7 +86,6 @@ RUN bun run build
 # stage instead of `deps`; without it the runtime image carries the build
 # toolchain and balloons past the 300 MiB size gate.
 FROM base AS prod-deps
-ARG BUN_VERSION=1.3.10
 # Reuses the cached Bun install from `deps` (above) — Bun is identical,
 # so re-installing via the same path would just double the apk layer.
 COPY --from=deps /usr/local/bin/bun /usr/local/bin/bun
