@@ -11,8 +11,11 @@ import {
 } from "@discordjs/voice";
 import type { Client, GuildMember, VoiceBasedChannel } from "discord.js";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, Events } from "discord.js";
-
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { isTimekeeperConfigured, type TimekeeperConfig, timekeeperConfig } from "./config.js";
+
+const logger = childFor(getRootLogger(), "timekeeper");
+
 import {
   buildCheckInCustomId,
   buildCheckInLabel,
@@ -121,7 +124,7 @@ export function pauseTimekeeperSession(): boolean {
   }
   if (!activePaused) {
     activePaused = true;
-    console.log("[Timekeeper] Session paused");
+    logger.info("session paused");
   }
   return true;
 }
@@ -135,7 +138,7 @@ export function resumeTimekeeperSession(): boolean {
     return false;
   }
   activePaused = false;
-  console.log("[Timekeeper] Session resumed");
+  logger.info("session resumed");
   return true;
 }
 
@@ -287,11 +290,12 @@ export function registerTimekeeper(client: Client): void {
         ? sessionStartAt
         : now;
 
-      console.log(
-        `Running timekeeper immediately because TIMEKEEPER_RUN_ON_READY=true (startAt=${startAt.toISOString()})`,
+      logger.info(
+        { startAt: startAt.toISOString() },
+        "running timekeeper immediately because TIMEKEEPER_RUN_ON_READY=true",
       );
       void runSession(client, timekeeperConfig, startAt).catch((error: unknown) => {
-        console.error("Immediate timekeeper session failed", error);
+        logger.error({ err: error }, "immediate timekeeper session failed");
       });
       return;
     }
@@ -302,7 +306,7 @@ export function registerTimekeeper(client: Client): void {
 
 function scheduleNextSession(client: Client, config: TimekeeperConfig): void {
   if (!isTimekeeperConfigured(config)) {
-    console.warn(
+    logger.warn(
       "Timekeeper is disabled. Set voiceChannelId and textChannelId in timekeeper config.",
     );
     pendingScheduledStartAt = null;
@@ -319,14 +323,18 @@ function scheduleNextSession(client: Client, config: TimekeeperConfig): void {
   const delayMs = Math.max(0, preparationStartAt.getTime() - Date.now());
   pendingScheduledStartAt = nextStartAt;
 
-  console.log(
-    `Next timekeeper session scheduled for ${nextStartAt.toISOString()} (preparation starts at ${preparationStartAt.toISOString()})`,
+  logger.info(
+    {
+      nextStartAt: nextStartAt.toISOString(),
+      preparationStartAt: preparationStartAt.toISOString(),
+    },
+    "next timekeeper session scheduled",
   );
 
   setTimeout(() => {
     void runSession(client, config, nextStartAt)
       .catch((error: unknown) => {
-        console.error("Timekeeper session failed", error);
+        logger.error({ err: error }, "timekeeper session failed");
       })
       .finally(() => {
         pendingScheduledStartAt = null;
@@ -372,19 +380,21 @@ async function runSession(client: Client, config: TimekeeperConfig, startAt: Dat
   const startIndex = findTimelineStartIndex(timeline, now);
 
   if (startIndex === -1) {
-    console.log("Session has already ended; skipping playback.");
+    logger.info("session has already ended; skipping playback");
     connection.destroy();
     return;
   }
 
   const firstEvent = timeline[startIndex];
   if (firstEvent && firstEvent.at > now) {
-    console.log(
-      `[Timekeeper] Starting from upcoming phase: ${firstEvent.label} (at ${firstEvent.at.toISOString()})`,
+    logger.info(
+      { label: firstEvent.label, at: firstEvent.at.toISOString() },
+      "starting from upcoming phase",
     );
   } else if (firstEvent) {
-    console.log(
-      `[Timekeeper] Resuming from current phase: ${firstEvent.label} (started at ${firstEvent.at.toISOString()})`,
+    logger.info(
+      { label: firstEvent.label, startedAt: firstEvent.at.toISOString() },
+      "resuming from current phase",
     );
   }
 
@@ -406,8 +416,15 @@ async function runSession(client: Client, config: TimekeeperConfig, startAt: Dat
   for (const [index, event] of eventsToRun.entries()) {
     const beforeWaitMs = Date.now();
     const waitMs = getDelayFor(clock, event.at, beforeWaitMs);
-    console.log(
-      `[Timekeeper] Event waiting: order=${event.order}, kind=${event.kind}, scheduledAt=${event.at.toISOString()}, now=${new Date(beforeWaitMs).toISOString()}, waitMs=${waitMs}`,
+    logger.info(
+      {
+        order: event.order,
+        kind: event.kind,
+        scheduledAt: event.at.toISOString(),
+        now: new Date(beforeWaitMs).toISOString(),
+        waitMs,
+      },
+      "event waiting",
     );
 
     if (waitMs > 0) {
@@ -420,13 +437,20 @@ async function runSession(client: Client, config: TimekeeperConfig, startAt: Dat
     // will fire its event on schedule from its own `getDelayFor` call.
 
     if (isTimekeeperSessionPaused() && event.kind === "phase-ending-soon") {
-      console.log(`[Timekeeper] Suppressing paused phase-ending-soon: order=${event.order}`);
+      logger.info({ order: event.order }, "suppressing paused phase-ending-soon");
       continue;
     }
 
     const firedAtMs = Date.now();
-    console.log(
-      `[Timekeeper] Event firing: order=${event.order}, kind=${event.kind}, scheduledAt=${event.at.toISOString()}, actualAt=${new Date(firedAtMs).toISOString()}, latenessMs=${firedAtMs - event.at.getTime()}`,
+    logger.info(
+      {
+        order: event.order,
+        kind: event.kind,
+        scheduledAt: event.at.toISOString(),
+        actualAt: new Date(firedAtMs).toISOString(),
+        latenessMs: firedAtMs - event.at.getTime(),
+      },
+      "event firing",
     );
 
     if (!existsSync(event.audioPath)) {
@@ -503,28 +527,32 @@ async function playAnnouncement(
     progressTask = updateProgressMessage(sentMessage, event, clock);
   }
 
-  console.log(
-    `[Timekeeper] Playing: ${event.audioPath} (order=${event.order}, actualAt=${new Date().toISOString()})`,
+  logger.info(
+    {
+      audioPath: event.audioPath,
+      order: event.order,
+      actualAt: new Date().toISOString(),
+    },
+    "playing audio",
   );
   const resource = createAudioResource(event.audioPath);
   player.play(resource);
 
   try {
     await entersState(player, AudioPlayerStatus.Playing, timeouts.startTimeoutMs);
-    console.log(`[Timekeeper] Playing state reached: order=${event.order}`);
+    logger.info({ order: event.order }, "playing state reached");
   } catch {
-    console.error(
-      `[Timekeeper] Failed to reach Playing state: order=${event.order}, status=${player.state.status}`,
+    logger.error(
+      { order: event.order, status: player.state.status },
+      "failed to reach Playing state",
     );
   }
 
   try {
     await entersState(player, AudioPlayerStatus.Idle, timeouts.finishTimeoutMs);
-    console.log(`[Timekeeper] Idle state reached: order=${event.order}`);
+    logger.info({ order: event.order }, "idle state reached");
   } catch {
-    console.error(
-      `[Timekeeper] Failed to reach Idle state: order=${event.order}, status=${player.state.status}`,
-    );
+    logger.error({ order: event.order, status: player.state.status }, "failed to reach Idle state");
   }
 
   connection.setSpeaking(false);
@@ -566,9 +594,12 @@ async function prepareStageSpeaker(voiceChannel: VoiceBasedChannel, client: Clie
 
   try {
     await botMember.voice.setSuppressed(false);
-    console.log("Stage speaker mode enabled by unsuppressing the bot.");
+    logger.info("stage speaker mode enabled by unsuppressing the bot");
   } catch (error) {
-    console.warn("Failed to unsuppress bot in stage channel. Requesting to speak instead.", error);
+    logger.warn(
+      { err: error },
+      "failed to unsuppress bot in stage channel; requesting to speak instead",
+    );
     await botMember.voice.setRequestToSpeak(true).catch(() => undefined);
     await delay(2_000);
   }
@@ -586,7 +617,7 @@ async function connectForPlayback(voiceChannel: VoiceBasedChannel, client: Clien
 
   // Stage channels can fail to relay audio immediately after the first join.
   // Reconnecting after unsuppressing the bot is a practical workaround.
-  console.log("Reconnecting stage channel once before playback.");
+  logger.info("reconnecting stage channel once before playback");
   connection.destroy();
   await delay(1_500);
 
@@ -664,7 +695,7 @@ async function refreshStageSpeakerBeforePlayback(
   try {
     await botMember.voice.setSuppressed(false);
   } catch {
-    console.log("Failed to unsuppress, requesting to speak...");
+    logger.info("failed to unsuppress; requesting to speak");
     await botMember.voice.setRequestToSpeak(true).catch(() => undefined);
     await delay(2_000);
   }

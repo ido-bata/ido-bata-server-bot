@@ -19,7 +19,6 @@ import {
 import { registerGitHubWebhook } from "./features/github-webhook/index.js";
 import { registerHealthMetrics } from "./features/health-metrics/index.js";
 import { registerIcalCalendar } from "./features/ical-calendar/index.js";
-import { childFor, createRootLogger, getRootLogger } from "./lib/logger/index.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { messageAuditConfig } from "./features/message-audit/config.js";
@@ -48,6 +47,7 @@ import {
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 import { registerTimekeeperCommandHandlers } from "./features/timekeeper-commands/handler.js";
 import { registerWelcomeHandlers } from "./features/welcome/handler.js";
+import { childFor, createRootLogger, getRootLogger } from "./lib/logger/index.js";
 
 async function main(): Promise<void> {
   const config = readConfig(process.env);
@@ -259,9 +259,7 @@ async function main(): Promise<void> {
       rootLogger.error({ err: error }, "failed to start GitHub webhook server");
     }
   } else {
-    rootLogger.info(
-      "GitHub webhook server is disabled (set GITHUB_WEBHOOK_SECRET to enable).",
-    );
+    rootLogger.info("GitHub webhook server is disabled (set GITHUB_WEBHOOK_SECRET to enable).");
   }
 
   // Multi-guild bootstrap is opt-in: set MULTI_GUILD_ENABLE=true to migrate
@@ -276,10 +274,7 @@ async function main(): Promise<void> {
       rootLogger.warn({ warning }, "multi-guild migration warning");
     }
     if (migration.added.length > 0) {
-      rootLogger.info(
-        { added: migration.added },
-        "multi-guild migration: added guild configs",
-      );
+      rootLogger.info({ added: migration.added }, "multi-guild migration: added guild configs");
     }
   }
 

@@ -4,6 +4,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { restoreSnapshot } from "../features/state-snapshot/snapshot.js";
+import { childFor, createRootLogger, getRootLogger } from "../lib/logger/index.js";
 
 type CliOptions = {
   outputDir: string;
@@ -91,6 +92,9 @@ function resolveSnapshotPath(snapshotArg: string): string {
 }
 
 async function main(): Promise<void> {
+  createRootLogger({ ...process.env, LOG_LEVEL: process.env.LOG_LEVEL ?? "info" });
+  const logger = childFor(getRootLogger(), "restore-snapshot");
+
   const options = parseArgs(process.argv.slice(2));
   const encryptionKey = process.env.STATE_SNAPSHOT_ENCRYPTION_KEY;
   if (!encryptionKey) {
@@ -100,23 +104,21 @@ async function main(): Promise<void> {
   }
 
   const snapshotPath = resolveSnapshotPath(options.snapshot);
-  console.log(`Restoring snapshot: ${snapshotPath}`);
+  logger.info({ snapshotPath }, "restoring snapshot");
   const result = await restoreSnapshot(snapshotPath, encryptionKey, {
     outputDir: options.outputDir,
   });
-  console.log(
-    [
-      `Restored ${result.files.length} file(s) to ${options.outputDir}`,
-      `Created at: ${result.manifest.createdAt}`,
-      "Files:",
-      ...result.files.map(
-        (file) => `  - ${file.path}  (${file.size} bytes, sha256=${file.sha256.slice(0, 12)}...)`,
-      ),
-    ].join("\n"),
+  logger.info(
+    {
+      filesRestored: result.files.length,
+      outputDir: options.outputDir,
+      createdAt: result.manifest.createdAt,
+    },
+    "snapshot restored",
   );
 }
 
 main().catch((error: unknown) => {
-  console.error("Restore failed:", error);
+  childFor(getRootLogger(), "restore-snapshot").error({ err: error }, "restore failed");
   process.exitCode = 1;
 });

@@ -1,6 +1,7 @@
 import { getVoiceConnections } from "@discordjs/voice";
 import type { Client } from "discord.js";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { cancelActiveSession } from "../timekeeper/service.js";
 
 type ShutdownSignal = "SIGINT" | "SIGTERM";
@@ -39,6 +40,10 @@ export type ShutdownDependencies = {
 
 export type ShutdownLogger = (message: string) => void;
 
+const defaultShutdownLogger: ShutdownLogger = (message) => {
+  childFor(getRootLogger(), "shutdown").info(message);
+};
+
 export type ShutdownRunner = {
   /** Run the shutdown sequence manually (e.g. from a test or signal). */
   run: (signal: ShutdownSignal) => Promise<void>;
@@ -58,7 +63,7 @@ export type ShutdownRunner = {
 export function registerShutdownHandler(
   client: Client,
   dependencies: ShutdownDependencies = {},
-  logger: ShutdownLogger = console.log,
+  logger: ShutdownLogger = defaultShutdownLogger,
 ): ShutdownRunner {
   const runner = createShutdownRunner(client, dependencies, logger);
 
@@ -80,7 +85,7 @@ export function registerShutdownHandler(
 export function createShutdownRunner(
   client: Client,
   dependencies: ShutdownDependencies = {},
-  logger: ShutdownLogger = console.log,
+  logger: ShutdownLogger = defaultShutdownLogger,
 ): ShutdownRunner {
   const cancelSession = dependencies.cancelSession ?? cancelActiveSession;
   const destroyVoiceConnections =

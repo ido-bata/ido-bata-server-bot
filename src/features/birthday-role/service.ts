@@ -4,6 +4,7 @@
 
 import type { Channel, Client, GuildMember } from "discord.js";
 import { ChannelType, Events } from "discord.js";
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { birthdayCommand, createBirthdayCommandRegistry } from "./commands.js";
 import { type BirthdayRoleConfig, birthdayRoleConfig, isBirthdayRoleConfigured } from "./config.js";
 import { type JstDate, previousJstDate, toJstDate } from "./date.js";
@@ -13,6 +14,8 @@ import {
   type HandlerDependencies,
 } from "./handler.js";
 import { getNextTickAfter } from "./schedule.js";
+
+const logger = childFor(getRootLogger(), "birthday-role");
 
 type ServiceOptions = {
   config?: BirthdayRoleConfig;
@@ -69,7 +72,7 @@ export function registerBirthdayRoleHandlers(
     if (isBirthdayRoleConfigured(config)) {
       scheduleDailyLoop(readyClient, service, now);
     } else {
-      console.warn(
+      logger.warn(
         "Birthday-role feature is disabled. Set roleId in birthday-role config to enable it.",
       );
     }
@@ -82,8 +85,9 @@ function scheduleDailyLoop(client: Client, service: BirthdayRoleService, now: ()
   const tick = getNextTickAfter(now());
   const delayMs = Math.max(0, tick.at.getTime() - now().getTime());
 
-  console.log(
-    `[BirthdayRole] Next tick at ${tick.at.toISOString()} (in ${Math.round(delayMs / 1000)}s)`,
+  logger.info(
+    { nextTickAt: tick.at.toISOString(), delaySeconds: Math.round(delayMs / 1000) },
+    "next birthday-role tick scheduled",
   );
 
   setTimeout(() => {
@@ -111,16 +115,16 @@ async function runMidnightTick(
   // midnight gets re-assigned on the new day without a visible gap.
   try {
     const removed = await service.handler.runRemoveTick(yesterday);
-    console.log("[BirthdayRole] remove tick completed", removed);
+    logger.info({ removed }, "remove tick completed");
   } catch (error: unknown) {
-    console.error("[BirthdayRole] remove tick failed", error);
+    logger.error({ err: error }, "remove tick failed");
   }
 
   try {
     const granted = await service.handler.runAssignTick(today);
-    console.log("[BirthdayRole] assign tick completed", granted);
+    logger.info({ granted }, "assign tick completed");
   } catch (error: unknown) {
-    console.error("[BirthdayRole] assign tick failed", error);
+    logger.error({ err: error }, "assign tick failed");
   }
 
   void client;

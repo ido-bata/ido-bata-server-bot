@@ -1,6 +1,7 @@
 import { existsSync, type FSWatcher, watch } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import type { HotReloadConfig } from "./schema.js";
 import { safeParseHotReloadConfig } from "./schema.js";
 
@@ -39,10 +40,12 @@ export type ConfigStoreOptions = {
 const DEFAULT_DEBOUNCE_MS = 1000;
 const EMPTY_CONFIG: HotReloadConfig = {};
 
+const configHotReloadLogger = childFor(getRootLogger(), "config-hot-reload");
+
 const defaultLogger: ConfigStoreLogger = {
-  info: (message, meta) => console.log(`[config-hot-reload] ${message}`, meta ?? ""),
-  warn: (message, meta) => console.warn(`[config-hot-reload] ${message}`, meta ?? ""),
-  error: (message, meta) => console.error(`[config-hot-reload] ${message}`, meta ?? ""),
+  info: (message, meta) => configHotReloadLogger.info(meta ? { ...meta } : undefined, message),
+  warn: (message, meta) => configHotReloadLogger.warn(meta ? { ...meta } : undefined, message),
+  error: (message, meta) => configHotReloadLogger.error(meta ? { ...meta } : undefined, message),
 };
 
 /**

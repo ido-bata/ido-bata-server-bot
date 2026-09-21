@@ -2,7 +2,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
+import { childFor, getRootLogger } from "../lib/logger/index.js";
 import type { HttpRouter } from "./router.js";
+
+const logger = childFor(getRootLogger(), "http");
 
 export type HttpServerHandle = {
   server: Server;
@@ -33,7 +36,7 @@ export function createHttpServer(options: CreateHttpServerOptions): Promise<Http
 
   const server = createServer((req, res) => {
     invoke(router, req, res).catch((error: unknown) => {
-      console.error("http server request failed", error);
+      logger.error({ err: error }, "http server request failed");
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ error: "internal_error" }));

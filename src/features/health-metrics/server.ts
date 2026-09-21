@@ -2,7 +2,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import type { MetricsRegistry } from "./metrics.js";
+
+const logger = childFor(getRootLogger(), "health-metrics");
 
 export type HealthMetricsServerHandle = {
   server: Server;
@@ -34,7 +37,7 @@ export function createHealthMetricsServer(
 
   const server = createServer((req, res) => {
     handleRequest(req, res, registry).catch((error: unknown) => {
-      console.error("health-metrics request failed", error);
+      logger.error({ err: error }, "health-metrics request failed");
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ error: "internal_error" }));

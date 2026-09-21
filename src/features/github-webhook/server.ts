@@ -3,10 +3,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { HttpRouter } from "../../http/router.js";
 import type { HttpServerHandle } from "../../http/server.js";
 import { createHttpServer } from "../../http/server.js";
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { dispatchPayload } from "./dispatcher.js";
 import type { DiscordWebhookMessage } from "./formatter.js";
 import { GitHubWebhookRateLimiter } from "./rate-limit.js";
 import { verifySignature } from "./signature.js";
+
+const logger = childFor(getRootLogger(), "github-webhook");
 
 /**
  * Minimal `Readable` shape we need to drain the request body.
@@ -162,13 +165,13 @@ async function handleRequest(
     rawBody = await ctx.readBody(req);
   } catch (error) {
     const reason = error instanceof Error ? error.message : "invalid body";
-    console.warn(`github-webhook body read error: ${reason}`);
+    logger.warn({ reason }, "github-webhook body read error");
     sendJson(res, 400, { error: "invalid_body" });
     return;
   }
 
   if (!verifySignature(ctx.secret, rawBody, headerValue(req, "x-hub-signature-256"))) {
-    console.warn("github-webhook signature verification failed");
+    logger.warn("github-webhook signature verification failed");
     sendJson(res, 401, { error: "invalid_signature" });
     return;
   }
@@ -177,7 +180,7 @@ async function handleRequest(
   try {
     payload = JSON.parse(rawBody);
   } catch {
-    console.warn("github-webhook payload is not valid JSON");
+    logger.warn("github-webhook payload is not valid JSON");
     sendJson(res, 400, { error: "invalid_json" });
     return;
   }
@@ -211,7 +214,7 @@ async function handleRequest(
   const result = dispatchPayload(headerEvent, payload, { allowedEvents: ctx.allowedEvents });
 
   if (result.kind === "invalid") {
-    console.warn(`github-webhook invalid payload: ${result.reason}`);
+    logger.warn({ reason: result.reason }, "github-webhook invalid payload");
     sendJson(res, 202, { status: "invalid", reason: result.reason });
     return;
   }
@@ -223,7 +226,7 @@ async function handleRequest(
 
   const channelId = resolveChannelId(req, ctx.defaultDiscordChannelId);
   if (!channelId) {
-    console.warn("github-webhook missing Discord channel id");
+    logger.warn("github-webhook missing Discord channel id");
     sendJson(res, 503, { error: "discord_channel_unconfigured" });
     return;
   }
@@ -239,7 +242,7 @@ async function handleRequest(
     await ctx.deliver(channelId, result.message);
     sendJson(res, 200, { status: "delivered", repo: result.repoKey });
   } catch (error) {
-    console.error("github-webhook Discord delivery failed", error);
+    logger.error({ err: error }, "github-webhook Discord delivery failed");
     sendJson(res, 502, { error: "discord_delivery_failed" });
   }
 }

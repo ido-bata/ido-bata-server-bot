@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Client } from "discord.js";
 import { Events, Routes } from "discord.js";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { applyVote, buildTallyRows, clearVote } from "./aggregate.js";
 import { buildPollEmbed, buildPollMessageComponents, parsePollButtonCustomId } from "./build.js";
 import {
@@ -463,8 +464,10 @@ export function registerPollHandlers(
             (fetched as { edit: (opts: unknown) => Promise<unknown> }).edit(options),
         };
       } catch (error) {
-        console.warn(
-          `[poll] failed to resolve poll message ${channelId}/${messageId}: ${(error as Error).message}`,
+        const pollLogger = childFor(getRootLogger(), "poll");
+        pollLogger.warn(
+          { channelId, messageId, reason: (error as Error).message },
+          "failed to resolve poll message",
         );
         return null;
       }
@@ -474,7 +477,7 @@ export function registerPollHandlers(
 
   client.on(Events.InteractionCreate, (interaction) => {
     void handler.handleInteraction(interaction).catch((error: unknown) => {
-      console.error("[poll] interaction handler failed", error);
+      childFor(getRootLogger(), "poll").error({ err: error }, "interaction handler failed");
     });
   });
 

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Client, DMChannel, User } from "discord.js";
 import { Events } from "discord.js";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { executeRemindCommand, type RemindCommandDeps } from "./command.js";
 import { reminderConfig } from "./config.js";
 import { pickNextFire, pickOverdueReminders, type ReminderFire } from "./scheduler.js";
@@ -14,10 +15,12 @@ type Logger = {
   error: (message: string) => void;
 };
 
+const reminderLogger = childFor(getRootLogger(), "reminder");
+
 const defaultLogger: Logger = {
-  info: (message) => console.log(`[reminder] ${message}`),
-  warn: (message) => console.warn(`[reminder] ${message}`),
-  error: (message) => console.error(`[reminder] ${message}`),
+  info: (message) => reminderLogger.info(message),
+  warn: (message) => reminderLogger.warn(message),
+  error: (message) => reminderLogger.error(message),
 };
 
 export type AddReminderInput = {

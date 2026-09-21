@@ -1,3 +1,4 @@
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { isStale, loadCache, mergeSourceEvents, saveCache } from "./cache.js";
 import { findSource, type IcalCalendarConfig, readConfig } from "./config.js";
 import { type CalendarFetcher, createCalendarFetcher } from "./fetcher.js";
@@ -174,7 +175,11 @@ function groupEventsBySource(events: CalendarEvent[]): Map<string, CalendarEvent
   return map;
 }
 
+const icalCalendarLogger = childFor(getRootLogger(), "ical-calendar");
+
 const defaultLogger: Logger = {
-  error: (...args) => console.error(...args),
-  warn: (...args) => console.warn(...args),
+  error: (...args) =>
+    icalCalendarLogger.error(args.length === 1 ? args[0] : { args }, "calendar log"),
+  warn: (...args) =>
+    icalCalendarLogger.warn(args.length === 1 ? args[0] : { args }, "calendar log"),
 };

@@ -6,7 +6,7 @@ import { createMemoryFs } from "./memory-fs.js";
 
 function silentLogger() {
   return {
-    log: vi.fn(),
+    info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
   };

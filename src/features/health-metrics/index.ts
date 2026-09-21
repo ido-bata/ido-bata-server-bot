@@ -1,10 +1,13 @@
 import type { Client } from "discord.js";
 import { Events } from "discord.js";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { getActiveTimekeeperSessionCount } from "../timekeeper/service.js";
 import { type HealthMetricsConfig, readHealthMetricsConfig } from "./config.js";
 import { MetricsRegistry } from "./metrics.js";
 import { createHealthMetricsServer, type HealthMetricsServerHandle } from "./server.js";
+
+const logger = childFor(getRootLogger(), "health-metrics");
 
 export type RegisterHealthMetricsOptions = {
   /** Override the parsed HEALTH_PORT/HEALTH_HOST config. */
@@ -60,7 +63,7 @@ export async function registerHealthMetrics(
       port: config.port,
       registry,
     });
-    console.log(`Health/metrics server listening on http://${config.host}:${handle.port}`);
+    logger.info({ url: `http://${config.host}:${handle.port}` }, "health/metrics server listening");
   }
 
   return { registry, config, handle };

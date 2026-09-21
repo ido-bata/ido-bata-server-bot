@@ -1,11 +1,14 @@
 import type { Channel, Client, TextBasedChannel } from "discord.js";
 import { ChannelType, Events } from "discord.js";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import type { SpotifyActivityShape } from "./activity.js";
 import { isSpotifyConfigured, type SpotifyConfig } from "./config.js";
 import type { NowPlayingEmbedContent } from "./formatter.js";
 import { createSpotifyNowPlayingHandler, type NowPlayingHandlerResult } from "./handler.js";
 import { NowPlayingStore } from "./state.js";
+
+const logger = childFor(getRootLogger(), "spotify");
 
 const PRUNE_INTERVAL_MS = 60_000;
 
@@ -67,7 +70,7 @@ function toEmbedPayload(content: NowPlayingEmbedContent): { embeds: NowPlayingEm
 
 function createSpotifyService(client: Client, config: SpotifyConfig): { stop: () => void } {
   if (!isSpotifyConfigured(config)) {
-    console.warn(
+    logger.warn(
       "Spotify now-playing is disabled. Set DISCORD_ENABLE_SPOTIFY=true and SPOTIFY_CHANNEL_ID (for public mode) to enable.",
     );
     return { stop: () => undefined };
@@ -122,9 +125,9 @@ function createSpotifyService(client: Client, config: SpotifyConfig): { stop: ()
     deleteEmbed,
   });
 
-  const onPresenceUpdate = (oldPresence: unknown, newPresence: unknown): void => {
+  const onPresenceUpdate = (_oldPresence: unknown, newPresence: unknown): void => {
     void handler.onPresenceUpdate(mapPresenceUpdate(newPresence)).catch((error: unknown) => {
-      console.error("Spotify now-playing handler failed", error);
+      logger.error({ err: error }, "Spotify now-playing handler failed");
     });
   };
 
@@ -135,11 +138,11 @@ function createSpotifyService(client: Client, config: SpotifyConfig): { stop: ()
       .pruneStale()
       .then((results: NowPlayingHandlerResult[]) => {
         if (results.length > 0) {
-          console.log(`Pruned ${results.length} stale Spotify now-playing entries`);
+          logger.info({ pruned: results.length }, "pruned stale Spotify now-playing entries");
         }
       })
       .catch((error: unknown) => {
-        console.error("Spotify prune failed", error);
+        logger.error({ err: error }, "Spotify prune failed");
       });
   }, PRUNE_INTERVAL_MS);
 

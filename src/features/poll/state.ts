@@ -3,6 +3,10 @@ import { dirname } from "node:path";
 
 import { z } from "zod";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
+
+const logger = childFor(getRootLogger(), "poll");
+
 // Internal: validation bounds for poll options. Kept module-private because
 // no external consumer imports them; if a future migration tool needs them,
 // re-export then.
@@ -108,7 +112,7 @@ export function createFilePollStore(filePath: string): PollStore {
     if (!result.success) {
       // Corrupt state should not bring the bot down. Log and start fresh; a
       // future migration tool can recover from the original file.
-      console.warn(`[poll] Discarding unparseable state file ${filePath}: ${result.error.message}`);
+      logger.warn({ filePath, reason: result.error.message }, "discarding unparseable state file");
       return createPollState();
     }
 

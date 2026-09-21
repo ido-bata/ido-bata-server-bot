@@ -10,7 +10,7 @@ function makeStore() {
 
 function silentLogger() {
   return {
-    log: () => undefined,
+    info: () => undefined,
     warn: () => undefined,
     error: () => undefined,
   };

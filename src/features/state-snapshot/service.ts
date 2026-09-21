@@ -1,6 +1,7 @@
 import type { Client } from "discord.js";
 import { Events } from "discord.js";
 
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import type { SnapshotConfig } from "./config.js";
 import { applyRetentionPlan, planRetention, type RetentionPolicy } from "./retention.js";
 import { getNextSnapshotStartAt } from "./schedule.js";
@@ -16,6 +17,8 @@ import {
   createNoopUploader,
   type SnapshotUploader,
 } from "./uploaders.js";
+
+const logger = childFor(getRootLogger(), "state-snapshot");
 
 type SnapshotDependencies = {
   encryptionKey?: string;
@@ -63,14 +66,15 @@ export function registerStateSnapshotScheduler(
       runtime.config.snapshotMinuteJst,
     );
     const delayMs = Math.max(0, nextStartAt.getTime() - runtime.clock().getTime());
-    console.log(
-      `[StateSnapshot] Next snapshot scheduled for ${nextStartAt.toISOString()} (in ${Math.round(delayMs / 1000)}s)`,
+    logger.info(
+      { nextStartAt: nextStartAt.toISOString(), delaySeconds: Math.round(delayMs / 1000) },
+      "next snapshot scheduled",
     );
 
     timer = setTimeout(() => {
       void runSnapshotOnce(runtime)
         .catch((error: unknown) => {
-          console.error("[StateSnapshot] Scheduled snapshot failed", error);
+          logger.error({ err: error }, "scheduled snapshot failed");
         })
         .finally(() => {
           schedule();
@@ -80,9 +84,9 @@ export function registerStateSnapshotScheduler(
 
   client.once(Events.ClientReady, () => {
     if (runtime.runOnReady) {
-      console.log("[StateSnapshot] Running immediately because STATE_SNAPSHOT_RUN_ON_READY=true");
+      logger.info("running snapshot immediately because STATE_SNAPSHOT_RUN_ON_READY=true");
       void runSnapshotOnce(runtime).catch((error: unknown) => {
-        console.error("[StateSnapshot] Immediate snapshot failed", error);
+        logger.error({ err: error }, "immediate snapshot failed");
       });
       return;
     }
@@ -125,9 +129,9 @@ async function uploadSnapshot(runtime: SnapshotRuntime, created: SnapshotMetadat
   try {
     await runtime.uploader.upload(created);
   } catch (error) {
-    console.error(
-      `[StateSnapshot] Uploader "${runtime.uploader.name}" failed for ${created.path}`,
-      error,
+    logger.error(
+      { uploader: runtime.uploader.name, path: created.path, err: error },
+      "uploader failed",
     );
   }
 }
