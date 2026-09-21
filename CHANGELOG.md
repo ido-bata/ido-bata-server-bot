@@ -11,6 +11,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Fixed** — bug fixes
 - **Security** — vulnerability fixes
 
+## [0.2.0] — 2026-09-21
+
+### Added
+
+- **Structured logger + TUI log sink (#8)**: pino-based root logger with bounded ring buffer, in-process subscriber seam for downstream consumers. `LOG_LEVEL` and `LOG_RING_SIZE` env vars. Pino redact paths for tokens/passwords. New `src/lib/logger/` module; all `src/` console.* replaced.
+- **Consent Registry (#93)**: Discord-reaction-driven opt-in. `ConsentService.authorize()` is the SoT for authorization; reaction handler wires Discord `MessageReactionAdd` / `MessageReactionRemove` to grant/revoke; reconciler runs on `ClientReady`. Atomic JSON repository at `data/consent.json` (gitignored). Four scopes: `activity-history`, `presence-history`, `profile`, `message-history`.
+- **Privacy integration (#94)**: every user-keyed persistent consumer gated through `ConsentService.authorize()`. `/privacy status` (ephemeral: active/revoked scope breakdown + per-consumer storage categories) and `/privacy delete` (cascade delete with partial-fail = failure semantics). `applyDefaultMemberPermissions` wired into slash deploy so `slashPermissionRules` actually reach Discord. `applyRetentionPlan` triggered on revoke for state-snapshot. Timekeeper in-session check-ins remain non-consent (memory only); persistence gated.
+- **Runtime TUI dashboard (#95)**: Ink 7 + React 19.2 dashboard with 7 panels (header, discord, features, consent, timekeeper, runtime, events). `BOT_TUI=auto|on|off` env gate; `auto` follows TTY detection. `RuntimeStatusStore` is the read model; subscribers get frozen snapshots. Pino subscriber feeds the events ring buffer. Ctrl+C forwarded to existing shutdown handler. Non-TTY falls back to JSON Lines via pino.
+- **ADR templates**: docs/adr/0000 (template), 0001 (agent dispatching model), 0002 (weekly sprint + merge auth boundary) — carried over from `main`.
+- **Operational persistent features** (carried from prior work, never landed on main until now):
+  multi-guild (per-guild config + listener registry), GitHub Webhook receiver (release / PR / issues → Discord embed), iCal calendar ingest + `/calendar list`, game-activity whitelist, Spotify now-playing embed, member-audit, message-audit, role-slash with audit forwarding, starboard, scheduled-announcements, slash-permissions (deploy wire-up), config-hot-reload, welcome messages, state-snapshot (AES-256-GCM bundles), health-metrics (Prometheus-format).
+
+### Changed
+
+- Node runtime bumped to 22 (engines.node `>=22 <23`, `.nvmrc=22`, CI `actions/setup-node@v4`).
+- Dependency surface: added `pino@^10`, `split2@^1`, `ink@^7.1.1`, `react@^19.2`, `@types/react@^19.2`, `node-ical`, `@discordjs/voice`, `opusscript`, `ffmpeg-static`. Dev: `pino-pretty@^13`.
+- Bot version bumped 0.1.0 → 0.2.0.
+
+### Security
+
+- Fail-closed semantics: any `ConsentService.authorize()` failure (storage corruption, Discord API error) returns deny — never a silent allow.
+- Pino redaction paths cover `*.discordToken`, `*.token`, `*.password`.
+- State-snapshot bundles encrypted AES-256-GCM with `STATE_SNAPSHOT_ENCRYPTION_KEY`; revoke triggers `applyRetentionPlan` to expire affected snapshots.
+
 ## [Unreleased]
 
 ### Added

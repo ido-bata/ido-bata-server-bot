@@ -105,3 +105,25 @@ If you change voice behavior, leave these workarounds in place until you confirm
 Rules live in `src/features/reaction-roles/config.ts`. Each rule is `{ messageId, emoji, roleId }` — placeholder IDs must be replaced with real Discord IDs before the feature does anything. `toEmojiKey` resolves a custom emoji by ID or falls back to its unicode name.
 
 The handler factory `createReactionRoleHandler(deps)` accepts `findRule` and `withMemberRoleManager` overrides; tests use these instead of touching the Discord API.
+
+## v0.2.0 additions
+
+### `src/lib/logger/` — structured logger
+
+Pino-based root logger (`createRootLogger`) with a bounded `LogRingBuffer` and an in-process subscriber seam (`subscribe(fn)` returns an unsubscribe). Subscribers receive frozen `NormalizedLogEvent` snapshots; subscriber exceptions are swallowed so a buggy listener cannot crash the bot. Pino options redact `*.discordToken`, `*.token`, `*.password`. The composition root creates one root logger and hands out children via `childFor(logger, feature, event?)`. No `console.*` in `src/` normal path; one explicit `console.error` fallback for pre-logger-init bootstrap.
+
+### `src/consent/` — Consent Registry
+
+`ConsentService` (`createConsentService`) is the SoT for authorization. `authorize(subjectId, scope)` is fail-closed: any storage or API failure returns `{ ok: false, reason: "service-unavailable" }`. Reaction handler (`createReactionHandler`) bridges `MessageReactionAdd` / `MessageReactionRemove` to grant/revoke. Reconciler (`reconcileConsentsOnReady`) fetches the configured consent message on `ClientReady` and rewrites the JSON repository to match Discord's current state. Repository is a versioned JSON file with atomic temp+rename writes. `docs/privacy.md` enumerates the scope catalogue and consumer classification.
+
+### `src/runtime/` — RuntimeStatusStore
+
+Read model that backs the TUI dashboard. Frozen snapshot shape: `{ app, discord, features, consent, timekeeper, runtime, events }`. `subscribe(listener)` returns an unsubscribe; the listener receives a fresh frozen snapshot on every change. The `events` slice is a bounded FIFO ring buffer (`EVENTS_CAP_MIN=10..EVENTS_CAP_MAX=10_000`, default 200). The composition root writes into the store from feature modules and Discord lifecycle events; the TUI is a pure consumer.
+
+### `src/tui/` — runtime dashboard
+
+Ink 7 + React 19.2 dashboard with 7 panels (header, discord, features, consent, timekeeper, runtime, events). Render gate (`mountTui`) honors `BOT_TUI=auto|on|off`; `auto` follows TTY detection (`stdout.isTTY && stdin.isTTY && TERM !== "dumb" && !CI`). When TUI is off, the structured logger continues to write JSON Lines via pino — no Ink render is invoked. Ctrl+C is forwarded to `useApp().exit()`; the actual SIGINT/SIGTERM teardown stays in `src/features/shutdown/handler.ts`. No interactive keybinds (monitoring only). `useSyncExternalStore` for store changes; 1 Hz `useReducer` tick for uptime and RSS.
+
+### `src/features/privacy/` — privacy surface
+
+Typed mirror of `docs/privacy.md` (§ 3): `consumer-inventory.ts` enumerates 24 entries (5 consent-gated, 5 operational, 14 ephemeral). `clear.ts` aggregates per-consumer delete adapters; partial failure is reported as failure (never silent success). `/privacy status` and `/privacy delete` are subcommands of `/privacy` and declared with `default_member_permissions = "everyone"`. State-snapshot revoke wires `applyRetentionPlan` so any snapshot whose source files contained the revoked user id is expired.
