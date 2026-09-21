@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   createReadStream,
   existsSync,
+  readSync as fsReadSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
-  type Stats,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -203,21 +206,45 @@ export function loadEncryptedSnapshot(snapshotPath: string): EncryptedSnapshot {
       .split(/[\\/]/)
       .pop()
       ?.replace(/\.snap\.enc$/, "") ?? "";
-  let stat: Stats;
+
+  // Resolve the file with a single openSync call so the kernel resolves
+  // the path once and we either get the fd or an ENOENT we handle
+  // immediately. Subsequent reads use the fd (not the path) so a
+  // concurrent rename / replace between stat and read does not surface
+  // here as a TOCTOU mismatch.
+  let fd: number;
   try {
-    stat = statSync(snapshotPath);
+    fd = openSync(snapshotPath, "r");
   } catch (error) {
     throw new Error(
-      `loadEncryptedSnapshot: cannot stat ${snapshotPath}: ${
+      `loadEncryptedSnapshot: cannot open ${snapshotPath}: ${
         error instanceof Error ? error.message : String(error)
       }`,
       { cause: error },
     );
   }
-  if (!stat.isFile()) {
-    throw new Error(`loadEncryptedSnapshot: ${snapshotPath} is not a regular file`);
+
+  let bytes: Buffer;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) {
+      throw new Error(`${snapshotPath} is not a regular file`);
+    }
+    const length = stat.size;
+    const buffer = Buffer.alloc(length);
+    let offset = 0;
+    while (offset < length) {
+      const read = fsReadSync(fd, buffer, offset, length - offset, null);
+      if (read <= 0) {
+        break;
+      }
+      offset += read;
+    }
+    bytes = offset === length ? buffer : buffer.subarray(0, offset);
+  } finally {
+    closeSync(fd);
   }
-  const bytes = readFileSync(snapshotPath);
+
   if (bytes.length < 12 + 16 + 1) {
     throw new Error(
       `loadEncryptedSnapshot: ${snapshotPath} is too small (${bytes.length} bytes) to be an encrypted container`,
