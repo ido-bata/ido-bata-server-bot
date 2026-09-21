@@ -57,7 +57,7 @@ export type BotConfig = {
   logRingSize: number;
   /** TUI render mode. `auto` defers to TTY detection. */
   tuiMode: "auto" | "on" | "off";
-  /** Consent registry config. `enabled` is false when `CONSENT_MESSAGE_ID` is empty. */
+  /** Consent registry config. `enabled` is true when a consent channel + guild are configured. */
   consent: ConsentConfig;
   /** Voice connection setup timeout, threaded into @discordjs/voice. */
   voiceConnectionTimeoutMs: number;
