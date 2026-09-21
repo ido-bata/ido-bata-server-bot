@@ -19,6 +19,7 @@ import {
 import { registerGitHubWebhook } from "./features/github-webhook/index.js";
 import { registerHealthMetrics } from "./features/health-metrics/index.js";
 import { registerIcalCalendar } from "./features/ical-calendar/index.js";
+import { childFor, createRootLogger, getRootLogger } from "./lib/logger/index.js";
 import { memberAuditConfig } from "./features/member-audit/config.js";
 import { registerMemberAuditHandlers } from "./features/member-audit/handler.js";
 import { messageAuditConfig } from "./features/message-audit/config.js";
@@ -50,6 +51,14 @@ import { registerWelcomeHandlers } from "./features/welcome/handler.js";
 
 async function main(): Promise<void> {
   const config = readConfig(process.env);
+  // Initialize the structured logger as the very first side effect so that
+  // every subsequent feature registration (and any error thrown during it)
+  // emits structured records into the ring buffer / subscribers instead of
+  // raw console output. Must happen AFTER `readConfig` so LOG_LEVEL and
+  // LOG_RING_SIZE are honored, but BEFORE any feature import side effect.
+  createRootLogger(process.env);
+  const rootLogger = childFor(getRootLogger(), "composition-root");
+
   const client = createDiscordClient({
     enableMessageContentIntent: config.enableMessageContentIntent,
     enableGuildMembersIntent: config.enableGuildMembersIntent,
@@ -59,7 +68,7 @@ async function main(): Promise<void> {
   const roleSlashRegistry = createRoleSlashCommandRegistry();
 
   client.once(Events.ClientReady, (readyClient) => {
-    console.log(`Logged in as ${readyClient.user.tag}`);
+    rootLogger.info({ tag: readyClient.user.tag }, "discord client ready");
 
     void deploySlashCommands({
       registry: slashRegistry,
@@ -67,13 +76,13 @@ async function main(): Promise<void> {
       clientId: config.discordClientId,
       guildId: config.discordGuildId,
     }).catch((error: unknown) => {
-      console.error("Failed to deploy slash commands on ready", error);
+      rootLogger.error({ err: error }, "failed to deploy slash commands on ready");
     });
     void deployPollCommands(readyClient, {
       clientId: config.discordClientId,
       guildId: config.discordGuildId,
     }).catch((error: unknown) => {
-      console.error("Failed to deploy poll slash commands on ready", error);
+      rootLogger.error({ err: error }, "failed to deploy poll slash commands on ready");
     });
     void deployRoleSlashCommands({
       registry: roleSlashRegistry,
@@ -81,7 +90,7 @@ async function main(): Promise<void> {
       clientId: config.discordClientId,
       guildId: config.discordGuildId,
     }).catch((error: unknown) => {
-      console.error("Failed to deploy role slash commands on ready", error);
+      rootLogger.error({ err: error }, "failed to deploy role slash commands on ready");
     });
 
     // If an audit channel is configured, attempt to log a startup notice so
@@ -98,7 +107,7 @@ async function main(): Promise<void> {
           }
         })
         .catch((error: unknown) => {
-          console.warn("Failed to post role-slash startup notice", error);
+          rootLogger.warn({ err: error }, "failed to post role-slash startup notice");
         });
     }
   });
@@ -111,11 +120,15 @@ async function main(): Promise<void> {
   const configStore = registerConfigHotReload({
     filePath: join(process.cwd(), "data", "config.json"),
   });
-  registerShutdownHandler(client, {
-    onAfterTeardown: () => {
-      configStore.stop();
+  registerShutdownHandler(
+    client,
+    {
+      onAfterTeardown: () => {
+        configStore.stop();
+      },
     },
-  });
+    (message: string) => rootLogger.info(message),
+  );
   registerReactionRoleHandlers(client);
   registerMemberAuditHandlers(client, {
     config: memberAuditConfig,
@@ -159,7 +172,7 @@ async function main(): Promise<void> {
       clientId: config.discordClientId,
       guildId: config.discordGuildId,
     }).catch((error: unknown) => {
-      console.error("Failed to deploy birthday slash commands on ready", error);
+      rootLogger.error({ err: error }, "failed to deploy birthday slash commands on ready");
     });
   });
 
@@ -176,8 +189,8 @@ async function main(): Promise<void> {
   const spotifyConfig = readSpotifyConfig(process.env);
   if (isSpotifyConfigured(spotifyConfig)) {
     if (!config.enablePresenceIntent) {
-      console.warn(
-        "Spotify now-playing is configured but DISCORD_ENABLE_PRESENCE=true is required to receive PresenceUpdate events.",
+      rootLogger.warn(
+        "spotify now-playing is configured but DISCORD_ENABLE_PRESENCE=true is required to receive PresenceUpdate events.",
       );
     } else {
       registerSpotifyNowPlaying(client, spotifyConfig);
@@ -229,9 +242,9 @@ async function main(): Promise<void> {
   const icalService = registerIcalCalendar(client, {
     onReady: (service) => {
       service.startScheduler();
-      void service
-        .fetchAndCacheAll()
-        .catch((error: unknown) => console.error("[ical-calendar] initial fetch failed", error));
+      void service.fetchAndCacheAll().catch((error: unknown) => {
+        rootLogger.error({ err: error }, "ical-calendar initial fetch failed");
+      });
     },
   });
 
@@ -243,10 +256,12 @@ async function main(): Promise<void> {
     try {
       await registerGitHubWebhook(client);
     } catch (error) {
-      console.error("Failed to start GitHub webhook server", error);
+      rootLogger.error({ err: error }, "failed to start GitHub webhook server");
     }
   } else {
-    console.log("GitHub webhook server is disabled (set GITHUB_WEBHOOK_SECRET to enable).");
+    rootLogger.info(
+      "GitHub webhook server is disabled (set GITHUB_WEBHOOK_SECRET to enable).",
+    );
   }
 
   // Multi-guild bootstrap is opt-in: set MULTI_GUILD_ENABLE=true to migrate
@@ -258,10 +273,13 @@ async function main(): Promise<void> {
     const { store } = bootstrapMultiGuild();
     const migration = await migrateLegacyEnvToGuildConfigs(process.env, store);
     for (const warning of migration.warnings) {
-      console.warn(`[multi-guild] ${warning}`);
+      rootLogger.warn({ warning }, "multi-guild migration warning");
     }
     if (migration.added.length > 0) {
-      console.log(`[multi-guild] Migrated guild configs: ${migration.added.join(", ")}`);
+      rootLogger.info(
+        { added: migration.added },
+        "multi-guild migration: added guild configs",
+      );
     }
   }
 
@@ -269,6 +287,9 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error("Failed to start Discord bot", error);
+  childFor(getRootLogger(), "composition-root").error(
+    { err: error },
+    "failed to start Discord bot",
+  );
   process.exitCode = 1;
 });
