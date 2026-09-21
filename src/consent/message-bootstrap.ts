@@ -104,6 +104,7 @@ export async function ensureConsentMessage(deps: BootstrapDeps): Promise<Consent
       });
       throw new Error(
         `Configured consent message ${config.messageId} could not be fetched; refusing to create a replacement`,
+        { cause: error },
       );
     }
   } else {
