@@ -1,5 +1,7 @@
 import type { Client } from "discord.js";
 import { Events } from "discord.js";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import type { ConsentService } from "../../consent/service.js";
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import type { SnapshotConfig } from "./config.js";
@@ -72,21 +74,27 @@ export function registerStateSnapshotScheduler(
       }
       // v0.2.0 invariant: every snapshot whose source files contained the
       // revoked subject is purged on `clear`. We cannot inspect encrypted
-      // bytes, so the keep-nothing policy is the safe choice — better to
-      // lose a few snapshots than to retain a stale copy of the user's
-      // data.
-      try {
-        purgeAllSnapshots({
-          snapshotDir: runtime.config.snapshotDir,
-          encryptionKey: runtime.encryptionKey,
-          clock: runtime.clock,
-        });
-      } catch (error) {
+      // bytes, so the keep-nothing policy is the safe choice — but only
+      // AFTER a fresh snapshot captures the post-clear state. Without the
+      // fresh snapshot, a single user could erase the only deployment
+      // backup. The `takeFreshSnapshot` hook is the take-snapshot-half of
+      // the contract: existing snapshots before `now()` are dropped, the
+      // freshly-created one is preserved.
+      void purgeAllSnapshots({
+        snapshotDir: runtime.config.snapshotDir,
+        encryptionKey: runtime.encryptionKey,
+        clock: runtime.clock,
+        takeFreshSnapshot: async () => {
+          const created = await runSnapshotOnce(runtime);
+          return created.path;
+        },
+        subjectId: event.subjectId,
+      }).catch((error: unknown) => {
         logger.error(
           { err: error, subjectId: event.subjectId },
           "retention purge after clear failed",
         );
-      }
+      });
     });
   }
 
@@ -142,7 +150,7 @@ export function registerStateSnapshotScheduler(
   };
 }
 
-async function runSnapshotOnce(runtime: SnapshotRuntime): Promise<void> {
+export async function runSnapshotOnce(runtime: SnapshotRuntime): Promise<SnapshotMetadata> {
   ensureSnapshotDir(runtime.config.snapshotDir);
   const created = await createSnapshot(
     {
@@ -161,6 +169,7 @@ async function runSnapshotOnce(runtime: SnapshotRuntime): Promise<void> {
   await applyRetentionPlan(plan);
 
   await uploadSnapshot(runtime, created);
+  return created;
 }
 
 async function uploadSnapshot(runtime: SnapshotRuntime, created: SnapshotMetadata): Promise<void> {
@@ -214,15 +223,26 @@ function toRetentionPolicy(config: SnapshotConfig): RetentionPolicy {
 }
 
 /**
- * Purges every snapshot in the directory by invoking `applyRetentionPlan`
- * with a keep-nothing policy. Used by the v0.2.0 `ConsentService.clear`
- * listener because we cannot inspect encrypted bytes to know which
- * snapshots contain the revoked subject.
+ * Purges every snapshot in the directory while preserving a single
+ * "fresh" snapshot taken immediately beforehand. Used by the v0.2.0
+ * `ConsentService.clear` listener and the privacy-clear adapter because
+ * we cannot inspect encrypted bytes to know which snapshots contain
+ * the revoked subject.
  *
- * `applyRetentionPlan` is signature-async; the body does no I/O awaits
- * but we await the returned promise to honour the contract. Any leftover
- * files (e.g. permission denied) are surfaced back through the thrown
- * `Error`.
+ * Two changes vs. the v0.2.0-rc behaviour:
+ *
+ * 1. **Bypass decryption for file enumeration.** `listSnapshots` filters
+ *    out files whose metadata cannot be decrypted, leaving stale
+ *    encrypted bytes on disk while reporting success. We enumerate
+ *    `*.snap.enc` directly via `readdirSync` so the purge actually
+ *    reaps every file (CWE-459 sensitive-data-exposure).
+ *
+ * 2. **Take a fresh snapshot before the wipe.** Without this hook
+ *    a single user's `/privacy delete` could erase the only backup of
+ *    every other user's state. The caller MUST provide
+ *    `takeFreshSnapshot`; if absent, this function declines to act
+ *    and logs a warning, so a developer who forgets the seam sees
+ *    noisy telemetry instead of silent data loss.
  *
  * Exported so the privacy-clear test can assert the wire-up without
  * running the full scheduler loop.
@@ -231,26 +251,86 @@ export async function purgeAllSnapshots(options: {
   snapshotDir: string;
   encryptionKey: string | undefined;
   clock?: () => Date;
+  /**
+   * Capture the post-clear state into a fresh snapshot BEFORE the
+   * destructive pass. Returns the absolute path of the freshly-written
+   * snapshot, which is preserved by the purge. Returning `null` or
+   * throwing aborts the destructive path.
+   */
+  takeFreshSnapshot?: () => Promise<string | null>;
+  subjectId?: string;
 }): Promise<void> {
-  const snapshots = listSnapshots(options.snapshotDir, options.encryptionKey);
-  if (snapshots.length === 0) {
+  if (!existsSync(options.snapshotDir)) {
+    return;
+  }
+  const paths = readdirSync(options.snapshotDir)
+    .filter((name) => name.endsWith(".snap.enc"))
+    .map((name) => join(options.snapshotDir, name));
+  if (paths.length === 0) {
+    return;
+  }
+  if (!options.takeFreshSnapshot) {
+    logger.warn(
+      {
+        snapshotDir: options.snapshotDir,
+        count: paths.length,
+        subjectId: options.subjectId,
+      },
+      "purgeAllSnapshots declined: no takeFreshSnapshot hook wired; retaining existing snapshots",
+    );
+    return;
+  }
+  let freshPath: string | null = null;
+  try {
+    freshPath = await options.takeFreshSnapshot();
+  } catch (error) {
+    logger.error(
+      { err: error, subjectId: options.subjectId },
+      "purgeAllSnapshots: fresh snapshot failed; declining to purge",
+    );
     return;
   }
   const clock = options.clock ?? (() => new Date());
-  // planRetention only needs createdAt + path; listSnapshots already decoded
-  // the encrypted metadata, so the real timestamps are available.
-  const plan = planRetention(
-    snapshots,
-    {
-      dailyRetention: 0,
-      monthlyRetention: 0,
-      weeklyRetention: 0,
-    },
-    clock(),
-  );
+  const keepPaths = new Set<string>();
+  if (freshPath) {
+    keepPaths.add(freshPath);
+  }
+  const nowIso = clock().toISOString();
+  // Synthesize a retention plan that keeps ONLY the freshly written
+  // snapshot (when it exists) and deletes every other *.snap.enc file
+  // on disk, even ones listSnapshots could not decrypt. Using the plan
+  // pipeline reuses applyRetentionPlan's per-file error swallowing.
+  const keep = freshPath
+    ? [
+        {
+          createdAt: nowIso,
+          files: [],
+          id: `fresh-${Date.now()}`,
+          path: freshPath,
+        },
+      ]
+    : [];
+  const del = paths
+    .filter((path) => !keepPaths.has(path))
+    .map((path, index) => ({
+      createdAt: nowIso,
+      files: [],
+      id: `stale-${index}`,
+      path,
+    }));
+  const plan = { keep, delete: del };
   await applyRetentionPlan(plan);
-  const remaining = listSnapshots(options.snapshotDir, options.encryptionKey);
-  if (remaining.length > 0) {
-    throw new Error(`failed to purge ${remaining.length} snapshot file(s)`);
+  // Re-stat the directory: if anything OTHER than the fresh snapshot we
+  // intend to keep is still on disk, that's a leaked file the retention
+  // pass couldn't unlink (permission denied, EISDIR, etc.) and must
+  // surface so the operator can intervene instead of silently leaking.
+  if (freshPath) {
+    const remaining = readdirSync(options.snapshotDir).filter((name) =>
+      name.endsWith(".snap.enc"),
+    );
+    const leftover = remaining.filter((name) => join(options.snapshotDir, name) !== freshPath);
+    if (leftover.length > 0) {
+      throw new Error(`failed to purge ${leftover.length} snapshot file(s)`);
+    }
   }
 }

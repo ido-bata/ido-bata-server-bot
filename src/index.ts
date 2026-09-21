@@ -57,6 +57,8 @@ import { readSnapshotConfig } from "./features/state-snapshot/config.js";
 import {
   createSnapshotRuntime,
   registerStateSnapshotScheduler,
+  runSnapshotOnce,
+  type SnapshotRuntime,
 } from "./features/state-snapshot/service.js";
 import { registerTimekeeper } from "./features/timekeeper/service.js";
 import { registerTimekeeperCommandHandlers } from "./features/timekeeper-commands/handler.js";
@@ -318,7 +320,13 @@ async function main(): Promise<void> {
         if (tuiInstance) {
           // Drain pending renders before the process exits so the
           // operator sees the final state instead of a truncated frame.
+          // unmount() must be called first — otherwise waitUntilExit
+          // never resolves (the Ink app is the only thing that can
+          // close itself) and the container waits for the stop-timeout
+          // SIGKILL instead of a clean exit.
+          tuiInstance.unmount();
           await tuiInstance.waitUntilExit().catch(() => undefined);
+          statusStore.clearListeners();
           return;
         }
         statusStore.clearListeners();
@@ -337,9 +345,34 @@ async function main(): Promise<void> {
       await channel.send(content);
     },
   });
+  // State snapshots are opt-in. They run when the bot is ready if
+  // STATE_SNAPSHOT_ENCRYPTION_KEY is set; otherwise the scheduler no-ops.
+  // Created BEFORE `registerSlashCommandHandlers` because the privacy
+  // command deps forward `runSnapshotOnce` for the `/privacy delete`
+  // post-clear snapshot capture (see VJoA fix).
+  let snapshotRuntime: SnapshotRuntime | null = null;
+  if (process.env.STATE_SNAPSHOT_ENCRYPTION_KEY) {
+    snapshotRuntime = createSnapshotRuntime(readSnapshotConfig(), {
+      encryptionKey: process.env.STATE_SNAPSHOT_ENCRYPTION_KEY,
+      runOnReady: process.env.STATE_SNAPSHOT_RUN_ON_READY === "true",
+    });
+    registerStateSnapshotScheduler(client, snapshotRuntime, {
+      consentService: privacyConsentService ?? undefined,
+    });
+  }
   registerSlashCommandHandlers(client, {
     commandDeps: {
-      privacy: privacyConsentService ? { consentService: privacyConsentService } : undefined,
+      privacy: privacyConsentService || snapshotRuntime
+        ? {
+            consentService: privacyConsentService ?? undefined,
+            takeFreshSnapshot: snapshotRuntime
+              ? async () => {
+                  const created = await runSnapshotOnce(snapshotRuntime);
+                  return created.path;
+                }
+              : undefined,
+          }
+        : undefined,
     },
   });
   statusStore.set({
@@ -404,18 +437,6 @@ async function main(): Promise<void> {
       rootLogger.error({ err: error }, "failed to deploy birthday slash commands on ready");
     });
   });
-
-  // State snapshots are opt-in. They run when the bot is ready if
-  // STATE_SNAPSHOT_ENCRYPTION_KEY is set; otherwise the scheduler no-ops.
-  if (process.env.STATE_SNAPSHOT_ENCRYPTION_KEY) {
-    const snapshotRuntime = createSnapshotRuntime(readSnapshotConfig(), {
-      encryptionKey: process.env.STATE_SNAPSHOT_ENCRYPTION_KEY,
-      runOnReady: process.env.STATE_SNAPSHOT_RUN_ON_READY === "true",
-    });
-    registerStateSnapshotScheduler(client, snapshotRuntime, {
-      consentService: privacyConsentService ?? undefined,
-    });
-  }
 
   const spotifyConfig = readSpotifyConfig(process.env);
   if (isSpotifyConfigured(spotifyConfig)) {

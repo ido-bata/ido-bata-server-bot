@@ -1,5 +1,6 @@
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import {
@@ -26,6 +27,7 @@ export type FileSystemLike = {
   readFile(path: string, encoding: "utf8"): Promise<string>;
   writeFile(path: string, data: string): Promise<void>;
   readdir(path: string): Promise<string[]>;
+  rename(from: string, to: string): Promise<void>;
 };
 
 const defaultFs: FileSystemLike = {
@@ -35,6 +37,9 @@ const defaultFs: FileSystemLike = {
   },
   readFile,
   writeFile,
+  async rename(from, to) {
+    await rename(from, to);
+  },
   async readdir(path) {
     const fs = await import("node:fs/promises");
     return fs.readdir(path);
@@ -54,12 +59,39 @@ export function createFileConfigStore(
 
   async function writeGuildFile(guildId: string, contents: string): Promise<void> {
     const path = buildGuildConfigPath(dataRoot, guildId);
+    // Write to a sibling temp file, then `rename(2)` over the destination.
+    // rename is atomic on POSIX, so concurrent readers always see either
+    // the previous full file or the new full file — never a half-written
+    // one. Temp lives next to the target so the rename stays within the
+    // same filesystem.
     await fs.mkdir(dirname(path), { recursive: true });
-    await fs.writeFile(path, contents);
+    const tempPath = `${path}.tmp-${randomSuffix()}`;
+    try {
+      await fs.writeFile(tempPath, contents);
+      await fs.rename(tempPath, path);
+    } catch (error) {
+      // Best-effort cleanup so a failed write does not leave orphan .tmp
+      // files lying around. Errors here are swallowed — the original
+      // failure is what callers need to see.
+      try {
+        const fsPromises = await import("node:fs/promises");
+        await fsPromises.unlink(tempPath);
+      } catch {
+        // ignore — temp file may not exist
+      }
+      throw error;
+    }
   }
 
   function guildConfigDir(): string {
     return `${dataRoot}/guilds`;
+  }
+
+  function randomSuffix(): string {
+    // 8 random bytes hex-encoded = 16 chars. Two concurrent writers are
+    // overwhelmingly unlikely to collide; collisions just cause one of
+    // them to fail the rename and surface the error to the caller.
+    return randomBytes(8).toString("hex");
   }
 
   return {

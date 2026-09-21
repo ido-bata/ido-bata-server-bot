@@ -33,7 +33,8 @@ type HandlerDependencies = {
   client?: Client;
   /**
    * Per-command runtime deps. The privacy command consumes
-   * `PrivacyCommandDeps.consentService`; other commands currently ignore
+   * `PrivacyCommandDeps.consentService` and
+   * `PrivacyCommandDeps.takeFreshSnapshot`; other commands currently ignore
    * the object. The dispatcher forwards the whole object so the
    * contract is uniform.
    */

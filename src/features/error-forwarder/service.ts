@@ -183,8 +183,18 @@ export function registerErrorForwarder(
   // best-effort embed / log report is awaited first to give moderators a
   // chance to see the failure before the process terminates.
   process.on("uncaughtException", (error) => {
-    reporter
-      .report(error, "uncaughtException")
+    // Bound the Discord send so a hung network connection cannot keep the
+    // process alive past the supervisor's restart interval. 5 s is well
+    // under typical container restart timeouts (10-30 s) but long enough
+    // for a healthy API call to land.
+    const reportWithDeadline = Promise.race([
+      reporter.report(error, "uncaughtException"),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(() => resolve(), 5_000);
+        timer.unref?.();
+      }),
+    ]);
+    reportWithDeadline
       .catch(() => {
         // Reporting itself failed — swallow it. The original crash is what
         // matters, and exiting below still surfaces that.

@@ -233,6 +233,14 @@ export async function cancelActiveSession(
   activeSession = null;
   activeTimeline = [];
   activeClock = null;
+  // Mirror the normal completion path's reset so a cancelled session does
+  // not leak pause/skip state into the next one. Without this the next
+  // session starts already paused (suppressing every phase-ending-soon
+  // announcement) and a pending skip resolver hangs forever.
+  activePaused = false;
+  activeSkipResolver = null;
+  skipFlag = false;
+  pendingScheduledStartAt = null;
   return true;
 }
 

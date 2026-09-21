@@ -26,7 +26,10 @@ import { deleteUserData as deleteSnapshotData } from "./consumers/state-snapshot
 import { deleteUserData as deleteTimekeeperData } from "./consumers/timekeeper.js";
 import type { DeleteResult } from "./types.js";
 
-export type ConsumerDeleteAdapter = (userId: string) => Promise<DeleteResult>;
+export type ConsumerDeleteAdapter = (
+  userId: string,
+  options?: Record<string, unknown>,
+) => Promise<DeleteResult>;
 
 export type ClearConsumerResult = {
   consumer: string;
@@ -66,6 +69,16 @@ export type ClearUserDataOptions = {
    * consent step is skipped and the consumer results stand on their own.
    */
   consentService?: ConsentService;
+  /**
+   * Capture the post-clear state into a fresh snapshot before the
+   * snapshot subsystem reaps every pre-existing encrypted file. Required
+   * for the `state-snapshot` consumer to be safe — without it the
+   * destructive purge is skipped and the consumer returns ok:false with
+   * a wiring error, so the slash command surfaces the misconfiguration
+   * instead of silently leaking data. Wired in `src/index.ts` to the
+   * snapshot runtime's `runSnapshotOnce(runtime)`.
+   */
+  takeFreshSnapshot?: () => Promise<string | null>;
 };
 
 export async function clearUserData(
@@ -77,7 +90,9 @@ export async function clearUserData(
   for (const { consumer, adapter } of CONSUMER_ADAPTERS) {
     let outcome: DeleteResult;
     try {
-      outcome = await adapter(subjectId);
+      outcome = await adapter(subjectId, consumer === "state-snapshot"
+        ? { takeFreshSnapshot: options.takeFreshSnapshot }
+        : {});
     } catch (error) {
       outcome = { ok: false, error: stringifyError(error) };
     }

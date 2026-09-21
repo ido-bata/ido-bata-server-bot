@@ -34,6 +34,14 @@ const SCOPE_LABELS: Record<ConsentScope, string> = {
 
 export type PrivacyCommandDeps = {
   consentService?: ConsentService;
+  /**
+   * Capture the post-clear state into a fresh snapshot before the
+   * encrypted snapshot pass reaps every pre-existing file. Required
+   * because the snapshot privacy adapter refuses to wipe snapshots
+   * unless it has somewhere to copy the surviving state. Wired in
+   * `src/index.ts` when `STATE_SNAPSHOT_ENCRYPTION_KEY` is set.
+   */
+  takeFreshSnapshot?: () => Promise<string | null>;
   // Lets tests substitute a fixed clock / deterministic id source.
   now?: () => Date;
   generateRequestId?: () => string;
@@ -188,9 +196,12 @@ async function runClear(
   // `data/consent.json` and emits the `clear` event the snapshot
   // scheduler listens for. Without this the consumer adapters would
   // remove the cached state but the grant records would remain, leaving
-  // the user with a phantom authorization.
+  // the user with a phantom authorization. The `takeFreshSnapshot`
+  // hook is forwarded so the snapshot consumer can capture the
+  // post-clear state before its destructive pass wipes the rest.
   const report = await clearUserData(interaction.user.id, {
     consentService: deps.consentService,
+    takeFreshSnapshot: deps.takeFreshSnapshot,
   });
   if (report.ok) {
     await interaction.update({

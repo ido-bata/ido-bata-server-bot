@@ -71,5 +71,23 @@ export function createMemoryFs(initial: Record<string, string> = {}): MemoryFs {
       }
       return [...seen];
     },
+    async rename(from, to) {
+      // Atomic move within the in-memory filesystem. Mirrors the rename(2)
+      // contract — a destination that exists is replaced, the source is
+      // removed. Used by the atomic-write path in `writeGuildFile`.
+      const value = files.get(from);
+      if (value === undefined) {
+        const err = new Error(`ENOENT: ${from}`) as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      }
+      // Persist the destination's parent so readdir continues to work.
+      const dir = parent(to);
+      if (dir.length > 0) {
+        files.set(`${dir}/.keep`, "");
+      }
+      files.set(to, value);
+      files.delete(from);
+    },
   };
 }

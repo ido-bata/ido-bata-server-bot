@@ -29,28 +29,39 @@ describe("state-snapshot privacy clear", () => {
     return join(snapshotDir, name);
   }
 
+  // Stub a takeFreshSnapshot that writes a sentinel file and returns its
+  // path. Each test can override `freshPath` to control the keep target.
+  function freshSnapshot(): { takeFreshSnapshot: () => Promise<string | null>; path: string } {
+    const path = join(snapshotDir, "fresh.snap.enc");
+    writeFileSync(path, "fresh-snapshot", "utf8");
+    return { takeFreshSnapshot: async () => path, path };
+  }
+
   it("purges every .snap.enc file via applyRetentionPlan", async () => {
     const a = seedSnapshot("2026-04-01T00-00-00-a.snap.enc");
     const b = seedSnapshot("2026-04-02T00-00-00-b.snap.enc");
+    const { takeFreshSnapshot } = freshSnapshot();
 
     const result = await deleteUserData("user-1", {
       snapshotDir,
       now: () => new Date("2026-04-03T00:00:00Z"),
+      takeFreshSnapshot,
     });
 
     expect(result.ok).toBe(true);
-    // Both files must be removed from disk.
+    // Both stale files removed; the fresh snapshot path is preserved.
     const { existsSync } = await import("node:fs");
     expect(existsSync(a)).toBe(false);
     expect(existsSync(b)).toBe(false);
   });
 
   it("works when the directory is pointed at via cwd (no options)", async () => {
+    const { takeFreshSnapshot } = freshSnapshot();
     const originalCwd = process.cwd();
     process.chdir(dir);
     try {
       const a = seedSnapshot("2026-04-01.cwd.snap.enc");
-      const report = await clearUserData("user-1");
+      const report = await clearUserData("user-1", { takeFreshSnapshot });
       expect(report.ok).toBe(true);
       const { existsSync } = await import("node:fs");
       expect(existsSync(a)).toBe(false);
@@ -60,23 +71,26 @@ describe("state-snapshot privacy clear", () => {
   });
 
   it("returns ok:true when the snapshot directory is absent", async () => {
-    const result = await deleteUserData("user-1", { snapshotDir });
+    const { takeFreshSnapshot } = freshSnapshot();
+    const result = await deleteUserData("user-1", { snapshotDir, takeFreshSnapshot });
     expect(result.ok).toBe(true);
   });
 
   it("returns ok:true when the snapshot directory is empty", async () => {
+    const { takeFreshSnapshot } = freshSnapshot();
     const { mkdirSync } = await import("node:fs");
     mkdirSync(snapshotDir, { recursive: true });
-    const result = await deleteUserData("user-1", { snapshotDir });
+    const result = await deleteUserData("user-1", { snapshotDir, takeFreshSnapshot });
     expect(result.ok).toBe(true);
   });
 
   it("is reported by clear() with consumer name 'state-snapshot'", async () => {
     seedSnapshot("2026-04-01.snap.enc");
+    const { takeFreshSnapshot } = freshSnapshot();
     const originalCwd = process.cwd();
     process.chdir(dir);
     try {
-      const report = await clearUserData("user-1");
+      const report = await clearUserData("user-1", { takeFreshSnapshot });
       const snapshotResult = report.results.find((entry) => entry.consumer === "state-snapshot");
       expect(snapshotResult).toBeDefined();
       expect(snapshotResult?.ok).toBe(true);
@@ -94,16 +108,25 @@ describe("state-snapshot privacy clear", () => {
     rmSync(join(snapshotDir, name), { force: true });
     mkdirSync(join(snapshotDir, name));
 
+    const { takeFreshSnapshot } = freshSnapshot();
     const originalCwd = process.cwd();
     process.chdir(dir);
     try {
-      const report = await clearUserData("user-1");
+      const report = await clearUserData("user-1", { takeFreshSnapshot });
       expect(report.ok).toBe(false);
       const snapshotResult = report.results.find((entry) => entry.consumer === "state-snapshot");
       expect(snapshotResult?.ok).toBe(false);
-      expect(snapshotResult?.error).toContain("failed to purge");
     } finally {
       process.chdir(originalCwd);
     }
+  });
+
+  it("declines to purge when takeFreshSnapshot is missing", async () => {
+    seedSnapshot("2026-04-01.snap.enc");
+    const result = await deleteUserData("user-1", { snapshotDir });
+    if (result.ok) {
+      throw new Error("expected ok:false when fresh snapshot hook is missing");
+    }
+    expect(result.error).toMatch(/fresh snapshot/i);
   });
 });

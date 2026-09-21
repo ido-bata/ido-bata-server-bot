@@ -3,9 +3,17 @@
  *
  * Snapshots are AES-256-GCM bundles that mirror every consent-gated source
  * file. After a user runs `/privacy delete`, every snapshot taken before the
- * call is, by definition, eligible for purging — we cannot inspect encrypted
- * bytes to know whether the user id appears, so we trigger
- * `applyRetentionPlan` with a keep-nothing policy.
+ * call is potentially eligible for purging — we cannot inspect encrypted
+ * bytes to know whether the user id appears.
+ *
+ * v0.2.0-rc bug: the adapter used to take a zero-retention plan and wipe
+ * ALL snapshots. A single user's `/privacy delete` therefore erased the
+ * only backup for every other user. The fix routes the deletion through
+ * `purgeAllSnapshots`, which (a) requires a fresh snapshot to be taken
+ * first via `takeFreshSnapshot`, then (b) keeps only that fresh path and
+ * deletes everything else. Without `takeFreshSnapshot` wired the purge
+ * declines to act, so the operator sees a warning instead of a silent
+ * data loss.
  *
  * The actual snapshot files live under `data/snapshots/`. If the directory
  * does not exist or is empty, this adapter is a no-op success.
@@ -13,11 +21,18 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { applyRetentionPlan, planRetention } from "../../state-snapshot/retention.js";
+import { purgeAllSnapshots } from "../../state-snapshot/service.js";
 import type { DeleteResult } from "../types.js";
 
 export type SnapshotDeleteOptions = {
   snapshotDir?: string;
+  /**
+   * Capture the post-clear state into a fresh snapshot before any purge
+   * runs. Required whenever there are existing *.snap.enc files to drop.
+   * Without it we cannot safely wipe the snapshots, so the adapter
+   * returns ok:false instead of half-purging.
+   */
+  takeFreshSnapshot?: () => Promise<string | null>;
   /**
    * Override `now()` for deterministic tests. Defaults to `() => new Date()`.
    */
@@ -33,60 +48,48 @@ function resolveSnapshotDir(options: SnapshotDeleteOptions): string {
   return join(process.cwd(), DEFAULT_RELATIVE_DIR);
 }
 
-function listSnapshotPaths(snapshotDir: string): string[] {
+/**
+ * Detect whether the configured snapshot directory holds any
+ * `.snap.enc` files that would need a destructive purge. The check
+ * short-circuits when the wiring hook is missing — no snapshots means
+ * nothing to drop, so the missing hook is irrelevant.
+ */
+function hasSnapshots(snapshotDir: string): boolean {
   if (!existsSync(snapshotDir)) {
-    return [];
+    return false;
   }
-  return readdirSync(snapshotDir)
-    .filter((name) => name.endsWith(".snap.enc"))
-    .map((name) => join(snapshotDir, name));
+  return readdirSync(snapshotDir).some((name) => name.endsWith(".snap.enc"));
 }
 
-export function deleteUserData(
-  _userId: string,
+export async function deleteUserData(
+  userId: string,
   options: SnapshotDeleteOptions = {},
 ): Promise<DeleteResult> {
   const snapshotDir = resolveSnapshotDir(options);
-  const paths = listSnapshotPaths(snapshotDir);
 
-  if (paths.length === 0) {
-    return Promise.resolve({ ok: true });
+  if (options.takeFreshSnapshot === undefined && hasSnapshots(snapshotDir)) {
+    // The composition root MUST wire `takeFreshSnapshot` so the destructive
+    // pass has somewhere to copy the post-clear state. Without the fresh
+    // snapshot there is no safe way to drop existing *.snap.enc files — a
+    // misconfigured caller who forgets the hook sees ok:false instead of
+    // silent data retention.
+    return {
+      ok: false,
+      error: "state-snapshot fresh snapshot hook is required for purge",
+    };
   }
 
   try {
-    // We deliberately skip per-snapshot decryption: every snapshot is a
-    // potential carrier of the user's data, so we want to mark all of them
-    // for deletion. Synthetic metadata with `createdAt = now` is sufficient
-    // — planRetention only needs createdAt + path to make a decision, and
-    // the policy below keeps none of them anyway.
-    const now = (options.now ?? (() => new Date()))().toISOString();
-    const metadata = paths.map((path, index) => ({
-      createdAt: now,
-      files: [],
-      id: `privacy-clear-${index}`,
-      path,
-    }));
-    const plan = planRetention(metadata, {
-      dailyRetention: 0,
-      monthlyRetention: 0,
-      weeklyRetention: 0,
+    await purgeAllSnapshots({
+      snapshotDir,
+      encryptionKey: process.env.STATE_SNAPSHOT_ENCRYPTION_KEY,
+      clock: options.now,
+      takeFreshSnapshot: options.takeFreshSnapshot,
+      subjectId: userId,
     });
-    // applyRetentionPlan is signature-async but does no real I/O awaits.
-    // We need to surface any aggregate failure; the underlying function
-    // swallows per-file errors and resolves to void. To honour the
-    // "partial failure = failure" invariant, re-stat the snapshot directory
-    // after the plan runs and report any leftover files.
-    applyRetentionPlan(plan);
-    const remaining = listSnapshotPaths(snapshotDir);
-    if (remaining.length > 0) {
-      return Promise.resolve({
-        ok: false,
-        error: `failed to purge ${remaining.length} snapshot file(s)`,
-      });
-    }
-    return Promise.resolve({ ok: true });
+    return { ok: true };
   } catch (error) {
-    return Promise.resolve({ ok: false, error: stringifyError(error) });
+    return { ok: false, error: stringifyError(error) };
   }
 }
 
