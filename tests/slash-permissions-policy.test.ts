@@ -30,14 +30,19 @@ describe("slash permission policy", () => {
   });
 
   it("maps every level to the expected Discord permission bit", () => {
-    expect(permissionBitFor("everyone")).toBe(0n);
+    // `everyone` has no bit (the field is omitted on deploy so Discord
+    // defaults to no restriction). Issuing `"0"` would mean
+    // "everyone denied" — see PR review VK2V.
+    expect(permissionBitFor("everyone")).toBeNull();
     expect(permissionBitFor("manage_messages")).toBe(PermissionFlagsBits.ManageMessages);
     expect(permissionBitFor("manage_channels")).toBe(PermissionFlagsBits.ManageChannels);
     expect(permissionBitFor("administrator")).toBe(PermissionFlagsBits.Administrator);
   });
 
-  it("serialises default_member_permissions as a decimal string", () => {
-    expect(defaultMemberPermissionsFor("everyone")).toBe("0");
+  it("serialises default_member_permissions as a decimal string (null for `everyone`)", () => {
+    // `everyone` returns null — the field is omitted from the deploy
+    // payload so Discord applies its default ("no restriction").
+    expect(defaultMemberPermissionsFor("everyone")).toBeNull();
     expect(defaultMemberPermissionsFor("administrator")).toBe(
       PermissionFlagsBits.Administrator.toString(),
     );

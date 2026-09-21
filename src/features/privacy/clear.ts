@@ -87,25 +87,13 @@ export async function clearUserData(
 ): Promise<ClearReport> {
   const results: ClearConsumerResult[] = [];
 
-  for (const { consumer, adapter } of CONSUMER_ADAPTERS) {
-    let outcome: DeleteResult;
-    try {
-      outcome = await adapter(subjectId, consumer === "state-snapshot"
-        ? { takeFreshSnapshot: options.takeFreshSnapshot }
-        : {});
-    } catch (error) {
-      outcome = { ok: false, error: stringifyError(error) };
-    }
-    results.push(
-      outcome.ok ? { consumer, ok: true } : { consumer, ok: false, error: outcome.error },
-    );
-  }
-
-  // Consent registry last — if any consumer above failed, the operator
-  // already knows the clear is partial-failure. We still try the consent
-  // step because the user explicitly asked to be forgotten; the partial
-  // failure of a downstream consumer does not justify leaving the grant
-  // records in place.
+  // v0.2.0 P1: clear the consent registry BEFORE the consumer loop runs.
+  // The state-snapshot consumer uses `takeFreshSnapshot` to capture the
+  // post-clear state into a new snapshot; doing so AFTER clearing
+  // `data/consent.json` means the fresh snapshot no longer bakes the
+  // about-to-be-deleted grant records onto disk. A restore from that
+  // snapshot must NOT revive `consent.json` for the user who just asked
+  // to be forgotten. (PR review #5268012984.)
   if (options.consentService) {
     try {
       const clearReport = await options.consentService.clear(subjectId);
@@ -120,6 +108,9 @@ export async function clearUserData(
               error: firstError ?? "consent clear failed",
             },
       );
+      // If the consent step did not fully succeed, we still run every
+      // downstream consumer — partial-failure semantics still apply, and
+      // we want the operator to see the full picture in the report.
     } catch (error) {
       results.push({
         consumer: "consent-registry",
@@ -127,6 +118,21 @@ export async function clearUserData(
         error: stringifyError(error),
       });
     }
+  }
+
+  for (const { consumer, adapter } of CONSUMER_ADAPTERS) {
+    let outcome: DeleteResult;
+    try {
+      outcome = await adapter(
+        subjectId,
+        consumer === "state-snapshot" ? { takeFreshSnapshot: options.takeFreshSnapshot } : {},
+      );
+    } catch (error) {
+      outcome = { ok: false, error: stringifyError(error) };
+    }
+    results.push(
+      outcome.ok ? { consumer, ok: true } : { consumer, ok: false, error: outcome.error },
+    );
   }
 
   const ok = results.every((result) => result.ok);

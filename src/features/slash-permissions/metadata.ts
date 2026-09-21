@@ -4,7 +4,12 @@ import { defaultMemberPermissionsFor, type SlashPermissionLevel } from "./policy
 export type SlashPermissionMetadataEntry = {
   commandName: string;
   level: SlashPermissionLevel;
-  defaultMemberPermissions: string;
+  /**
+   * `null` when the level is `everyone` — Discord omits the field in that
+   * case, so there is no meaningful string to display. Serialise as the
+   * em-dash so the markdown table stays readable.
+   */
+  defaultMemberPermissions: string | null;
   reason: string;
 };
 
@@ -34,9 +39,9 @@ export function renderSlashPermissionMarkdown(
 ): string {
   const header =
     "| command | level | default_member_permissions | reason |\n| --- | --- | --- | --- |";
-  const rows = entries.map(
-    (entry) =>
-      `| \`/${entry.commandName}\` | ${entry.level} | ${entry.defaultMemberPermissions} | ${entry.reason} |`,
-  );
+  const rows = entries.map((entry) => {
+    const dmpCell = entry.defaultMemberPermissions === null ? "—" : entry.defaultMemberPermissions;
+    return `| \`/${entry.commandName}\` | ${entry.level} | ${dmpCell} | ${entry.reason} |`;
+  });
   return [header, ...rows].join("\n");
 }

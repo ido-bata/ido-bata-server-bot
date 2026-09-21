@@ -1,9 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type {
-  Client,
-  RESTPostAPIChatInputApplicationCommandsJSONBody,
-} from "discord.js";
+import type { Client, RESTPostAPIChatInputApplicationCommandsJSONBody } from "discord.js";
 import { Events, Routes } from "discord.js";
 import type { ConsentScope } from "../../consent/scopes.js";
 import type { ConsentService } from "../../consent/service.js";

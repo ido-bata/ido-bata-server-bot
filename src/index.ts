@@ -17,6 +17,7 @@ import type { ConsentService } from "./consent/service.js";
 import { createConsentService } from "./consent/service.js";
 import type { ReactionTarget } from "./consent/types.js";
 import { birthdayRoleConfig } from "./features/birthday-role/config.js";
+import { buildBirthdayPayloads } from "./features/birthday-role/deploy.js";
 import { registerBirthdayRoleHandlers } from "./features/birthday-role/service.js";
 import { registerConfigHotReload } from "./features/config-hot-reload/register.js";
 import { registerErrorForwarder } from "./features/error-forwarder/service.js";
@@ -65,7 +66,6 @@ import {
   deployGuildCommands,
 } from "./features/timekeeper-commands/deploy.js";
 import { registerTimekeeperCommandHandlers } from "./features/timekeeper-commands/handler.js";
-import { buildBirthdayPayloads } from "./features/birthday-role/deploy.js";
 import { registerWelcomeHandlers } from "./features/welcome/handler.js";
 import {
   childFor,
@@ -370,17 +370,18 @@ async function main(): Promise<void> {
   }
   registerSlashCommandHandlers(client, {
     commandDeps: {
-      privacy: privacyConsentService || snapshotRuntime
-        ? {
-            consentService: privacyConsentService ?? undefined,
-            takeFreshSnapshot: snapshotRuntime
-              ? async () => {
-                  const created = await runSnapshotOnce(snapshotRuntime);
-                  return created.path;
-                }
-              : undefined,
-          }
-        : undefined,
+      privacy:
+        privacyConsentService || snapshotRuntime
+          ? {
+              consentService: privacyConsentService ?? undefined,
+              takeFreshSnapshot: snapshotRuntime
+                ? async () => {
+                    const created = await runSnapshotOnce(snapshotRuntime);
+                    return created.path;
+                  }
+                : undefined,
+            }
+          : undefined,
     },
   });
   statusStore.set({

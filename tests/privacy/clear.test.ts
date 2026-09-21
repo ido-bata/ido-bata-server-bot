@@ -259,4 +259,65 @@ describe("clearUserData aggregator", () => {
       process.chdir(originalCwd);
     }
   });
+
+  it("clears the consent registry BEFORE the consumer loop so the post-clear state snapshot does not retain the grant (P1)", async () => {
+    // The state-snapshot adapter takes a fresh snapshot via
+    // `takeFreshSnapshot` while looping through consumers. If the
+    // consent registry is NOT cleared first, that snapshot bakes the
+    // about-to-be-deleted grant onto disk and a restore would revive it.
+    // Verify ordering: consent clear runs first, then state-snapshot
+    // captures the cleared state, then any other consumer runs.
+    const userId = "user-ordering";
+    seedTimekeeper(dir, userId);
+    seedBirthday(dir, userId);
+    seedPoll(dir, userId);
+    seedReminder(dir, userId);
+    // Seed a pre-existing snapshot file so the consumer path actually
+    // reaches `takeFreshSnapshot` — without files the adapter
+    // short-circuits and ordering can't be observed end-to-end.
+    mkdirSync(join(dir, "data", "snapshots"), { recursive: true });
+    writeFileSync(join(dir, "data", "snapshots", "old.snap.enc"), "fake", "utf8");
+
+    const order: string[] = [];
+    const consentService = {
+      // Track when the consent clear happens relative to consumers.
+      // It MUST run before state-snapshot's takeFreshSnapshot to avoid
+      // baking the grant onto disk.
+      clear: vi.fn(async (subjectId: string) => {
+        order.push(`consent:${subjectId}`);
+        return { ok: true, results: [{ ok: true as const, scope: "profile" as const }] };
+      }),
+    };
+    const takeFreshSnapshot = vi.fn(async () => {
+      order.push("snapshot:fresh");
+      // Return a path inside the seeded snapshot dir so the retention
+      // pass treats this file as the one to keep.
+      return join(dir, "data", "snapshots", "fresh.snap.enc");
+    });
+
+    const originalCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      await clearUserData(userId, {
+        consentService: consentService as unknown as Parameters<
+          typeof clearUserData
+        >[1] extends infer T
+          ? T extends { consentService?: infer S }
+            ? S
+            : never
+          : never,
+        takeFreshSnapshot,
+      });
+    } finally {
+      process.chdir(originalCwd);
+    }
+
+    const consentIdx = order.findIndex((entry) => entry.startsWith("consent:"));
+    const snapshotIdx = order.indexOf("snapshot:fresh");
+    expect(consentIdx).toBeGreaterThanOrEqual(0);
+    expect(snapshotIdx).toBeGreaterThanOrEqual(0);
+    expect(consentIdx).toBeLessThan(snapshotIdx);
+    expect(consentService.clear).toHaveBeenCalledTimes(1);
+    expect(takeFreshSnapshot).toHaveBeenCalledTimes(1);
+  });
 });

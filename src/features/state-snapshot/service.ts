@@ -1,7 +1,7 @@
-import type { Client } from "discord.js";
-import { Events } from "discord.js";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import type { Client } from "discord.js";
+import { Events } from "discord.js";
 import type { ConsentService } from "../../consent/service.js";
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import type { SnapshotConfig } from "./config.js";
@@ -247,6 +247,16 @@ function toRetentionPolicy(config: SnapshotConfig): RetentionPolicy {
  * Exported so the privacy-clear test can assert the wire-up without
  * running the full scheduler loop.
  */
+/**
+ * Outcome of a purge attempt. Surfaced to the privacy-delete caller so the
+ * reply can distinguish "everything was wiped" from "snapshot subsystem
+ * declined to delete (retry later)" — silent deletion must NOT be implied
+ * either way. See PR review Yfyp.
+ */
+export type PurgeSnapshotsResult =
+  | { ok: true; deleted: number; kept: string | null }
+  | { ok: false; error: string };
+
 export async function purgeAllSnapshots(options: {
   snapshotDir: string;
   encryptionKey: string | undefined;
@@ -254,20 +264,23 @@ export async function purgeAllSnapshots(options: {
   /**
    * Capture the post-clear state into a fresh snapshot BEFORE the
    * destructive pass. Returns the absolute path of the freshly-written
-   * snapshot, which is preserved by the purge. Returning `null` or
-   * throwing aborts the destructive path.
+   * snapshot, which is preserved by the purge. When this hook is
+   * required (i.e., existing snapshots would otherwise be deleted) it
+   * MUST resolve with a non-null file path; resolving `null` or
+   * throwing is treated as a refusal to delete so the existing
+   * snapshots are preserved.
    */
   takeFreshSnapshot?: () => Promise<string | null>;
   subjectId?: string;
-}): Promise<void> {
+}): Promise<PurgeSnapshotsResult> {
   if (!existsSync(options.snapshotDir)) {
-    return;
+    return { ok: true, deleted: 0, kept: null };
   }
   const paths = readdirSync(options.snapshotDir)
     .filter((name) => name.endsWith(".snap.enc"))
     .map((name) => join(options.snapshotDir, name));
   if (paths.length === 0) {
-    return;
+    return { ok: true, deleted: 0, kept: null };
   }
   if (!options.takeFreshSnapshot) {
     logger.warn(
@@ -278,7 +291,10 @@ export async function purgeAllSnapshots(options: {
       },
       "purgeAllSnapshots declined: no takeFreshSnapshot hook wired; retaining existing snapshots",
     );
-    return;
+    return {
+      ok: false,
+      error: "fresh snapshot hook is required; no purge performed",
+    };
   }
   let freshPath: string | null = null;
   try {
@@ -288,28 +304,41 @@ export async function purgeAllSnapshots(options: {
       { err: error, subjectId: options.subjectId },
       "purgeAllSnapshots: fresh snapshot failed; declining to purge",
     );
-    return;
+    return {
+      ok: false,
+      error: `fresh snapshot failed: ${(error as Error)?.message ?? String(error)}`,
+    };
+  }
+  // The fresh-snapshot hook returned null (e.g. nothing to archive). We
+  // refuse to wipe existing snapshots in that case — silently deleting
+  // the only backup would make `/privacy delete` claim success while
+  // leaving the user with no recoverable state.
+  if (!freshPath) {
+    logger.error(
+      { subjectId: options.subjectId },
+      "purgeAllSnapshots: fresh snapshot hook returned null; declining to purge",
+    );
+    return {
+      ok: false,
+      error: "fresh snapshot hook returned null; existing snapshots retained",
+    };
   }
   const clock = options.clock ?? (() => new Date());
   const keepPaths = new Set<string>();
-  if (freshPath) {
-    keepPaths.add(freshPath);
-  }
+  keepPaths.add(freshPath);
   const nowIso = clock().toISOString();
   // Synthesize a retention plan that keeps ONLY the freshly written
   // snapshot (when it exists) and deletes every other *.snap.enc file
   // on disk, even ones listSnapshots could not decrypt. Using the plan
   // pipeline reuses applyRetentionPlan's per-file error swallowing.
-  const keep = freshPath
-    ? [
-        {
-          createdAt: nowIso,
-          files: [],
-          id: `fresh-${Date.now()}`,
-          path: freshPath,
-        },
-      ]
-    : [];
+  const keep = [
+    {
+      createdAt: nowIso,
+      files: [],
+      id: `fresh-${Date.now()}`,
+      path: freshPath,
+    },
+  ];
   const del = paths
     .filter((path) => !keepPaths.has(path))
     .map((path, index) => ({
@@ -324,13 +353,13 @@ export async function purgeAllSnapshots(options: {
   // intend to keep is still on disk, that's a leaked file the retention
   // pass couldn't unlink (permission denied, EISDIR, etc.) and must
   // surface so the operator can intervene instead of silently leaking.
-  if (freshPath) {
-    const remaining = readdirSync(options.snapshotDir).filter((name) =>
-      name.endsWith(".snap.enc"),
-    );
-    const leftover = remaining.filter((name) => join(options.snapshotDir, name) !== freshPath);
-    if (leftover.length > 0) {
-      throw new Error(`failed to purge ${leftover.length} snapshot file(s)`);
-    }
+  const remaining = readdirSync(options.snapshotDir).filter((name) => name.endsWith(".snap.enc"));
+  const leftover = remaining.filter((name) => join(options.snapshotDir, name) !== freshPath);
+  if (leftover.length > 0) {
+    return {
+      ok: false,
+      error: `failed to purge ${leftover.length} snapshot file(s)`,
+    };
   }
+  return { ok: true, deleted: del.length, kept: freshPath };
 }

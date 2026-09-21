@@ -278,5 +278,38 @@ describe("birthday-role handler", () => {
       expect(withoutRole.roles.remove).not.toHaveBeenCalled();
       expect(noMatch.roles.remove).not.toHaveBeenCalled();
     });
+
+    it("strips the role even after the user revoked `profile` consent (mid-cycle revoke, XVCj)", async () => {
+      // Scenario: the assign tick granted the role when the user had an
+      // active `profile` grant. The user later revoked. The remove tick
+      // MUST still take the role away — gating removal on consent would
+      // strand the role on the member permanently.
+      const storage: BirthdayStorage = createInMemoryBirthdayStorage({
+        birthdays: {
+          "user-mid-revoke": {
+            userId: "user-mid-revoke",
+            date: "1990-04-02",
+            updatedAt: "2026-04-01T00:00:00.000Z",
+          },
+        },
+      });
+      const member = makeMember("user-mid-revoke", [ROLE_ID]);
+      const authorize = vi.fn(async () => ({ ok: false })); // revoked
+      const handler = createBirthdayRoleHandler({
+        config: makeConfig(),
+        storage,
+        fetchMember: (async () => member) as never,
+        consent: { authorize },
+      });
+
+      const result = await handler.runRemoveTick({ year: 2026, month: 4, day: 2 });
+
+      expect(result.attempted).toEqual(["user-mid-revoke"]);
+      expect(result.removed).toEqual(["user-mid-revoke"]);
+      expect(member.roles.remove).toHaveBeenCalledWith(ROLE_ID);
+      // Removal does not need an authorization decision — it must NOT
+      // gate on consent (that would defeat the entire revoke scenario).
+      expect(authorize).not.toHaveBeenCalled();
+    });
   });
 });

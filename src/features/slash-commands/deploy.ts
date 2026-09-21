@@ -36,22 +36,17 @@ export function toApplicationCommandPayload(
  */
 export function buildSlashCommandPayloads(
   registry: SlashCommandRegistry,
-): (RESTPostAPIChatInputApplicationCommandsJSONBody & {
-  default_member_permissions: string;
-})[] {
+): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
   return registry.definitions.map((definition: SlashCommandDefinition) => {
     const base = toApplicationCommandPayload(definition.buildPayload());
     // Apply `default_member_permissions` so Discord enforces the same tier
-    // everywhere the rule map declares. Without this, the GUI permission
-    // map stays internal-only and the deployed command ends up with no
-    // restriction regardless of the project's policy.
+    // everywhere the rule map declares. `everyone`-level commands omit the
+    // field; everyone else carries a stringified bit. See PR review VK2V.
     const level = resolveSlashPermissionLevel(definition.name);
     return applyDefaultMemberPermissions(
       base as unknown as Record<string, unknown>,
       level,
-    ) as unknown as RESTPostAPIChatInputApplicationCommandsJSONBody & {
-      default_member_permissions: string;
-    };
+    ) as unknown as RESTPostAPIChatInputApplicationCommandsJSONBody;
   });
 }
 

@@ -10,7 +10,11 @@ function createRestStub() {
 }
 
 describe("deploySlashCommands — default_member_permissions", () => {
-  it("attaches default_member_permissions='0' to `everyone` commands (privacy)", async () => {
+  it("omits default_member_permissions on `everyone` commands (privacy) — VK2V", async () => {
+    // The `everyone` level maps to "no restriction" — emitting `"0"` would
+    // make Discord deny everyone except admins or explicit overwrites, which
+    // is the opposite of what `everyone` means. The field is therefore
+    // omitted entirely; Discord defaults the command to unrestricted.
     const { rest, put } = createRestStub();
     const registry = createSlashCommandRegistry();
 
@@ -27,7 +31,8 @@ describe("deploySlashCommands — default_member_permissions", () => {
     )[1].body;
     const privacyCommand = body.find((entry) => entry.name === "privacy");
     expect(privacyCommand).toBeDefined();
-    expect(privacyCommand?.default_member_permissions).toBe("0");
+    // `default_member_permissions` should be ABSENT, not "0".
+    expect(privacyCommand).not.toHaveProperty("default_member_permissions");
   });
 
   it("attaches ManageMessages bit to manage_messages commands (announce)", async () => {

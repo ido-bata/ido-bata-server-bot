@@ -80,13 +80,20 @@ export async function deleteUserData(
   }
 
   try {
-    await purgeAllSnapshots({
+    const result = await purgeAllSnapshots({
       snapshotDir,
       encryptionKey: process.env.STATE_SNAPSHOT_ENCRYPTION_KEY,
       clock: options.now,
       takeFreshSnapshot: options.takeFreshSnapshot,
       subjectId: userId,
     });
+    if (!result.ok) {
+      // Surface a non-ok so the privacy-delete consumer can fail the
+      // overall /privacy delete. Silent success would let a hook that
+      // returned null/throw wipe the only deployment backup without
+      // the operator being told — see PR review Yfyp.
+      return { ok: false, error: result.error };
+    }
     return { ok: true };
   } catch (error) {
     return { ok: false, error: stringifyError(error) };

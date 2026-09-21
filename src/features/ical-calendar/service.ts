@@ -145,9 +145,7 @@ export function createCalendarService(options: CalendarServiceOptions = {}): Cal
     let inFlight = false;
     timer = setInterval(() => {
       if (inFlight) {
-        logger.warn(
-          "[ical-calendar] previous fetch still in flight, skipping this tick",
-        );
+        logger.warn("[ical-calendar] previous fetch still in flight, skipping this tick");
         return;
       }
       inFlight = true;

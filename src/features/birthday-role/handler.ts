@@ -149,10 +149,7 @@ export function createBirthdayRoleHandler(deps: HandlerDependencies): BirthdayRo
     const next = removeBirthday(store, userId);
     const saved = await storage.save(next);
     if (!saved.ok) {
-      logger.warn(
-        { userId, error: saved.error },
-        "birthday-role: failed to persist removal",
-      );
+      logger.warn({ userId, error: saved.error }, "birthday-role: failed to persist removal");
       return { removed: false };
     }
     return { removed: true };
@@ -248,20 +245,13 @@ export function createBirthdayRoleHandler(deps: HandlerDependencies): BirthdayRo
       .map((userId) => store.birthdays[userId])
       .filter((entry): entry is BirthdayEntry => entry !== undefined);
 
-    // v0.2.0: the role-strip pass must also honour consent — stripping
-    // the role from a member who never granted `profile` would re-introduce
-    // the bypass we just closed on the assign side. Skipping on no-grant
-    // is safe (no role assigned either).
-    const consented: BirthdayEntry[] = [];
-    for (const entry of targets) {
-      if (deps.consent) {
-        const decision = await deps.consent.authorize(entry.userId, "profile");
-        if (!decision.ok) {
-          continue;
-        }
-      }
-      consented.push(entry);
-    }
+    // Removal is not a data-processing action — it only takes the role
+    // away. Gating it on consent would strand the role on a member who
+    // revoked `profile` after the assign tick already granted it; that
+    // mid-cycle revoke would leave the user with a birthday role forever.
+    // (PR review XVCj.) The assign tick still honours the gate so a
+    // user who never consented never gets the role in the first place.
+    const consented: BirthdayEntry[] = targets;
 
     const result: RemoveTickResult = {
       attempted: consented.map((entry) => entry.userId),

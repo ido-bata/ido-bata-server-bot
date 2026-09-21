@@ -88,18 +88,29 @@ export function messageForDecision(
  * Decorator-friendly helper that mutates a REST payload (or a builder that
  * exposes `toJSON()`) so it carries the correct `default_member_permissions`.
  *
+ * For the `everyone` level the field is **omitted** rather than emitted as
+ * `"0"`. Discord treats `"0"` as "deny everyone except admin / explicit
+ * overwrites", which is the opposite of what `everyone` means; omitting
+ * the field makes the command available to all members without further
+ * overwrites. See PR review VK2V.
+ *
  * Discord ignores `default_member_permissions` for global registration and
  * always honours it for guild registration, so the deploy script should
  * always go through the guild route — see ADR-0002 / `deploySlashCommands`.
  */
 export function applyDefaultMemberPermissions<
   T extends { toJSON?: () => Record<string, unknown> } | Record<string, unknown>,
->(payload: T, level: SlashPermissionLevel | string): T & { default_member_permissions: string } {
+>(payload: T, level: SlashPermissionLevel | string): T & { default_member_permissions?: string } {
   if (!isSlashPermissionLevel(level)) {
     throw new Error(`applyDefaultMemberPermissions: unknown slash permission level: ${level}`);
   }
 
   const next = payload as T & { default_member_permissions?: string };
-  next.default_member_permissions = defaultMemberPermissionsFor(level);
-  return next as T & { default_member_permissions: string };
+  const value = defaultMemberPermissionsFor(level);
+  if (value === null) {
+    delete next.default_member_permissions;
+  } else {
+    next.default_member_permissions = value;
+  }
+  return next as T & { default_member_permissions?: string };
 }
