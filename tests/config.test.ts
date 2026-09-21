@@ -30,6 +30,7 @@ describe("readConfig", () => {
         emojiToScope: {},
         policyVersion: "v0.2.0",
       },
+      voiceConnectionTimeoutMs: 30_000,
     });
   });
 
@@ -100,6 +101,27 @@ describe("readConfig", () => {
     expect(config.discordGuildIds).toEqual(["111", "222"]);
   });
 
+  it("uses the voice connection timeout when provided", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_ID: "guild-id",
+      VOICE_CONNECTION_TIMEOUT_MS: "5000",
+    });
+
+    expect(config.voiceConnectionTimeoutMs).toBe(5_000);
+  });
+
+  it("falls back to the default voice connection timeout when unset", () => {
+    const config = readConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "client-id",
+      DISCORD_GUILD_ID: "guild-id",
+    });
+
+    expect(config.voiceConnectionTimeoutMs).toBe(30_000);
+  });
+
   it("throws when a required variable is missing", () => {
     expect(() =>
       readConfig({
@@ -168,5 +190,16 @@ describe("readConfig", () => {
         LOG_RING_SIZE: "5",
       }),
     ).toThrow();
+  });
+
+  it("rejects a non-numeric voice connection timeout", () => {
+    expect(() =>
+      readConfig({
+        DISCORD_TOKEN: "token",
+        DISCORD_CLIENT_ID: "client-id",
+        DISCORD_GUILD_ID: "guild-id",
+        VOICE_CONNECTION_TIMEOUT_MS: "not-a-number",
+      }),
+    ).toThrow(/VOICE_CONNECTION_TIMEOUT_MS/);
   });
 });

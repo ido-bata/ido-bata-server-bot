@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import { type ConsentConfig, readConsentConfig } from "./consent/config.js";
 
+const DEFAULT_VOICE_CONNECTION_TIMEOUT_MS = 30_000;
+
 const configSchema = z
   .object({
     DISCORD_TOKEN: z.string().min(1),
@@ -25,6 +27,13 @@ const configSchema = z
     // literal. Unknown values fall back to `auto` so a typo never
     // crashes the bot.
     BOT_TUI: z.enum(["auto", "on", "off"]).default("auto").catch("auto"),
+    // Voice connection setup timeout, threaded through to the timekeeper
+    // stage-channel reconnect path. Default 30s.
+    VOICE_CONNECTION_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(DEFAULT_VOICE_CONNECTION_TIMEOUT_MS),
   })
   .refine((env) => parseGuildList(env.DISCORD_GUILD_ID, env.DISCORD_GUILD_IDS).length > 0, {
     message:
@@ -50,6 +59,8 @@ export type BotConfig = {
   tuiMode: "auto" | "on" | "off";
   /** Consent registry config. `enabled` is false when `CONSENT_MESSAGE_ID` is empty. */
   consent: ConsentConfig;
+  /** Voice connection setup timeout, threaded into @discordjs/voice. */
+  voiceConnectionTimeoutMs: number;
 };
 
 function parseGuildList(guildId?: string, guildIds?: string): string[] {
@@ -100,5 +111,6 @@ export function readConfig(env: NodeJS.ProcessEnv): BotConfig {
     logRingSize: parsed.LOG_RING_SIZE,
     tuiMode: parsed.BOT_TUI,
     consent,
+    voiceConnectionTimeoutMs: parsed.VOICE_CONNECTION_TIMEOUT_MS,
   };
 }

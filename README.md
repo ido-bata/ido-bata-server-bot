@@ -32,6 +32,7 @@ If a bot token is ever pasted into chat, logs, a commit, or an agent result, rot
 | `DISCORD_GUILD_ID` | yes | Development guild ID |
 | `DISCORD_ENABLE_MESSAGE_CONTENT` | no | Set to `true` to enable the privileged Message Content intent (also enable it on the Developer Portal side) |
 | `TIMEKEEPER_RUN_ON_READY` | no | `true` runs the timekeeper session immediately on `ClientReady` and compresses in-session minutes to 1 second for testing. Without it the timekeeper schedules for the next 21:00 JST. |
+| `VOICE_CONNECTION_TIMEOUT_MS` | no | Maximum milliseconds to wait for a voice connection to reach the `Ready` state before giving up (and triggering a stage reconnect). Defaults to `30000`. |
 
 Validation lives in `src/config.ts` (Zod). The bot refuses to start with a clear error if a required variable is missing or empty.
 
