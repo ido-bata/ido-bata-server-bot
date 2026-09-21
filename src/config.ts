@@ -19,6 +19,10 @@ const configSchema = z
       .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
       .default("info"),
     LOG_RING_SIZE: z.coerce.number().int().min(10).max(10_000).default(200),
+    // TUI render gate. `auto` follows TTY detection; `on` / `off` are
+    // literal. Unknown values fall back to `auto` so a typo never
+    // crashes the bot.
+    BOT_TUI: z.enum(["auto", "on", "off"]).default("auto").catch("auto"),
   })
   .refine((env) => parseGuildList(env.DISCORD_GUILD_ID, env.DISCORD_GUILD_IDS).length > 0, {
     message:
@@ -40,6 +44,8 @@ export type BotConfig = {
   logLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
   /** Capacity of the in-memory ring buffer backing the recent-events stream. */
   logRingSize: number;
+  /** TUI render mode. `auto` defers to TTY detection. */
+  tuiMode: "auto" | "on" | "off";
 };
 
 function parseGuildList(guildId?: string, guildIds?: string): string[] {
@@ -80,5 +86,6 @@ export function readConfig(env: NodeJS.ProcessEnv): BotConfig {
     roleAuditChannelId,
     logLevel: parsed.LOG_LEVEL,
     logRingSize: parsed.LOG_RING_SIZE,
+    tuiMode: parsed.BOT_TUI,
   };
 }
