@@ -14,11 +14,16 @@ export type CalendarFetcherOptions = {
   fetchImpl?: (url: string) => Promise<string>;
   sleepImpl?: (ms: number) => Promise<void>;
   now?: () => Date;
+  /** Per-request timeout in milliseconds. Default 30 s — long enough for a
+   *  large iCal feed on a slow link, short enough that one unresponsive
+   *  calendar host does not stall subsequent fetches in `fetchAll`. */
+  fetchTimeoutMs?: number;
 };
 
 export function createCalendarFetcher(options: CalendarFetcherOptions = {}): CalendarFetcher {
   const rateLimitMs = options.rateLimitMs ?? 60_000;
-  const fetchImpl = options.fetchImpl ?? defaultFetch;
+  const fetchTimeoutMs = options.fetchTimeoutMs ?? 30_000;
+  const fetchImpl = options.fetchImpl ?? ((url: string) => defaultFetch(url, fetchTimeoutMs));
   const sleepImpl =
     options.sleepImpl ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const now = options.now ?? (() => new Date());
@@ -71,8 +76,11 @@ export function createCalendarFetcher(options: CalendarFetcherOptions = {}): Cal
   return { fetchAll, fetchOne };
 }
 
-async function defaultFetch(url: string): Promise<string> {
-  const response = await fetch(url);
+async function defaultFetch(url: string, fetchTimeoutMs = 30_000): Promise<string> {
+  // `AbortSignal.timeout` was added in Node 18+. An unresponsive calendar
+  // host would otherwise let the request stall past `setInterval` ticks
+  // and pile up parallel fetches in `startScheduler`.
+  const response = await fetch(url, { signal: AbortSignal.timeout(fetchTimeoutMs) });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} ${response.statusText}`);
   }

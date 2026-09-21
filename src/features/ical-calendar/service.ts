@@ -138,10 +138,26 @@ export function createCalendarService(options: CalendarServiceOptions = {}): Cal
     if (timer) {
       return;
     }
+    // Guard against overlapping `fetchAndCacheAll` runs: the previous pass
+    // can take longer than `intervalMs` (per-source rate-limit + many
+    // sources), in which case the next tick must skip — otherwise two
+    // passes interleave `saveCache` writes and the last writer wins.
+    let inFlight = false;
     timer = setInterval(() => {
-      void fetchAndCacheAll().catch((error) => {
-        logger.error("[ical-calendar] periodic fetch failed", error);
-      });
+      if (inFlight) {
+        logger.warn(
+          "[ical-calendar] previous fetch still in flight, skipping this tick",
+        );
+        return;
+      }
+      inFlight = true;
+      void fetchAndCacheAll()
+        .catch((error) => {
+          logger.error("[ical-calendar] periodic fetch failed", error);
+        })
+        .finally(() => {
+          inFlight = false;
+        });
     }, intervalMs);
   }
 

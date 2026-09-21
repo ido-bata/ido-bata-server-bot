@@ -26,8 +26,14 @@ describe("timekeeper consent gate", () => {
   let dir: string;
   let cleanup: () => void;
   let detach: () => void = () => undefined;
+  // `process.cwd()` is process-global; Vitest reuses a single worker for
+  // every test file, so we must capture and restore it to avoid leaking
+  // a deleted path into later tests in the same worker (any subsequent
+  // file lookup that resolves a relative path would ENOENT).
+  let originalCwd: string;
 
   beforeEach(() => {
+    originalCwd = process.cwd();
     dir = mkdtempSync(join(tmpdir(), "timekeeper-gate-"));
     cleanup = () => rmSync(dir, { recursive: true, force: true });
     process.chdir(dir);
@@ -37,6 +43,9 @@ describe("timekeeper consent gate", () => {
   afterEach(() => {
     detach();
     __resetTimekeeperPersistenceState();
+    // Restore BEFORE cleanup so the recursive `rmSync` does not see the
+    // worker as standing in the directory it is about to delete.
+    process.chdir(originalCwd);
     cleanup();
   });
 

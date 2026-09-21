@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -48,12 +48,12 @@ describe("reminder store", () => {
 
   it("treats malformed JSON as empty without throwing", () => {
     const { options, cleanup } = makeLoadOptions();
+    const filePath = options.filePath as string;
     try {
       // Pre-write a corrupted file.
-      saveReminders([], { filePath: options.filePath });
+      saveReminders([], { filePath });
       // Now overwrite with garbage using the underlying path.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require("node:fs").writeFileSync(options.filePath, "{not valid json", "utf8");
+      writeFileSync(filePath, "{not valid json", "utf8");
       const loaded = loadReminders(options);
       expect(loaded.reminders).toEqual([]);
     } finally {

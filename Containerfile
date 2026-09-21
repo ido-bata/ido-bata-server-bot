@@ -52,9 +52,9 @@ RUN apt-get update \
     && apt-get purge -y --auto-remove curl unzip \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json bun.lock ./
-# --production=false keeps devDependencies installed; we need `tsc` and
-# friends in the build stage.
-RUN bun install --frozen-lockfile --production=false
+# `NODE_ENV` is unset in this stage (it is set in `runtime` only), so
+# devDependencies (`tsc`, `vitest`, ...) are installed for the build stage.
+RUN bun install --frozen-lockfile
 
 # ---- build ----
 FROM deps AS build
