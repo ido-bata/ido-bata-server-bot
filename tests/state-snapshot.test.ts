@@ -95,6 +95,7 @@ describe("state-snapshot create + restore", () => {
   let sourceDir: string;
   let sourcePath: string;
   let missingPath: string;
+  let previousCwd: string;
   const hexKey = makeKeyHex();
 
   beforeEach(() => {
@@ -102,12 +103,21 @@ describe("state-snapshot create + restore", () => {
     snapshotDir = join(workDir, "snapshots");
     sourceDir = join(workDir, "sources");
     mkdirSync(sourceDir, { recursive: true });
-    sourcePath = join(sourceDir, "bot.db");
-    missingPath = join(sourceDir, "missing.json");
+    // Use relative source paths so `restoreSnapshot` can join them
+    // under the caller-supplied `outputDir`. Absolute paths would
+    // produce a doubled `outputDir\\absolute` path (invalid on Windows,
+    // silently misrouted on POSIX via `mkdir {recursive: true}`).
+    previousCwd = process.cwd();
+    process.chdir(workDir);
+    sourcePath = join("sources", "bot.db");
+    missingPath = join("sources", "missing.json");
     writeFileSync(sourcePath, Buffer.from("select 1;"));
   });
 
   afterEach(() => {
+    // Restore cwd so the next test sees a stable working directory
+    // (and so Windows can rmSync the temp dir).
+    process.chdir(previousCwd);
     rmSync(workDir, { recursive: true, force: true });
   });
 
