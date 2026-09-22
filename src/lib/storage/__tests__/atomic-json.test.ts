@@ -86,24 +86,32 @@ describe("mutateJsonFile", () => {
     }
   });
 
-  it("returns ok:false when the file is unreadable", async () => {
-    const filePath = join(workDir, "locked.json");
-    writeFileSync(filePath, JSON.stringify({ count: 0 }));
-    // Strip read permission so readFileSync throws EACCES.
-    chmodSync(filePath, 0o000);
+  // Windows does not honour POSIX `chmod 0o000` semantics for the file
+  // owner: a file owned by the current user remains readable even after
+  // the permission bits are stripped, so this scenario cannot be staged
+  // on Windows. The atomic-write path is exercised end-to-end on
+  // POSIX where the helper ships.
+  it.skipIf(process.platform === "win32")(
+    "returns ok:false when the file is unreadable",
+    async () => {
+      const filePath = join(workDir, "locked.json");
+      writeFileSync(filePath, JSON.stringify({ count: 0 }));
+      // Strip read permission so readFileSync throws EACCES.
+      chmodSync(filePath, 0o000);
 
-    const outcome = await mutateJsonFile({
-      filePath,
-      mutate: (current) => ({ count: current.count + 1 }),
-      schema: storeSchema,
-    });
-    expect(outcome.ok).toBe(false);
-    if (!outcome.ok) {
-      expect(outcome.error).toMatch(/read failed/);
-    }
-    // Restore permission so afterEach cleanup can rmSync.
-    chmodSync(filePath, 0o600);
-  });
+      const outcome = await mutateJsonFile({
+        filePath,
+        mutate: (current) => ({ count: current.count + 1 }),
+        schema: storeSchema,
+      });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) {
+        expect(outcome.error).toMatch(/read failed/);
+      }
+      // Restore permission so afterEach cleanup can rmSync.
+      chmodSync(filePath, 0o600);
+    },
+  );
 
   it("skips the write when mutate returns the same reference (no-change fast path)", async () => {
     const filePath = join(workDir, "unchanged.json");

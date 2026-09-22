@@ -35,7 +35,10 @@ function walk(dir: string, files: string[] = []): string[] {
 }
 
 function isAllowed(relPath: string): boolean {
-  const parts = relPath.split("/");
+  // `path.relative` returns platform-native separators (`\` on Windows,
+  // `/` on POSIX). Split on both so the allow-list matches the same
+  // directory component regardless of which OS the test runs on.
+  const parts = relPath.split(/[/\\]/);
   return parts.length > 0 && ALLOWED_DIRS.has(parts[0]);
 }
 

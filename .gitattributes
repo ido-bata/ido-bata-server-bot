@@ -1,0 +1,12 @@
+# Normalize line endings on commit/checkout.
+#
+# Without this, `core.autocrlf=true` on Windows silently converts LF
+# files to CRLF in the working tree, which biome (default `lineEnding: lf`)
+# flags as format errors. Pinning `eol=lf` here overrides the user's
+# autocrlf setting for tracked text files, so the working tree matches
+# the committed blob on every platform.
+#
+# `text=auto` lets git auto-detect text vs binary; only text files get
+# the EOL conversion. Binary blobs keep whatever bytes the contributor
+# committed.
+* text=auto eol=lf
