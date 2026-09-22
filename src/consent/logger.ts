@@ -56,9 +56,15 @@ function forward(logger: ReturnType<typeof childFor>, level: Level, args: unknow
   // Forward the common `(message, { error: ... })` shape so structured
   // metadata lands on the top-level log record (matching the rest of the
   // project) instead of being buried under `extra[0]`.
+  //
+  // Bind `logger` as `this`: pino's internal `LOG` reads
+  // `this[Symbol(pino.msgPrefix)]` and `this[Symbol(pino.write)]`.
+  // Extracting the method and calling it bare drops `this` and crashes
+  // with `TypeError: Cannot read properties of undefined (reading
+  // 'Symbol(pino.msgPrefix)')`.
   const [first, second, ...rest] = toPinoArgs(args);
   const fn = logger[level] as (...a: unknown[]) => void;
-  fn(first, second, ...rest);
+  fn.call(logger, first, second, ...rest);
 }
 
 function toPinoArgs(args: unknown[]): unknown[] {
