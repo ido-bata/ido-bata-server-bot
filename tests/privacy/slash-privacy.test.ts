@@ -113,7 +113,14 @@ describe("/privacy delete", () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "privacy-slash-"));
-    cleanup = () => rmSync(dir, { recursive: true, force: true });
+    const previousCwd = process.cwd();
+    cleanup = () => {
+      // Windows refuses to remove the current working directory, so chdir
+      // back to the test runner's cwd before rmSync. POSIX tolerates
+      // rmSync-ing the cwd, so this is a no-op there.
+      process.chdir(previousCwd);
+      rmSync(dir, { recursive: true, force: true });
+    };
     mkdirSync(join(dir, "data"), { recursive: true });
     process.chdir(dir);
   });

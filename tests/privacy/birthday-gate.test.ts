@@ -22,8 +22,15 @@ describe("birthday-role consent gate", () => {
 
   beforeEach(() => {
     const dir = mkdtempSync(join(tmpdir(), "birthday-gate-"));
+    const previousCwd = process.cwd();
     process.chdir(dir);
-    cleanup = () => rmSync(dir, { recursive: true, force: true });
+    cleanup = () => {
+      // Windows refuses to remove the current working directory, so chdir
+      // back to the test runner's cwd before rmSync. POSIX tolerates
+      // rmSync-ing the cwd, so this is a no-op there.
+      process.chdir(previousCwd);
+      rmSync(dir, { recursive: true, force: true });
+    };
   });
 
   afterEach(() => {
