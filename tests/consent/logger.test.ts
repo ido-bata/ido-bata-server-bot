@@ -67,14 +67,10 @@ describe("consent logger — pino this-binding", () => {
     unsubscribe = subscribe((rec) => received.push(rec));
 
     const logger = createConsentLogger();
-    expect(() =>
-      logger.error("consent-error", { err: new Error("boom") }),
-    ).not.toThrow();
+    expect(() => logger.error("consent-error", { err: new Error("boom") })).not.toThrow();
     await flushPino();
 
-    const errored = received.find(
-      (r) => (r as { message?: string }).message === "consent-error",
-    );
+    const errored = received.find((r) => (r as { message?: string }).message === "consent-error");
     expect(errored).toBeDefined();
   });
 
@@ -87,9 +83,7 @@ describe("consent logger — pino this-binding", () => {
     expect(() => child.info("child-event")).not.toThrow();
     await flushPino();
 
-    const match = received.find(
-      (r) => (r as { message?: string }).message === "child-event",
-    );
+    const match = received.find((r) => (r as { message?: string }).message === "child-event");
     expect(match).toBeDefined();
     // The child binding should stamp a `component` field on the record —
     // this also confirms `this` survived into pino's emit path.
