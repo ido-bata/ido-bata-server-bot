@@ -36,7 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - Pino redaction paths cover `*.discordToken`, `*.token`, `*.password`.
 - State-snapshot bundles encrypted AES-256-GCM with `STATE_SNAPSHOT_ENCRYPTION_KEY`; revoke triggers `applyRetentionPlan` to expire affected snapshots.
 
-## [Unreleased]
+## [0.2.1] — 2026-09-22
 
 ### Added
 
@@ -59,12 +59,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - `docs/process.md` now distinguishes PR readiness from merge authorization: agents may open / update / rebase / re-validate, but may not merge, squash-merge, rebase-merge, enable auto-merge, or execute native stacked-PR landing without an explicit user instruction naming the PR (or a clearly bounded PR set) and the merge action.
 - `docs/process.md` now codifies that a stacked ticket is Done only after its changes land on the target release trunk, and that a release branch with a meaningful integrated difference against `main` must carry a Draft release PR.
 - `docs/process.md` now documents the public-`main` protection baseline (PR-only, no force-push, ≥1 review, `enforce_admins`, `required_linear_history`, `required_conversation_resolution`, required CI / audit / CodeQL checks, plus a release-source ruleset) and treats any gap as a blocker.
-- `biome.json` schema URL bumped from `2.5.7` to `2.5.12` to match the installed Biome CLI.
+- `biome.json` schema URL bumped from `2.5.7` to `2.5.12` to match the installed Biome CLI; further bumped to `2.5.14` and pinned to `lineEnding: lf` so the formatter matches the committed LF blob on every platform.
+- `.gitattributes` pins `* text=auto eol=lf` so `core.autocrlf=true` on Windows stops silently converting tracked text files to CRLF in the working tree.
 
 ### Fixed
 
 - `tests/timekeeper-session-clock.test.ts` import sorting + formatting.
 - `tests/timekeeper-timeline.test.ts` formatting.
+- **Consent logger crash (`src/consent/logger.ts`)**: pino's internal `LOG` helper reads `this[Symbol(pino.msgPrefix)]` and `this[Symbol(pino.write)]`; forwarding a level method without binding `this` (the original `fn(first, second, ...rest)` shape) crashed every consent-scoped log call with `TypeError: Cannot read properties of undefined (reading 'Symbol(pino.msgPrefix)')`. Switched to `fn.call(logger, first, second, ...rest)` so the wrapper preserves the underlying pino logger identity. New `tests/consent/logger.test.ts` pins the contract (info / warn / error / child().info()) and would fail loudly if the regression returns.
+- **Pre-existing test failures unblocked the release gate**: `tests/privacy/birthday-gate.test.ts` and `tests/privacy/slash-privacy.test.ts` now chdir back to the test runner's cwd before `rmSync`, since Windows refuses to remove a directory that is still the cwd; `tests/observability/no-console.test.ts` splits `relative()` paths on both POSIX and Windows separators so the `src/scripts/**` allow-list matches regardless of host OS; `tests/state-snapshot.test.ts` uses relative source paths so `restoreSnapshot` honors the caller-supplied `outputDir` (the previous absolute-path setup silently misrouted on POSIX and threw on Windows); `src/lib/storage/__tests__/atomic-json.test.ts` skips the chmod-0o000 readability assertion on Windows, where POSIX permission-bit semantics do not apply to the file owner.
 
 ## [0.1.0] — initial integration
 
