@@ -62,3 +62,10 @@ If a bot token leaks, rotate it in the Discord Developer Portal and replace it i
 ## Recovery entry point
 
 If you are a fresh agent with no prior conversation, see `docs/recovery.md` for the canonical sources of truth and the recovery algorithm.
+
+
+## Constitution / operating profile
+
+- 最上位 contract: [`constitution/CONSTITUTION.md`](constitution/CONSTITUTION.md)
+- current Operating Model: [`organization/profiles/release-driven-solo.md`](organization/profiles/release-driven-solo.md)
+- repository-specific architecture / runtime / release docs は、Constitution を満たす限り generic upstream Practice より具体的な authority として維持する。
