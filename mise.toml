@@ -10,9 +10,20 @@ description = "List Agent Skills available from rebuildup/project-init"
 run = "bunx skills add rebuildup/project-init --list"
 
 [tasks.skills-bootstrap]
-description = "Install project-init Skills for Claude Code and universal .agents/skills consumers"
-run = "bunx skills add rebuildup/project-init --skill '*' --agent claude-code --agent codex -y"
+description = """
+Install project-local Agent Skills: all core skills from rebuildup/project-init,\
+plus writing-discipline from rebuildup/writing-skills, as committed copies for\
+Claude Code and universal .agents/skills consumers.
+"""
+run = """
+bunx skills add rebuildup/project-init --skill '*' --copy --agent claude-code --agent codex --agent opencode -y \
+ && bunx skills add rebuildup/writing-skills --skill writing-discipline --copy --agent claude-code --agent codex --agent opencode -y
+"""
 
 [tasks.skills-update]
 description = "Update tracked project-local Agent Skills non-interactively"
 run = "bunx skills update -p -y"
+
+[tasks."worktree:setup"]
+description = "Prepare this worktree checkout for work (also wired from .config/wt.toml)"
+run = "bun install --frozen-lockfile"
