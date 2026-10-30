@@ -10,11 +10,7 @@ description = "List Agent Skills available from rebuildup/project-init"
 run = "bunx skills add rebuildup/project-init --list"
 
 [tasks.skills-bootstrap]
-description = """
-Install project-local Agent Skills: all core skills from rebuildup/project-init,\
-plus writing-discipline from rebuildup/writing-skills, as committed copies for\
-Claude Code and universal .agents/skills consumers.
-"""
+description = "Install project-local Agent Skills (all core skills from rebuildup/project-init plus writing-discipline from rebuildup/writing-skills) as committed copies for Claude Code and universal .agents/skills consumers"
 run = """
 bunx skills add rebuildup/project-init --skill '*' --copy --agent claude-code --agent codex --agent opencode -y \
  && bunx skills add rebuildup/writing-skills --skill writing-discipline --copy --agent claude-code --agent codex --agent opencode -y
