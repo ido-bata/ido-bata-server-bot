@@ -16,4 +16,4 @@ Only the latest commit on `main` is supported. Older release tags and the active
 
 ## Dependency advisories
 
-Dependabot is enabled (`.github/dependabot.yml`). A meaningful advisory — severity × reachability — is converted into a GitHub Issue, assigned a target version, and tracked on the project board. Critical, exposed, dependency-level vulnerabilities can interrupt the current sprint in favor of a patch release.
+Dependabot is enabled (`.github/dependabot.yml`). A meaningful advisory — severity × reachability — is converted into a GitHub Issue, labelled `security` plus the target `release-*`, and landed through the normal sprint flow. Critical, exposed, dependency-level vulnerabilities can interrupt the current sprint in favor of a patch release.

@@ -1,0 +1,10 @@
+# Worktrunk project hooks.
+# Front-end agnostic entry points — every frontend (Worktrunk, plain git,
+# agent worktrees) should route worktree setup through these so all
+# workers start from the same state.
+
+[pre-start]
+setup = "mise run worktree:setup"
+
+# No teardown hook: this project has no shared mutable runtime state.
+# gitignored runtime state (data/*.json, dist/) is already worktree-local.
