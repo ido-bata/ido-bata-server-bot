@@ -146,23 +146,23 @@ The target state for `main` protection:
 - Pull requests required (no direct push)
 - No force pushes, no deletions
 - At least one approving review (`required_approving_review_count >= 1`)
-- Required checks: `verify` (CI workflow), `audit` (Bun audit), `codeql` (CodeQL)
+- Required checks (exact check-run names): `Lint / type-check / test / build / analysis`, `Bun audit (production)`, `CodeQL (TypeScript / JavaScript)`
 - `enforce_admins = enabled` — admins do not bypass in normal ops
-- `required_linear_history = enabled` — release PR uses squash-merge or rebase-merge
+- `required_linear_history` stays **disabled**: landing into `main` is merge-commit-only (see ADR-0002's authorization boundary), and linear-history enforcement would forbid merge commits
 - `required_conversation_resolution = enabled`
-- A repository **ruleset** restricted to PRs whose base is `main` enforcing `head_ref =~ ^refs/heads/release-[0-9]+-[0-9]+-[0-9]+$` (release-source ruleset — second line of defence)
+- A repository **ruleset** restricted to PRs whose base is `main` enforcing `head_ref =~ ^refs/heads/release-[0-9]+-[0-9]+-[0-9]+$` (release-source ruleset — second line of defence). GitHub ruleset conditions do not natively filter on PR base branch, so this rule needs a dedicated design before it can be created; treat it as a documented gap, not a misconfiguration.
 
-### Current state and known gaps (as of 2026-09-14)
+### Current state (as of 2026-10-30)
 
-Inspect with `gh api repos/ido-bata/ido-bata-server-bot/branches/main/protection` and `gh api repos/ido-bata/ido-bata-server-bot/rulesets`. Documented gaps below must be listed explicitly so the next agent does not assume protection that does not exist.
+- `rulesets`: none defined. Release-source ruleset pending design (see above).
+- `enforce_admins`: **enabled**.
+- `required_linear_history`: **disabled** (intentional, see target config).
+- `required_approving_review_count`: **1**.
+- Required status checks: `Lint / type-check / test / build / analysis`, `Bun audit (production)`, `CodeQL (TypeScript / JavaScript)`; `strict` off.
+- `required_conversation_resolution`: **enabled**.
+- Force pushes / deletions on `main`: blocked.
 
-- `rulesets`: none defined. A release-source ruleset must be created before v0.2.0 work begins.
-- `enforce_admins`: **disabled**. Admins can bypass every check; rely on policy + repository visibility for now.
-- `required_linear_history`: **disabled**. Squash-merge / rebase-merge is a convention, not an enforcement.
-- `required_approving_review_count`: **0**. Reviews are not currently enforced by branch protection.
-- Required status checks: **none configured**. The release gate above is the only enforcement of `verify` / `audit` / `codeql`.
-
-Any gap in the target configuration is a **blocker** for the next release and must be reported to the user before durable work begins on the next sprint.
+Inspection commands: `gh api repos/ido-bata/ido-bata-server-bot/branches/main/protection` and `gh api repos/ido-bata/ido-bata-server-bot/rulesets`.
 
 ## Bot token
 
