@@ -5,23 +5,21 @@ How durable work flows through this repo. Maintained in repo-controlled docs (th
 ## Agile cadence
 
 - **Sprint length**: 1 week (Monday start, Friday end-of-day ship). Cadence stays at one week unless an explicit ADR revises it.
-- **Sprint = one target SemVer**. The sprint board lives in a GitHub Project; the target version field carries the active `release-<major>-<minor>-<patch>`.
+- **Sprint = one target SemVer**. The active `release-<major>-<minor>-<patch>` branch is the sprint integration line; each Issue carries its target via a `release-*` label.
 - **Release-bound**: every merge into `main` is gated by the release gate below. We do not merge a partial sprint. If scope slips, cut the sprint short and re-cut it as a patch release rather than slipping the boundary.
-- **Demo / retro**: end of sprint (Friday). Issues for the next sprint are triaged on Monday morning and assigned a `Target version`.
+- **Demo / retro**: end of sprint (Friday). Issues for the next sprint are triaged on Monday morning and assigned a `release-*` label.
 - **Hotfixes**: a critical, exposed, dependency-level vulnerability (see [`docs/security.md`](./security.md)) or a confirmed production outage can interrupt the current sprint with a patch release (still via a `release-x-y-z` → `main` PR — `main` is never edited directly).
 
 ## Active sprint
 
 | Version | Start date | Target release date | Status |
 | ------- | ---------- | ------------------- | ------ |
-| `release-0-1-1` | 2026-09-07 | 2026-09-14 | In Progress |
+| `release-0-2-2` | 2026-10-30 | 2026-11-06 | In Progress |
 
 ### Included Issues
 
-- #51: `bun audit --production` を required check 化 (受入条件未達 — v0.1.1 では done 扱いにしない)
-- #54: 依存関係の更新とセキュリティパッチ適用
-- #55: timekeeper ステージ接続の安定性改善
-- #56: リリース駆動アジャイル開発プロセスの導入 (受入条件未達 — v0.1.1 では done 扱いにしない)
+- #111: undici / zod の security advisory 対応 (patch)
+- #109: project-init 再整備（Skills 本体導入・root contract 更新・GitHub 設定整合）(patch)
 
 ## SemVer policy
 
@@ -55,11 +53,11 @@ Rules:
 
 ## Issues (work state)
 
-Independent, plan-able, implementable, reviewable units become GitHub Issues (Japanese title/body). The board lives in GitHub Projects (Kanban: `Backlog` → `Ready` → `In Progress` → `In Review` → `Done`). Recommended fields:
+Independent, plan-able, implementable, reviewable units become GitHub Issues (Japanese title/body). Work state is carried on the Issue itself: open/closed plus `priority:*`, `area:*`, `size:*`, and `release-*` labels. No GitHub Projects board is required.
 
-- Priority / Size / Target Version
-- Area / Component
-- Blocked / dependency
+- Priority / Size / Target Version — `priority:*`, `size:*`, `release-*` labels
+- Area / Component — `area:*` label
+- Blocked / dependency — stated in the body
 
 Short-lived nested subtasks can stay as Supervisor task entries — do not promote them to Issues unless they outlive a single agent session.
 
@@ -67,7 +65,7 @@ Short-lived nested subtasks can stay as Supervisor task entries — do not promo
 
 - Title and body in **Japanese**; commit messages and source comments in English.
 - Open a **Draft PR** as soon as a ticket has meaningful work; flip to **Ready for review** when acceptance criteria are implemented and the ticket integration gate is green.
-- Squash-merge per ticket into the release branch. The release PR (release branch → `main`) is the only merge that lands on `main`.
+- Land each ticket with a **merge commit** into the release branch (`merge` method only; squash / rebase merge are disabled — see ADR-0018). The release PR (release branch → `main`) is the only merge that lands on `main`.
 
 ### Branch-start contract (mandatory)
 

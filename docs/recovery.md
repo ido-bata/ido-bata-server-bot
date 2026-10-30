@@ -41,7 +41,7 @@ This project does **not** push every micro-edit to a remote branch. We checkpoin
 - Every external side-effect (Discord message sent, audio played)
 - Before context-window handoff or a `longjmp`-style suspension
 
-Boundary commits go on the **ticket branch**, named for the issue. Squash-merge into the release branch only after the ticket integration gate is green.
+Boundary commits go on the **ticket branch**, named for the issue. Land the ticket with a merge commit into the release branch only after the ticket integration gate is green.
 
 A durable ticket branch is only "active" once it carries **both**:
 
