@@ -659,6 +659,7 @@ describe("anonymous-chat service — audit mode", () => {
           resolveDelete = resolve;
         }),
     );
+    const onAuditStateChange = vi.fn();
     const { channel } = makeChannel({
       permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
       sendImpl: async () => ({ id: "msg-44", delete: del }),
@@ -669,20 +670,56 @@ describe("anonymous-chat service — audit mode", () => {
         .mockResolvedValueOnce(undefined)
         .mockRejectedValueOnce(new Error("disk full")),
     });
-    const { service } = makeDeps({ channel, config: auditConfig(), audit });
+    const { service } = makeDeps({
+      channel,
+      config: auditConfig(),
+      audit,
+      onAuditStateChange,
+    });
 
     const pending = service.post(INPUT);
     await vi.waitFor(() => expect(del).toHaveBeenCalledTimes(1));
     // The Discord delete is still unresolved, but the gate must
-    // already be closed — a slow delete cannot leave a window where
-    // new posts pass the active check.
+    // already be closed AND the observer already notified — a slow
+    // delete cannot leave a window where new posts pass the active
+    // check or the TUI shows a stale state.
     expect(service.auditState).toBe("error");
+    expect(onAuditStateChange).toHaveBeenCalledWith("error");
     expect(await service.post({ ...INPUT, userId: "user-2" })).toEqual({
       ok: false,
       reason: "unavailable",
     });
     resolveDelete?.();
     await expect(pending).resolves.toEqual({ ok: false, reason: "audit_failed" });
+  });
+
+  it("still deletes the message and returns audit_failed when the state observer throws", async () => {
+    const del = vi.fn(async () => undefined);
+    const { channel } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+      sendImpl: async () => ({ id: "msg-45", delete: del }),
+    });
+    const audit = makeAudit({
+      record: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("disk full")),
+    });
+    const { service } = makeDeps({
+      channel,
+      config: auditConfig(),
+      audit,
+      // A buggy observer must never break the state machine — the
+      // posted-record path still owes the message delete and the
+      // audit_failed result.
+      onAuditStateChange: () => {
+        throw new Error("observer boom");
+      },
+    });
+
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "audit_failed" });
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(service.auditState).toBe("error");
   });
 
   it("aborts an in-flight post at the send boundary once auditState flips", async () => {

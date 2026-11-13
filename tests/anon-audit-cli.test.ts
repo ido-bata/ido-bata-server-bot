@@ -126,6 +126,59 @@ describe("runAnonAuditLookup — mandatory operation record", () => {
     expect(stdout.join("\n")).toContain('"userId":"user-9"');
   });
 
+  it("does not decrypt until the start record is durable", async () => {
+    const { deps } = io();
+    let releaseStart: (() => void) | undefined;
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const appendOperation = vi.fn(async (dir: string, entry: AnonAuditOperation) => {
+      void dir;
+      if (entry.phase === "start") {
+        await startGate;
+      }
+    });
+    const lookup = vi.fn(async () => okLookupResult);
+    const pending = runAnonAuditLookup(LOOKUP_ARGV, {
+      ...deps,
+      appendOperation,
+      lookup,
+    });
+    await vi.waitFor(() => expect(appendOperation).toHaveBeenCalledTimes(1));
+    // Start append still pending → decryption must not have run.
+    expect(lookup).not.toHaveBeenCalled();
+    releaseStart?.();
+    expect(await pending).toBe(0);
+    expect(lookup).toHaveBeenCalledTimes(1);
+  });
+
+  it("withholds stdout until the end record is durable", async () => {
+    const { stdout, deps } = io();
+    let releaseEnd: (() => void) | undefined;
+    const endGate = new Promise<void>((resolve) => {
+      releaseEnd = resolve;
+    });
+    const appendOperation = vi.fn(async (dir: string, entry: AnonAuditOperation) => {
+      void dir;
+      if (entry.phase === "end") {
+        await endGate;
+      }
+    });
+    const pending = runAnonAuditLookup(LOOKUP_ARGV, {
+      ...deps,
+      appendOperation,
+      lookup: async () => okLookupResult,
+    });
+    await vi.waitFor(() =>
+      expect(appendOperation.mock.calls.some((c) => c[1].phase === "end")).toBe(true),
+    );
+    // End append still pending → plaintext must not have been printed.
+    expect(stdout).toHaveLength(0);
+    releaseEnd?.();
+    expect(await pending).toBe(0);
+    expect(stdout.join("\n")).toContain('"userId":"user-9"');
+  });
+
   it("returns non-zero when the lookup itself fails", async () => {
     const { stdout, deps } = io();
     const code = await runAnonAuditLookup(LOOKUP_ARGV, {

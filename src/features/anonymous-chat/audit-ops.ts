@@ -24,9 +24,11 @@
  * Callers must treat a failed append as fatal for the sensitive part
  * of the operation — a lookup must withhold plaintext output and a
  * delete must not run — so no disclosure or deletion ever completes
- * without a durable operation record (Issue #118 review).
+ * without a durable operation record (Issue #118 review). The append
+ * fsyncs the file (and the directory entry) before resolving, so an
+ * acknowledged record survives a crash or power loss.
  */
-import { appendFile, chmod } from "node:fs/promises";
+import { chmod, open } from "node:fs/promises";
 import { join } from "node:path";
 
 export type AnonAuditOperation = {
@@ -48,8 +50,24 @@ export async function appendAnonAuditOperation(
 ): Promise<void> {
   const path = join(dir, "operations.jsonl");
   const line = `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`;
-  await appendFile(path, line, { encoding: "utf8", mode: 0o600 });
-  // appendFile's mode only applies at creation; enforce 0600 anyway in
-  // case the file pre-existed with looser permissions.
+  // The record must be DURABLE before the caller proceeds: write via
+  // a FileHandle and fsync before resolving. `mode: 0o600` applies
+  // only when the file is created.
+  const handle = await open(path, "a", 0o600);
+  try {
+    await handle.writeFile(line, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  // Enforce 0600 in case the file pre-existed with looser perms.
   await chmod(path, 0o600).catch(() => {});
+  // fsync the directory so a newly created file's directory entry is
+  // durable too. Cheap at custodian-tool frequencies.
+  const dirHandle = await open(dir, "r");
+  try {
+    await dirHandle.sync();
+  } finally {
+    await dirHandle.close();
+  }
 }

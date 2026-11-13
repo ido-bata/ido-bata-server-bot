@@ -168,7 +168,13 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       return;
     }
     auditState = next;
-    deps.onAuditStateChange?.(next);
+    try {
+      deps.onAuditStateChange?.(next);
+    } catch {
+      // Observer failures must never break the state machine — on the
+      // posted-record path the message delete and audit_failed result
+      // still have to run.
+    }
   };
   if (audit === undefined && config.audit) {
     try {

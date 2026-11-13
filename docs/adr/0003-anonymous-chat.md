@@ -222,8 +222,10 @@ selective deletion remains an offline custodian operation
   is printed — a failed `end` append withholds all decrypted
   output; delete writes `start` before any record is removed — a
   failed `start` aborts the run entirely — and `end` after, with a
-  failed `end` reported loudly. No disclosure or deletion completes
-  without a durable operation record. Query values (user ids,
+  failed `end` reported loudly. Appends are fsynced (file + directory)
+  before the tool proceeds, so an acknowledged record survives a
+  crash. No disclosure or deletion completes without a durable
+  operation record. Query values (user ids,
   message ids) are never written to the ops log; the custodian
   keeps the approval record (who approved, why, when) in their own
   procedure outside the repo.
