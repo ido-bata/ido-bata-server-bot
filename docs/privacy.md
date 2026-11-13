@@ -60,6 +60,7 @@ touch only ephemeral or operational data are listed for completeness.
 | poll                | `data/polls.json`                            | Discord snowflake | `votes: Record<userId, optionIndex>` + creatorId | `activity-history`  |
 | reminder            | `data/reminders.json`                        | Discord snowflake | `{ id, userId, message, fireAt, createdAt }` | `activity-history`  |
 | state-snapshot      | `data/snapshots/<id>.snap.enc`              | bundled          | encrypted AES-256-GCM mirror of all source files | `activity-history` (special: revoke must trigger snapshot expiry via `applyRetentionPlan`) |
+| anonymous-chat      | `data/anon-audit/<UTC-ts>-<rand>.jsonl`   | ciphertext only  | RSA-OAEP-encrypted `{userId, guildId, channelId, postedAt}` + public `gid`/`cid` metadata; record written BEFORE the public send so no anonymous message exists without an audit record; bot holds public key only — no decryptable or searchable per-user index | `message-history` |
 
 ### 3.2 Operational persistent (justified, no consent gate)
 
@@ -73,7 +74,7 @@ touch only ephemeral or operational data are listed for completeness.
 
 ### 3.3 Ephemeral only (no on-disk persistence)
 
-The following 14 features hold state in memory only — nothing about any
+The following 15 features hold state in memory only — nothing about any
 Discord user is written to disk by the bot:
 
 - `game-activity`     — current presence (in-memory tracker only)
@@ -89,6 +90,10 @@ Discord user is written to disk by the bot:
 - `slash-commands`    — command metadata
 - `slash-permissions` — permission tier table
 - `timekeeper-commands` — `/timekeeper` subcommand dispatch
+- `anonymous-chat`     — `/anon` in-memory cooldown only; persists the
+  encrypted audit mapping ONLY when `ANON_AUDIT_PUBLIC_KEY` is
+  configured (then it is the consent-gated
+  `anonymous-chat-audit` consumer above, not this ephemeral entry)
 - `shutdown`          — signal handler + teardown chain
 
 These are surfaced to users in `/privacy status` as "ephemeral, no
@@ -119,6 +124,20 @@ any snapshot whose `collectSourceFiles` manifest contains the revoked
 user id is expired. See
 [`src/features/state-snapshot/retention.ts`](../src/features/state-snapshot/retention.ts)
 and `src/features/privacy/clear.ts` for the wire-up.
+
+**Exception — `data/anon-audit/`**: the anonymous-chat audit log is
+consent-gated but deliberately excluded from
+`DEFAULT_SNAPSHOT_SOURCE_PATHS`. It is already RSA-OAEP encrypted at
+rest, self-retaining (record files swept after
+`ANON_AUDIT_RETENTION_DAYS`, default 90), and mirroring it into
+snapshots would extend retention far beyond that window — defeating the
+bounded-retention guarantee. Records contain no bot-computable per-user
+index, so the bot cannot selectively remove one user's records;
+`/privacy delete` reports this honestly and actual selective deletion
+is an offline custodian operation
+(`bun run anon:audit:delete -- --key-file <private.pem> --dir
+<data/anon-audit> --user <id>`). The snapshot purge path does not need
+to cover this directory. See ADR-0003 §3.
 
 ## 6. Timekeeper non-consent path
 
@@ -170,3 +189,59 @@ Discord API failure during reconciliation adds the affected guild id to
 
 明示した `CONSENT_MESSAGE_ID` が取得不能な場合は、誤って別の consent
 message を作らず fail closed とする。
+
+### 8.1 `/anon` anonymous chat (ADR-0003)
+
+| Env var | Effect |
+| --- | --- |
+| `ANON_DENY_CHANNEL_IDS` | optional comma-separated channel deny-list (supplementary; never replaces the effective-permission check) |
+| `ANON_COOLDOWN_SECONDS` | per-user attempt cooldown (default 30) |
+| `ANON_MAX_MESSAGE_LENGTH` | max trimmed body length (default 1000) |
+| `ANON_AUDIT_PUBLIC_KEY` | RSA public key (PEM or base64 SPKI) for sealing the author↔message mapping. Private key MUST NOT be deployed to the bot. Setting this enables audit mode; a malformed value makes `/anon` refuse all posts (fail closed), it never degrades to unlogged posting. |
+| `ANON_AUDIT_DIR` | audit directory (default `data/anon-audit`) |
+| `ANON_AUDIT_RETENTION_DAYS` | record-file retention by UTC date (default 90) |
+
+`ANON_AUDIT_INDEX_KEY` (legacy HMAC lookup key) is removed — it is
+ignored with a warning if still present. Deterministic per-user tags
+were dictionary-attackable over public guild rosters and broke the
+author-anonymity guarantee, so audit records carry ciphertext only.
+
+When `ANON_AUDIT_PUBLIC_KEY` is unset, `/anon` persists nothing
+(ephemeral mode). When set, every post first requires an active
+`message-history` consent grant (if the consent subsystem is deployed)
+and the full author mapping is stored only as RSA-OAEP ciphertext;
+seal or append failure rejects the post (fail closed). Selective
+deletion of one user's records requires the offline custodian script
+(see §5); the bot-side `/privacy delete` consumer reports an honest
+failure rather than claiming success. Threat-model limits — including
+why host-admin anonymity is not guaranteed — are documented in
+[`docs/adr/0003-anonymous-chat.md`](adr/0003-anonymous-chat.md).
+
+### 8.2 `/anon` audit-mode operations (ADR-0003 §3)
+
+Audit mode is opt-in; ephemeral mode needs none of this and remains
+the correct default until the custodian role is staffed.
+
+- **Key custody**: generate the RSA keypair OFFLINE. The private key
+  lives only in the custodian's secure store (HSM / password manager /
+  air-gapped media) — never on the bot host, never in env, never in
+  the repo. Only the public key goes into `ANON_AUDIT_PUBLIC_KEY`.
+  If the private key is lost, stored audit records become
+  permanently undecryptable — acceptable (they are ciphertext-only
+  and retention-bounded), but selective deletion becomes impossible
+  until expiry.
+- **Selective deletion**: on a user request, the custodian runs
+  `bun run anon:audit:delete -- --key-file <private.pem> --dir
+  <audit-dir> --user <id>`. Inspection anomalies (corrupt,
+  undecryptable, empty, or malformed records) abort the run BEFORE
+  anything is modified. An operational failure during the deletion
+  phase itself can leave partial progress — the run is safe to
+  repeat after fixing the cause, since inspection is deterministic
+  and already-removed records simply no longer match.
+- **Consent revocation**: revoking `message-history` stops future
+  audit writes immediately. Existing ciphertext records are retained
+  until the retention sweep or a custodian deletion — revocation is
+  not retroactive deletion.
+- **`auditState: "error"`**: all `/anon` posts are refused until the
+  key/directory is fixed or audit mode is disabled. This is
+  intentional fail-closed behavior.

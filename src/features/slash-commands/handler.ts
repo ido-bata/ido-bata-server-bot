@@ -1,6 +1,7 @@
 import type { Client } from "discord.js";
 import { Events } from "discord.js";
 
+import type { AnonCommandDeps } from "./commands/anon.js";
 import { handlePrivacyButton, type PrivacyCommandDeps } from "./commands/privacy.js";
 import { createSlashCommandRegistry, type SlashCommandRegistry } from "./registry.js";
 import type { SlashCommandDefinition } from "./types.js";
@@ -32,13 +33,13 @@ type HandlerDependencies = {
   // Lets tests inject a custom Client without spinning up Discord.
   client?: Client;
   /**
-   * Per-command runtime deps. The privacy command consumes
-   * `PrivacyCommandDeps.consentService` and
-   * `PrivacyCommandDeps.takeFreshSnapshot`; other commands currently ignore
-   * the object. The dispatcher forwards the whole object so the
-   * contract is uniform.
+   * Per-command runtime deps, keyed by command name. The privacy
+   * command consumes `PrivacyCommandDeps`; the anon command consumes
+   * `AnonCommandDeps`; other commands ignore the lookup result. The
+   * dispatcher forwards the entry matching `interaction.commandName`
+   * so each command only sees its own deps.
    */
-  commandDeps?: { privacy?: PrivacyCommandDeps };
+  commandDeps?: { privacy?: PrivacyCommandDeps; anon?: AnonCommandDeps };
 };
 
 export function createSlashCommandHandler(deps: HandlerDependencies = {}) {
@@ -57,10 +58,11 @@ export function createSlashCommandHandler(deps: HandlerDependencies = {}) {
       return;
     }
 
-    // Per-command deps lookup. New commands extend this map without
-    // touching the dispatcher. Commands that don't need runtime deps
-    // just ignore the second arg.
-    const commandDeps = deps.commandDeps?.privacy;
+    // Per-command deps lookup keyed by command name. Commands that
+    // don't need runtime deps just ignore the second arg.
+    const commandDeps = (deps.commandDeps as Record<string, unknown> | undefined)?.[
+      interaction.commandName
+    ];
 
     await definition.execute(
       {

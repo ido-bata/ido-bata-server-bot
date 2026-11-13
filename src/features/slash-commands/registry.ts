@@ -1,3 +1,4 @@
+import { anonCommand } from "./commands/anon.js";
 import { helpCommand } from "./commands/help.js";
 import { pingCommand } from "./commands/ping.js";
 import { privacyCommand } from "./commands/privacy.js";
@@ -7,7 +8,12 @@ export type { SlashCommandRegistry } from "./types.js";
 
 // The order is intentional — `help` renders the registry list, so we keep the
 // seed list stable and explicit here.
-const defaultDefinitions: SlashCommandDefinition[] = [pingCommand, helpCommand, privacyCommand];
+const defaultDefinitions: SlashCommandDefinition[] = [
+  pingCommand,
+  helpCommand,
+  privacyCommand,
+  anonCommand,
+];
 
 export function createSlashCommandRegistry(
   definitions: SlashCommandDefinition[] = defaultDefinitions,
