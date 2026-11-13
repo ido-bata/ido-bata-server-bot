@@ -172,6 +172,43 @@ overwrite), with these rules:
   material is explicitly rejected — never written to disk, never
   logged. Only public-key material enters the process. The removed
   `ANON_AUDIT_INDEX_KEY` env var is ignored with a warning.
+- **Crash durability.** `record()` fsyncs the temp file before
+  publishing and fsyncs the directory after the link/unlink, so the
+  "audit record durable before send" ordering survives a host crash,
+  not just a process exception. Any fsync/publish failure aborts the
+  post (`audit_failed`) — the feature fails closed rather than risk
+  an unaudited public message.
+- **Operational prerequisites (audit mode).** Audit mode is opt-in;
+  ephemeral mode (`ANON_AUDIT_PUBLIC_KEY` unset) is complete without
+  any of the following and is the correct default until the custodian
+  role is staffed:
+  1. **Key ceremony**: an RSA keypair is generated OFFLINE (e.g.
+     `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072`).
+     The private key goes only to the custodian's secure store
+     (HSM / password manager / air-gapped media) — never to the bot
+     host, never to env, never to a repo. Only the public key
+     (PEM `-----BEGIN PUBLIC KEY-----` or base64 SPKI DER) is
+     configured via `ANON_AUDIT_PUBLIC_KEY`.
+  2. **Selective deletion**: a user deletion request is handled by
+     the custodian running
+     `bun run anon:audit:delete -- --key-file <private.pem> --dir
+     <audit-dir> --user <id>` against a copy of (or direct access to)
+     the audit directory. The script inspects every record before
+     modifying anything and aborts on any anomaly — ops must treat a
+     non-`ok` result as "deletion NOT performed" and investigate,
+     never retry blindly.
+  3. **Consent revocation**: revoking `message-history` stops FUTURE
+     audit writes immediately (the consent gate fails closed). It
+     does NOT retroactively delete records already written — those
+     remain until the retention sweep or a custodian deletion run.
+     This is documented honestly in `docs/privacy.md`; a user who
+     revokes and wants existing records gone must go through the
+     custodian path.
+  4. **Failure response**: `auditState: "error"` (visible in the
+     status store/TUI) means every `/anon` post is refused — this is
+     intentional fail-closed behavior, not a bug to bypass. Fix the
+     key material or directory permissions, or unset
+     `ANON_AUDIT_PUBLIC_KEY` to return to ephemeral mode.
 - Audit files/dirs are created `0600`/`0700`; the audit directory is
   created eagerly at sink construction so a fresh deployment or bad
   permissions surfaces as `auditState: "error"` at startup. The

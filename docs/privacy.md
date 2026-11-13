@@ -216,3 +216,29 @@ deletion of one user's records requires the offline custodian script
 failure rather than claiming success. Threat-model limits — including
 why host-admin anonymity is not guaranteed — are documented in
 [`docs/adr/0003-anonymous-chat.md`](adr/0003-anonymous-chat.md).
+
+### 8.2 `/anon` audit-mode operations (ADR-0003 §3)
+
+Audit mode is opt-in; ephemeral mode needs none of this and remains
+the correct default until the custodian role is staffed.
+
+- **Key custody**: generate the RSA keypair OFFLINE. The private key
+  lives only in the custodian's secure store (HSM / password manager /
+  air-gapped media) — never on the bot host, never in env, never in
+  the repo. Only the public key goes into `ANON_AUDIT_PUBLIC_KEY`.
+  If the private key is lost, stored audit records become
+  permanently undecryptable — acceptable (they are ciphertext-only
+  and retention-bounded), but selective deletion becomes impossible
+  until expiry.
+- **Selective deletion**: on a user request, the custodian runs
+  `bun run anon:audit:delete -- --key-file <private.pem> --dir
+  <audit-dir> --user <id>`. A non-`ok` result means NOTHING was
+  modified — investigate the reported file, never assume partial
+  success.
+- **Consent revocation**: revoking `message-history` stops future
+  audit writes immediately. Existing ciphertext records are retained
+  until the retention sweep or a custodian deletion — revocation is
+  not retroactive deletion.
+- **`auditState: "error"`**: all `/anon` posts are refused until the
+  key/directory is fixed or audit mode is disabled. This is
+  intentional fail-closed behavior.

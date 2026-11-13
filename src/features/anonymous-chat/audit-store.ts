@@ -40,7 +40,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { link, mkdir, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readdir, rm, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { type AnonAuditPlaintext, createAnonCipher } from "./audit-crypto.js";
@@ -162,43 +162,53 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
         const tempPath = join(dir, `.${finalName}-${randomBytes(4).toString("hex")}.tmp`);
         const finalPath = join(dir, finalName);
         try {
-          await writeFile(tempPath, line, { encoding: "utf8", mode: 0o600, flag: "wx" });
-        } catch (error) {
-          // EEXIST means another attempt owns that temp name — never
-          // remove a file we did not create. Any other writeFile
-          // failure means `wx` did not create the file for someone
-          // else (POSIX returns EEXIST for existing names), so a
-          // partial file at tempPath can only be ours.
-          if (isNodeError(error) && error.code === "EEXIST") {
-            lastError = error;
-            continue;
+          // Crash durability (ADR-0003 §3): the record must be on
+          // stable storage BEFORE it becomes visible under its final
+          // name, because the public send happens right after
+          // record() resolves. fsync the temp file, publish, then
+          // fsync the directory so the new dirent itself survives a
+          // crash. Any failure aborts the publish and fails closed —
+          // the post is refused rather than sent unaudited.
+          const handle = await open(tempPath, "wx", 0o600);
+          try {
+            await handle.writeFile(line);
+            await handle.sync();
+          } finally {
+            await handle.close();
           }
-          await rm(tempPath, { force: true }).catch(() => {});
-          throw error;
-        }
-        try {
           await link(tempPath, finalPath);
+          try {
+            await unlink(tempPath);
+          } catch {
+            // The temp name is a second hard link to the published
+            // ciphertext. Leaving it would let a custodian delete the
+            // record file while this alias keeps the data readable, so
+            // withdraw the publish and fail rather than report success
+            // with a surviving alias. `record()` throwing maps to
+            // `audit_failed` — no public post is sent.
+            await rm(finalPath, { force: true }).catch(() => {});
+            await rm(tempPath, { force: true }).catch(() => {});
+            throw new Error("anon-audit temp unlink failed");
+          }
+          const dirHandle = await open(dir, "r");
+          try {
+            await dirHandle.sync();
+          } finally {
+            await dirHandle.close();
+          }
+          return;
         } catch (error) {
-          await rm(tempPath, { force: true }).catch(() => {});
+          // EEXIST means another attempt owns that temp name (open wx)
+          // or the final name (link) — never remove a file we did not
+          // create. Any other failure means `wx` did not create the
+          // file for someone else (POSIX returns EEXIST for existing
+          // names), so a partial file at tempPath can only be ours.
           if (isNodeError(error) && error.code === "EEXIST") {
             lastError = error;
             continue;
           }
-          throw error;
-        }
-        try {
-          await unlink(tempPath);
-          return;
-        } catch {
-          // The temp name is a second hard link to the published
-          // ciphertext. Leaving it would let a custodian delete the
-          // record file while this alias keeps the data readable, so
-          // withdraw the publish and fail rather than report success
-          // with a surviving alias. `record()` throwing maps to
-          // `audit_failed` — no public post is sent.
-          await rm(finalPath, { force: true }).catch(() => {});
           await rm(tempPath, { force: true }).catch(() => {});
-          throw new Error("anon-audit temp unlink failed");
+          throw error;
         }
       }
       throw lastError;

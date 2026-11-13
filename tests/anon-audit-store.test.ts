@@ -1,5 +1,14 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -186,6 +195,40 @@ describe("hasAnonAuditRecords", () => {
   it("detects legacy daily files", async () => {
     writeFileSync(join(dir, "2026-11-13.jsonl"), '{"v":1,"ct":"x"}\n');
     expect(await hasAnonAuditRecords(dir)).toBe(true);
+  });
+
+  it("publishes records with mode 0600", async () => {
+    const sink = createAnonAuditSink(auditConfig());
+    await sink.record({
+      userId: "u1",
+      guildId: "g",
+      channelId: "c",
+      postedAt: "t",
+      ciphertext: "ct",
+    });
+    const file = join(dir, recordFiles()[0]!);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it("fails closed on an unwritable audit dir — no partial record is published", async () => {
+    const sink = createAnonAuditSink(auditConfig());
+    chmodSync(dir, 0o500);
+    try {
+      await expect(
+        sink.record({
+          userId: "u1",
+          guildId: "g",
+          channelId: "c",
+          postedAt: "t",
+          ciphertext: "ct",
+        }),
+      ).rejects.toThrow();
+      // No final record AND no leftover temp may exist.
+      expect(recordFiles()).toHaveLength(0);
+      expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toHaveLength(0);
+    } finally {
+      chmodSync(dir, 0o700);
+    }
   });
 
   it("treats temp files as possible records (fail closed)", async () => {
