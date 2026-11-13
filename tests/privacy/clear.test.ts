@@ -128,6 +128,7 @@ describe("clearUserData aggregator", () => {
         "poll",
         "reminder",
         "state-snapshot",
+        "anonymous-chat-audit",
       ]);
       for (const result of report.results) {
         expect(result.ok).toBe(true);

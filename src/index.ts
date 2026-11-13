@@ -16,6 +16,9 @@ import type { ConsentScope } from "./consent/scopes.js";
 import type { ConsentService } from "./consent/service.js";
 import { createConsentService } from "./consent/service.js";
 import type { ReactionTarget } from "./consent/types.js";
+import { readAnonymousChatConfig } from "./features/anonymous-chat/config.js";
+import { createDiscordAnonAdapters } from "./features/anonymous-chat/discord.js";
+import { createAnonymousChatService } from "./features/anonymous-chat/service.js";
 import { birthdayRoleConfig } from "./features/birthday-role/config.js";
 import { buildBirthdayPayloads } from "./features/birthday-role/deploy.js";
 import { registerBirthdayRoleHandlers } from "./features/birthday-role/service.js";
@@ -368,6 +371,36 @@ async function main(): Promise<void> {
       consentService: privacyConsentService ?? undefined,
     });
   }
+  // `/anon` anonymous chat. The service is always constructed; audit
+  // persistence only activates when ANON_AUDIT_PUBLIC_KEY +
+  // ANON_AUDIT_INDEX_KEY are both configured (ADR-0003). Audit writes
+  // are consent-gated on `message-history` when the consent subsystem
+  // is deployed.
+  const { config: anonConfig, warning: anonConfigWarning } = readAnonymousChatConfig(process.env);
+  if (anonConfigWarning) {
+    rootLogger.warn({ component: "anonymous-chat" }, anonConfigWarning);
+  }
+  const anonConsentService = privacyConsentService;
+  const anonService = createAnonymousChatService({
+    config: anonConfig,
+    ...createDiscordAnonAdapters(client),
+    authorizeAudit: anonConsentService
+      ? async (userId) => (await anonConsentService.authorize(userId, "message-history")).ok
+      : undefined,
+    logger: {
+      warn: (obj, msg) => rootLogger.warn({ component: "anonymous-chat", ...obj }, msg),
+      error: (obj, msg) => rootLogger.error({ component: "anonymous-chat", ...obj }, msg),
+    },
+  });
+  statusStore.set({
+    features: {
+      ...statusStore.snapshot.features,
+      "anonymous-chat": {
+        state: "enabled",
+        meta: { audit: anonConfig.audit !== null },
+      },
+    },
+  });
   registerSlashCommandHandlers(client, {
     commandDeps: {
       privacy:
@@ -382,6 +415,7 @@ async function main(): Promise<void> {
                 : undefined,
             }
           : undefined,
+      anon: { service: anonService },
     },
   });
   statusStore.set({

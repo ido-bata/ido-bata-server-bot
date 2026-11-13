@@ -16,6 +16,7 @@ describe("slash command registry", () => {
       "ping",
       "help",
       "privacy",
+      "anon",
     ]);
     expect(registry.find("ping")?.name).toBe("ping");
     expect(registry.find("help")?.name).toBe("help");

@@ -70,6 +70,15 @@ export const CONSUMERS: readonly ConsumerEntry[] = [
     rationale:
       "Encrypted AES-256-GCM bundles of source files; expiry triggered via applyRetentionPlan",
   },
+  {
+    id: "anonymous-chat-audit",
+    label: "Anonymous chat audit log",
+    bucket: "consent-gated",
+    scope: "message-history",
+    dataFile: "data/anon-audit/",
+    rationale:
+      "RSA-OAEP-encrypted author↔message mapping (public key only on bot); 90-day retention, excluded from state snapshots",
+  },
 
   // Operational (5)
   {
@@ -137,6 +146,12 @@ export const CONSUMERS: readonly ConsumerEntry[] = [
   { id: "slash-commands", label: "Slash command metadata", bucket: "ephemeral" },
   { id: "slash-permissions", label: "Slash permission rules", bucket: "ephemeral" },
   { id: "timekeeper-commands", label: "Timekeeper slash dispatch", bucket: "ephemeral" },
+  {
+    id: "anonymous-chat",
+    label: "Anonymous chat (/anon)",
+    bucket: "ephemeral",
+    rationale: "In-memory cooldown only; no user-keyed persistence unless audit key configured",
+  },
   { id: "shutdown", label: "Signal-handler teardown", bucket: "ephemeral" },
 ];
 

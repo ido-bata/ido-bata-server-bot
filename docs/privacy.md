@@ -60,6 +60,7 @@ touch only ephemeral or operational data are listed for completeness.
 | poll                | `data/polls.json`                            | Discord snowflake | `votes: Record<userId, optionIndex>` + creatorId | `activity-history`  |
 | reminder            | `data/reminders.json`                        | Discord snowflake | `{ id, userId, message, fireAt, createdAt }` | `activity-history`  |
 | state-snapshot      | `data/snapshots/<id>.snap.enc`              | bundled          | encrypted AES-256-GCM mirror of all source files | `activity-history` (special: revoke must trigger snapshot expiry via `applyRetentionPlan`) |
+| anonymous-chat      | `data/anon-audit/YYYY-MM-DD.jsonl`          | HMAC index       | RSA-OAEP-encrypted `{userId, guildId, channelId, postedAt}` + public `messageId`; bot holds public key + HMAC index key only | `message-history` |
 
 ### 3.2 Operational persistent (justified, no consent gate)
 
@@ -73,7 +74,7 @@ touch only ephemeral or operational data are listed for completeness.
 
 ### 3.3 Ephemeral only (no on-disk persistence)
 
-The following 14 features hold state in memory only — nothing about any
+The following 15 features hold state in memory only — nothing about any
 Discord user is written to disk by the bot:
 
 - `game-activity`     — current presence (in-memory tracker only)
@@ -89,6 +90,10 @@ Discord user is written to disk by the bot:
 - `slash-commands`    — command metadata
 - `slash-permissions` — permission tier table
 - `timekeeper-commands` — `/timekeeper` subcommand dispatch
+- `anonymous-chat`     — `/anon` in-memory cooldown only; persists the
+  encrypted audit mapping ONLY when `ANON_AUDIT_PUBLIC_KEY` +
+  `ANON_AUDIT_INDEX_KEY` are configured (then it is the consent-gated
+  `anonymous-chat-audit` consumer above, not this ephemeral entry)
 - `shutdown`          — signal handler + teardown chain
 
 These are surfaced to users in `/privacy status` as "ephemeral, no
@@ -119,6 +124,17 @@ any snapshot whose `collectSourceFiles` manifest contains the revoked
 user id is expired. See
 [`src/features/state-snapshot/retention.ts`](../src/features/state-snapshot/retention.ts)
 and `src/features/privacy/clear.ts` for the wire-up.
+
+**Exception — `data/anon-audit/`**: the anonymous-chat audit log is
+consent-gated but deliberately excluded from
+`DEFAULT_SNAPSHOT_SOURCE_PATHS`. It is already RSA-OAEP encrypted at
+rest, self-retaining (daily files swept after
+`ANON_AUDIT_RETENTION_DAYS`, default 90), and mirroring it into
+snapshots would extend retention far beyond that window — defeating the
+bounded-retention guarantee. `/privacy delete` removes a user's audit
+records directly via the HMAC index (`anonymous-chat-audit` consumer);
+the snapshot purge path does not need to cover this directory. See
+ADR-0003 §3.
 
 ## 6. Timekeeper non-consent path
 
@@ -170,3 +186,23 @@ Discord API failure during reconciliation adds the affected guild id to
 
 明示した `CONSENT_MESSAGE_ID` が取得不能な場合は、誤って別の consent
 message を作らず fail closed とする。
+
+### 8.1 `/anon` anonymous chat (ADR-0003)
+
+| Env var | Effect |
+| --- | --- |
+| `ANON_DENY_CHANNEL_IDS` | optional comma-separated channel deny-list (supplementary; never replaces the effective-permission check) |
+| `ANON_COOLDOWN_SECONDS` | per-user attempt cooldown (default 30) |
+| `ANON_MAX_MESSAGE_LENGTH` | max trimmed body length (default 1000) |
+| `ANON_AUDIT_PUBLIC_KEY` | RSA public key (PEM or base64 SPKI) for sealing the author↔message mapping. Private key MUST NOT be deployed to the bot. |
+| `ANON_AUDIT_INDEX_KEY` | random ≥16-char HMAC key for `/privacy delete` lookup. Cannot decrypt. Both audit vars are all-or-nothing. |
+| `ANON_AUDIT_DIR` | audit directory (default `data/anon-audit`) |
+| `ANON_AUDIT_RETENTION_DAYS` | daily-file retention (default 90) |
+
+When both audit vars are unset, `/anon` persists nothing (ephemeral
+mode). When set, every post first requires an active `message-history`
+consent grant (if the consent subsystem is deployed) and the mapping is
+stored only as RSA-OAEP ciphertext; seal or append failure rejects the
+post (fail closed). Threat-model limits — including why host-admin
+anonymity is not guaranteed — are documented in
+[`docs/adr/0003-anonymous-chat.md`](adr/0003-anonymous-chat.md).
