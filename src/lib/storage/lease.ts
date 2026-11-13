@@ -297,13 +297,3 @@ export async function acquireInstanceLease(options: AcquireLeaseOptions): Promis
     renew,
   };
 }
-
-/**
- * Probe whether the backend honours conditional writes.
- *
- * The lease's exclusivity depends on it, so the answer decides whether the
- * bot may start at all. The probe object is removed afterwards.
- */
-export async function probeConditionalWriteSupport(driver: StorageDriver): Promise<boolean> {
-  return driver.probeConditionalWrites();
-}
