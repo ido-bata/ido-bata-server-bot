@@ -1,119 +1,119 @@
 {
-  "version": 1,
+  "version": 2,
   "skills": {
     "agent-delivery-estimation": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/agent-delivery-estimation/SKILL.md",
-      "computedHash": "af0f7f2cbdfb4f320dffe2bf7283a0e03e63f0406a0d616f018dd6cc868817d2"
+      "computedHash": "6440ea1d0ee5d3cb0f9245567aa98f484a0cdd278788605d0556a329f555a769"
     },
     "agent-recovery": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/agent-recovery/SKILL.md",
-      "computedHash": "00649e424999c8ac4ff7288a8f444692410b960880c0dc55cf3fe8c869be4d75"
+      "computedHash": "e09641e15a8cad536209cf444dfaf6245526d96b111f019022c58d1d86e41311"
     },
     "correctness-assurance": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/correctness-assurance/SKILL.md",
-      "computedHash": "7cf4969d12213263adc93ab3d76c6fba42e6c7c06046056d83ba0df9dafe11fa"
+      "computedHash": "a383c1e6edd12786179c3e19b689725cd1d2398f7afcd7c3c83cda40ae61c219"
     },
     "design-refinement": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/design-refinement/SKILL.md",
-      "computedHash": "cbcd546dd3665ebe70ec5f02cbb2f807cf06f8e1089406dedea530f07ac86914"
+      "computedHash": "08e1e85d93a752fdd97f815a65e251a871cc4e1583087f2cf4085037be6d9835"
     },
     "engineering-decisions": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/engineering-decisions/SKILL.md",
-      "computedHash": "8a954f49cbaa2de41ec0477c95951ee6e8ea979b058f08f237a0542e0ac90157"
+      "computedHash": "61e8ed90ca1ca9686fa9d42bde282f682cab6a36e42983a138571d5e6cbe4f91"
     },
     "github-delivery": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/github-delivery/SKILL.md",
-      "computedHash": "0fe5f7beca0bf65e9bf2e272004096b68bb03ad4424f1ac4bf26f48b6a4420b8"
+      "computedHash": "e3f9fa4063d18be7610635afdd0cfd55925f7fbd274c47d4ff050a76196e053d"
     },
     "herdr-runtime": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/herdr-runtime/SKILL.md",
-      "computedHash": "e75f22aa9f583910901cfd29579db5d7146fa74941b78b548a5955961e70d5db"
+      "computedHash": "d97c6adad57f031aff6a7a80ed5d31d2ddbd8082a7ccdd4a11131482093c6a1e"
     },
     "interaction-discipline": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/interaction-discipline/SKILL.md",
-      "computedHash": "954beb03f2ed5086b9d16335a241f2448dd118b716518e4d7b4a6f5e07ee6efb"
+      "computedHash": "2a3b9189db4aad711ad6c40b3b57e12edfef35161d52b0c3cc7bf64781025b12"
     },
     "linear-release-control": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/linear-release-control/SKILL.md",
-      "computedHash": "481bd5803e019d3c658acb867ee1ad924a7569059ba2cd33ff51d00bbe7f770f"
+      "computedHash": "f1b1b797c22bf77acc2daba75a3e8d64bf906e66c27a166a6fc49a42dedb57e2"
     },
     "onboarding": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/onboarding/SKILL.md",
-      "computedHash": "871ab7b99d7f7570c226a7aee54fbeb1f0fd1477b8d11d514ffddf8d2421c9a4"
+      "computedHash": "361182e403501d4e905c5455824fac0d2812b850749f2e2088e58945f48b89aa"
     },
     "parallel-orchestration": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/parallel-orchestration/SKILL.md",
-      "computedHash": "badb60351e92d0df5e20086136b93b5f1160adc0a5cae7c4342b6cb0b3cc1761"
+      "computedHash": "40b4e1344cd85811914849ef4122ee6ec863bf27d4d33800d50604972be463ac"
     },
     "policy-evaluation": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/policy-evaluation/SKILL.md",
-      "computedHash": "b2a910146e16af3f5a5c6269a7a66ba065af30b7ac4c2a8f7b0f6763ec24ef20"
+      "computedHash": "4b3d7899245ba109aaff7fcefd19ad06263bb108d3ef603c9e3fde254e136350"
     },
     "quality-gate": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/quality-gate/SKILL.md",
-      "computedHash": "5d787c6a0c8a57195f869db917f8d0dbc352d891dc25d88351486c1055198e61"
+      "computedHash": "5f6e0a9f9bd626768042fd7bbe9d65fb5ba7d222403ca307d2856f1537225cad"
     },
     "sandbox-runtime": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/sandbox-runtime/SKILL.md",
-      "computedHash": "98087489e224a92b9945fed78355da954ede0ffad1d063fe7802b7f1630a8eb7"
+      "computedHash": "75a7823b14d87997aebd13cb47066bdc2fe8656a62d39db8aa35b73c1abaacfc"
     },
     "secrets-management": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/secrets-management/SKILL.md",
-      "computedHash": "0503990897791cf757262598082f3ecfd45996f21c37837cb5300b41c4ea038d"
+      "computedHash": "ca3fc3fd8ef719513f95d4db2c03a9fdc2c59d1fee867a5f1d0a080b789ed7e4"
     },
     "security-audit": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/security-audit/SKILL.md",
-      "computedHash": "2f37d20a10011a401c2989fdd60745119f4bd6d3e29c049c8323663138c71c09"
+      "computedHash": "78f6a42e45dd1c90fe479f9b18aea33366236ec7fb18eb35bb489197285f5e29"
     },
     "security-maintenance": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/security-maintenance/SKILL.md",
-      "computedHash": "e17934113a433328b82102f06b8222793c04a420849d3f1e5a303a34e2dcb35d"
+      "computedHash": "df5e86d47fae9526a6d4ac412b15ecb577cf53912230794b3e0c401724d32f76"
     },
     "worktree-workflow": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/worktree-workflow/SKILL.md",
-      "computedHash": "b100c3b254f1c30555b12dc34f9398bb61d81deb92acf844b12500f7dcbda6a6"
+      "computedHash": "fbe70d9e0211e66f3a4811ed76060d469f0bf04324203bbd45e91cae2fd679b8"
     },
     "writing-discipline": {
       "source": "rebuildup/project-init",
       "sourceType": "github",
       "skillPath": "skills/writing-discipline/SKILL.md",
-      "computedHash": "8fc981b012b8fff0ad25633adbf8826be05fd79bd45b7e570024de416c1a3073"
+      "computedHash": ""
     }
   }
 }

@@ -19,6 +19,7 @@
  */
 
 import type { ConsentService } from "../../consent/service.js";
+import { deleteUserData as deleteAnonAuditData } from "./consumers/anon-audit.js";
 import { deleteUserData as deleteBirthdayData } from "./consumers/birthday.js";
 import { deleteUserData as deletePollData } from "./consumers/poll.js";
 import { deleteUserData as deleteReminderData } from "./consumers/reminder.js";
@@ -56,6 +57,7 @@ const CONSUMER_ADAPTERS: ReadonlyArray<{ consumer: string; adapter: ConsumerDele
   { adapter: deletePollData, consumer: "poll" },
   { adapter: deleteReminderData, consumer: "reminder" },
   { adapter: deleteSnapshotData, consumer: "state-snapshot" },
+  { adapter: deleteAnonAuditData, consumer: "anonymous-chat-audit" },
 ];
 
 export type ClearUserDataOptions = {

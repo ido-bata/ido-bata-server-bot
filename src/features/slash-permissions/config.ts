@@ -72,6 +72,12 @@ export const slashPermissionRules: SlashPermissionRule[] = [
     level: "everyone",
     reason: "Personal data access/delete; safe per-member self-service.",
   },
+  {
+    commandName: "anon",
+    level: "everyone",
+    reason:
+      "Anonymous repost; real authorization is the per-channel effective-permission check in anonymous-chat (ADR-0003).",
+  },
 ];
 
 const rulesByCommand = new Map<string, SlashPermissionRule>(

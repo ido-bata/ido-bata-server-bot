@@ -9,10 +9,17 @@ import {
 } from "../../src/features/privacy/consumer-inventory.js";
 
 describe("consumer inventory", () => {
-  it("exposes the 5 consent-gated consumers that map to scopes", () => {
+  it("exposes the consent-gated consumers that map to scopes", () => {
     const gated = getConsentGatedConsumers();
     const ids = gated.map((entry) => entry.id);
-    expect(ids).toEqual(["timekeeper-history", "birthday", "poll", "reminder", "state-snapshot"]);
+    expect(ids).toEqual([
+      "timekeeper-history",
+      "birthday",
+      "poll",
+      "reminder",
+      "state-snapshot",
+      "anonymous-chat-audit",
+    ]);
     for (const entry of gated) {
       expect(entry.bucket).toBe("consent-gated");
       expect(entry.scope).toBeTruthy();
