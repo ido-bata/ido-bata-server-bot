@@ -15,13 +15,15 @@ describe("storage configuration", () => {
 
   it("requires bucket and credentials for the u3 backend", () => {
     expect(() => readStorageConfig({ STORAGE_BACKEND: "u3" })).toThrow(/S3_BUCKET/);
-    expect(() =>
-      readStorageConfig({ STORAGE_BACKEND: "u3", S3_BUCKET: "bucket" }),
-    ).toThrow(/AWS_ACCESS_KEY_ID/);
+    expect(() => readStorageConfig({ STORAGE_BACKEND: "u3", S3_BUCKET: "bucket" })).toThrow(
+      /AWS_ACCESS_KEY_ID/,
+    );
   });
 
   it("rejects an unknown backend", () => {
-    expect(() => readStorageConfig({ STORAGE_BACKEND: "sqlite" })).toThrow(/unknown STORAGE_BACKEND/);
+    expect(() => readStorageConfig({ STORAGE_BACKEND: "sqlite" })).toThrow(
+      /unknown STORAGE_BACKEND/,
+    );
   });
 
   it("defaults the lease backend to the data backend", () => {
