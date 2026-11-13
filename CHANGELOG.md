@@ -69,6 +69,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Consent logger crash (`src/consent/logger.ts`)**: pino's internal `LOG` helper reads `this[Symbol(pino.msgPrefix)]` and `this[Symbol(pino.write)]`; forwarding a level method without binding `this` (the original `fn(first, second, ...rest)` shape) crashed every consent-scoped log call with `TypeError: Cannot read properties of undefined (reading 'Symbol(pino.msgPrefix)')`. Switched to `fn.call(logger, first, second, ...rest)` so the wrapper preserves the underlying pino logger identity. New `tests/consent/logger.test.ts` pins the contract (info / warn / error / child().info()) and would fail loudly if the regression returns.
 - **Pre-existing test failures unblocked the release gate**: `tests/privacy/birthday-gate.test.ts` and `tests/privacy/slash-privacy.test.ts` now chdir back to the test runner's cwd before `rmSync`, since Windows refuses to remove a directory that is still the cwd; `tests/observability/no-console.test.ts` splits `relative()` paths on both POSIX and Windows separators so the `src/scripts/**` allow-list matches regardless of host OS; `tests/state-snapshot.test.ts` uses relative source paths so `restoreSnapshot` honors the caller-supplied `outputDir` (the previous absolute-path setup silently misrouted on POSIX and threw on Windows); `src/lib/storage/__tests__/atomic-json.test.ts` skips the chmod-0o000 readability assertion on Windows, where POSIX permission-bit semantics do not apply to the file owner.
 
+## [0.2.2] — 2026-11-13
+
+### Added
+
+- **Anonymous chat posting `/anon` (#108, ADR-0003)**: post to any ordinary postable guild channel or thread as the bot without exposing the caller's public Discord identity. Effective-permission checks re-fetch channel / guild / member / bot-member / thread-parent state on every invocation and fail closed on unknown or revoked permissions; private-thread membership and `ManageThreads` are honored; mentions are suppressed via `allowedMentions: { parse: [] }`; per-user cooldown and deny lists are enforced; all replies are ephemeral and failures return generic messages.
+- **Optional audit mode (`ANON_AUDIT_PUBLIC_KEY`)**: when configured, each post attempt persists an RSA-OAEP-SHA256-sealed record (`{ userId, guildId, channelId, postedAt }` mapping) to `data/anon-audit/` before the public send, using immutable per-record files published via fsync + no-replace hard-link + directory fsync. Only the public key is deployed; the private key stays offline with a custodian. Unset = fully ephemeral mode with no persistence; configured-but-broken = fail closed (`auditState: "error"` refuses all posts). Selective deletion is an offline custodian operation (`bun run anon:audit:delete`); `/privacy delete` honestly reports it cannot selectively delete ciphertext-only records. Retention sweeps stale records and `.tmp` orphans.
+- **Operational runbook**: ADR-0003 §3 and `docs/privacy.md` §8.2 document the offline key ceremony, custodian deletion procedure, consent-revocation semantics (stops future writes, not retroactive), and the `auditState: "error"` recovery path.
+
+### Security
+
+- **Dependency advisories (#111)**: bumped `zod` and pinned `undici` past known security advisories; `bun audit --production` is green again.
+- **Error-log sanitization**: `safeErrorFields` emits only whitelisted values — known-safe error class names, whitelisted Node errno / undici string codes or bounded numeric Discord codes, and HTTP status 100–599. `error.message`, stacks, payloads, snowflakes, and arbitrary strings can never reach logs, metrics, TUI, or the error-forwarder.
+
 ## [0.1.0] — initial integration
 
 First integrated release of the timekeeper + reaction-roles Discord bot.
