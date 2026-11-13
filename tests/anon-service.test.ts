@@ -83,6 +83,7 @@ function makeDeps(
     guild?: AnonGuildLike | null;
     threadMember?: boolean;
     isThreadMember?: (channel: AnonChannelLike, userId: string) => Promise<boolean>;
+    fetchChannel?: (channelId: string) => Promise<AnonChannelLike | null>;
     authorizeAudit?: (userId: string) => Promise<boolean>;
     audit?: AnonAuditSink | null;
     now?: () => number;
@@ -98,7 +99,7 @@ function makeDeps(
   const logger: AnonLogger = { warn, error };
   const service = createAnonymousChatService({
     config: overrides.config ?? makeConfig(),
-    fetchChannel: async () => channel,
+    fetchChannel: overrides.fetchChannel ?? (async () => channel),
     fetchGuild: async () => guildObj,
     fetchMember: async () => memberObj,
     fetchBotMember: async () => botMemberObj,
@@ -290,6 +291,7 @@ describe("anonymous-chat service — threads", () => {
     overrides: { locked?: boolean | null; parentBits?: AnonBits | null; type?: number } = {},
   ) {
     const { channel: parent } = makeChannel({
+      id: "parent-1",
       permsByMemberId: {
         "user-1": overrides.parentBits ?? bitsOf(VIEW, SEND_THREAD),
         "bot-1": bitsOf(VIEW, SEND_THREAD),
@@ -300,34 +302,66 @@ describe("anonymous-chat service — threads", () => {
       permsByMemberId: {},
     });
     channel.parent = parent;
-    channel.parentId = "chan-1";
+    channel.parentId = "parent-1";
     channel.locked = overrides.locked === undefined ? false : overrides.locked;
-    return { channel, send };
+    // Thread permission resolution always re-fetches the parent.
+    const fetchChannel = async (id: string) =>
+      id === "parent-1" ? parent : id === channel.id ? channel : null;
+    return { channel, send, parent, fetchChannel };
   }
 
   it("posts in a public thread when parent perms allow", async () => {
-    const { channel, send } = makeThread();
-    const { service } = makeDeps({ channel });
+    const { channel, send, fetchChannel } = makeThread();
+    const { service } = makeDeps({ channel, fetchChannel });
     expect((await service.post(INPUT)).ok).toBe(true);
     expect(send).toHaveBeenCalled();
   });
 
   it("denies locked threads", async () => {
-    const { channel, send } = makeThread({ locked: true });
-    const { service } = makeDeps({ channel });
+    const { channel, send, fetchChannel } = makeThread({ locked: true });
+    const { service } = makeDeps({ channel, fetchChannel });
     expect(await service.post(INPUT)).toEqual({ ok: false, reason: "denied" });
     expect(send).not.toHaveBeenCalled();
   });
 
   it("denies threads whose locked state is unknown (null) — fail closed", async () => {
-    const { channel, send } = makeThread({ locked: null });
-    const { service } = makeDeps({ channel });
+    const { channel, send, fetchChannel } = makeThread({ locked: null });
+    const { service } = makeDeps({ channel, fetchChannel });
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "denied" });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("denies when the fresh parent fetch fails or returns nothing — fail closed", async () => {
+    const { channel, send, fetchChannel } = makeThread();
+    const { service } = makeDeps({
+      channel,
+      fetchChannel: async (id) => (id === "parent-1" ? null : fetchChannel(id)),
+    });
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "denied" });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("denies when the freshly fetched parent revoked the overwrite the cached parent still allows", async () => {
+    // Regression: `channel.parent` is cached and permissive, but the
+    // fresh fetch returns the post-revocation parent — the decision
+    // must use the fresh bits.
+    const { channel, send } = makeThread();
+    const revokedParent = makeChannel({
+      id: "parent-1",
+      permsByMemberId: { "user-1": bitsOf(VIEW), "bot-1": bitsOf(VIEW, SEND_THREAD) },
+    }).channel;
+    const { service } = makeDeps({
+      channel,
+      fetchChannel: async (id) =>
+        id === "parent-1" ? revokedParent : id === channel.id ? channel : null,
+    });
     expect(await service.post(INPUT)).toEqual({ ok: false, reason: "denied" });
     expect(send).not.toHaveBeenCalled();
   });
 
   it("denies private threads for non-members", async () => {
     const { channel: parent } = makeChannel({
+      id: "parent-1",
       permsByMemberId: { "user-1": bitsOf(VIEW, SEND_THREAD), "bot-1": bitsOf(VIEW, SEND_THREAD) },
     });
     const { channel, send } = makeChannel({
@@ -335,14 +369,19 @@ describe("anonymous-chat service — threads", () => {
       permsByMemberId: {},
     });
     channel.parent = parent;
-    channel.parentId = "chan-1";
-    const { service } = makeDeps({ channel, threadMember: false });
+    channel.parentId = "parent-1";
+    const { service } = makeDeps({
+      channel,
+      threadMember: false,
+      fetchChannel: async (id) => (id === "parent-1" ? parent : id === channel.id ? channel : null),
+    });
     expect(await service.post(INPUT)).toEqual({ ok: false, reason: "denied" });
     expect(send).not.toHaveBeenCalled();
   });
 
   it("allows private threads for members", async () => {
     const { channel: parent } = makeChannel({
+      id: "parent-1",
       permsByMemberId: { "user-1": bitsOf(VIEW, SEND_THREAD), "bot-1": bitsOf(VIEW, SEND_THREAD) },
     });
     const { channel, send } = makeChannel({
@@ -350,14 +389,19 @@ describe("anonymous-chat service — threads", () => {
       permsByMemberId: {},
     });
     channel.parent = parent;
-    channel.parentId = "chan-1";
-    const { service } = makeDeps({ channel, threadMember: true });
+    channel.parentId = "parent-1";
+    const { service } = makeDeps({
+      channel,
+      threadMember: true,
+      fetchChannel: async (id) => (id === "parent-1" ? parent : id === channel.id ? channel : null),
+    });
     expect((await service.post(INPUT)).ok).toBe(true);
     expect(send).toHaveBeenCalled();
   });
 
   it("denies private threads when the bot is neither a member nor a moderator", async () => {
     const { channel: parent } = makeChannel({
+      id: "parent-1",
       permsByMemberId: { "user-1": bitsOf(VIEW, SEND_THREAD), "bot-1": bitsOf(VIEW, SEND_THREAD) },
     });
     const { channel, send } = makeChannel({
@@ -365,10 +409,11 @@ describe("anonymous-chat service — threads", () => {
       permsByMemberId: {},
     });
     channel.parent = parent;
-    channel.parentId = "chan-1";
+    channel.parentId = "parent-1";
     const { service } = makeDeps({
       channel,
       isThreadMember: async (_c, userId) => userId === "user-1",
+      fetchChannel: async (id) => (id === "parent-1" ? parent : id === channel.id ? channel : null),
     });
     expect(await service.post(INPUT)).toEqual({
       ok: false,
@@ -379,6 +424,7 @@ describe("anonymous-chat service — threads", () => {
 
   it("allows private threads when the bot holds ManageThreads without membership", async () => {
     const { channel: parent } = makeChannel({
+      id: "parent-1",
       permsByMemberId: {
         "user-1": bitsOf(VIEW, SEND_THREAD),
         "bot-1": bitsOf(VIEW, SEND_THREAD, MANAGE_THREADS),
@@ -389,10 +435,11 @@ describe("anonymous-chat service — threads", () => {
       permsByMemberId: {},
     });
     channel.parent = parent;
-    channel.parentId = "chan-1";
+    channel.parentId = "parent-1";
     const { service } = makeDeps({
       channel,
       isThreadMember: async (_c, userId) => userId === "user-1",
+      fetchChannel: async (id) => (id === "parent-1" ? parent : id === channel.id ? channel : null),
     });
     expect((await service.post(INPUT)).ok).toBe(true);
     expect(send).toHaveBeenCalled();
@@ -605,6 +652,7 @@ describe("anonymous-chat service — auditState", () => {
 describe("anonymous-chat service — private thread moderator path", () => {
   function makePrivateThread(botBits: AnonBits, userBits: AnonBits) {
     const { channel: parent } = makeChannel({
+      id: "parent-1",
       permsByMemberId: { "user-1": userBits, "bot-1": botBits },
     });
     const { channel, send } = makeChannel({
@@ -612,18 +660,21 @@ describe("anonymous-chat service — private thread moderator path", () => {
       permsByMemberId: {},
     });
     channel.parent = parent;
-    channel.parentId = "chan-1";
+    channel.parentId = "parent-1";
     channel.locked = false;
-    return { channel, send };
+    const fetchChannel = async (id: string) =>
+      id === "parent-1" ? parent : id === channel.id ? channel : null;
+    return { channel, send, fetchChannel };
   }
 
   it("allows a non-member user who holds ManageThreads", async () => {
-    const { channel, send } = makePrivateThread(
+    const { channel, send, fetchChannel } = makePrivateThread(
       bitsOf(VIEW, SEND_THREAD, MANAGE_THREADS), // bot can moderate
       bitsOf(VIEW, SEND_THREAD, MANAGE_THREADS), // user can moderate
     );
     const { service } = makeDeps({
       channel,
+      fetchChannel,
       isThreadMember: async () => false, // nobody is a member
     });
     expect((await service.post(INPUT)).ok).toBe(true);
@@ -631,12 +682,13 @@ describe("anonymous-chat service — private thread moderator path", () => {
   });
 
   it("denies a non-member user without ManageThreads", async () => {
-    const { channel, send } = makePrivateThread(
+    const { channel, send, fetchChannel } = makePrivateThread(
       bitsOf(VIEW, SEND_THREAD),
       bitsOf(VIEW, SEND_THREAD),
     );
     const { service } = makeDeps({
       channel,
+      fetchChannel,
       isThreadMember: async () => false,
     });
     expect(await service.post(INPUT)).toEqual({ ok: false, reason: "denied" });

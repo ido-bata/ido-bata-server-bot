@@ -133,22 +133,13 @@ describe("resolveEffectivePermissions — admin / owner bypass", () => {
 describe("resolveEffectivePermissions — threads", () => {
   // Discord threads carry no permission_overwrites; permissions come
   // wholesale from the parent channel (discord.js delegates likewise).
-  it("uses parent permissions when the thread is resolved inline", async () => {
-    const parent = textChannel(() => bitsOf(VIEW, SEND_THREAD));
-    const channel = threadChannel({ parent });
-    const result = await resolveEffectivePermissions({
-      channel,
-      member: member("u1"),
-      guild: GUILD,
-      fetchChannel: fetchChannelNull,
-    });
-    expect(result?.has(SEND_THREAD)).toBe(true);
-  });
-
-  it("fetches the parent via fetchChannel when thread.parent is unresolved", async () => {
-    const parent = textChannel(() => bitsOf(VIEW, SEND_THREAD));
-    const channel = threadChannel({ parent: null, parentId: "parent-1" });
-    const fetchChannel = vi.fn(async (id: string) => (id === "parent-1" ? parent : null));
+  // The parent is ALWAYS resolved through the fresh-fetch adapter —
+  // a cached `thread.parent` can hold stale overwrites.
+  it("always fetches the parent fresh, ignoring stale cached parent bits", async () => {
+    const staleParent = textChannel(() => bitsOf(VIEW)); // cached: no send
+    const freshParent = { ...textChannel(() => bitsOf(VIEW, SEND_THREAD)), id: "parent-1" };
+    const channel = threadChannel({ parent: staleParent, parentId: "parent-1" });
+    const fetchChannel = vi.fn(async (id: string) => (id === "parent-1" ? freshParent : null));
     const result = await resolveEffectivePermissions({
       channel,
       member: member("u1"),
@@ -157,6 +148,23 @@ describe("resolveEffectivePermissions — threads", () => {
     });
     expect(fetchChannel).toHaveBeenCalledWith("parent-1");
     expect(result?.has(SEND_THREAD)).toBe(true);
+  });
+
+  it("denies when the fresh parent revoked what the cached parent allowed", async () => {
+    const staleParent = textChannel(() => bitsOf(VIEW, SEND_THREAD)); // cached: allow
+    const freshParent = {
+      ...textChannel(() => bitsOf(VIEW)), // fresh: send revoked
+      id: "parent-1",
+    };
+    const channel = threadChannel({ parent: staleParent, parentId: "parent-1" });
+    const fetchChannel = async (id: string) => (id === "parent-1" ? freshParent : null);
+    const result = await resolveEffectivePermissions({
+      channel,
+      member: member("u1"),
+      guild: GUILD,
+      fetchChannel,
+    });
+    expect(result?.has(SEND_THREAD)).toBe(false);
   });
 
   it("returns null when the parent cannot be resolved (fail closed)", async () => {
@@ -170,14 +178,43 @@ describe("resolveEffectivePermissions — threads", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null when the parent's permissionsFor cannot resolve", async () => {
-    const parent = textChannel(() => null);
-    const channel = threadChannel({ parent });
+  it("returns null when the thread has no parentId", async () => {
+    const channel = threadChannel({ parent: null, parentId: null });
     const result = await resolveEffectivePermissions({
       channel,
       member: member("u1"),
       guild: GUILD,
       fetchChannel: fetchChannelNull,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("returns null when the fetched parent belongs to another guild", async () => {
+    const foreignParent = {
+      ...textChannel(() => bitsOf(VIEW, SEND_THREAD)),
+      id: "parent-1",
+      guildId: "guild-2",
+    };
+    const channel = threadChannel({ parent: null, parentId: "parent-1" });
+    const fetchChannel = async () => foreignParent;
+    const result = await resolveEffectivePermissions({
+      channel,
+      member: member("u1"),
+      guild: GUILD,
+      fetchChannel,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("returns null when the parent's permissionsFor cannot resolve", async () => {
+    const parent = { ...textChannel(() => null), id: "parent-1" };
+    const channel = threadChannel({ parent: null, parentId: "parent-1" });
+    const fetchChannel = async () => parent;
+    const result = await resolveEffectivePermissions({
+      channel,
+      member: member("u1"),
+      guild: GUILD,
+      fetchChannel,
     });
     expect(result).toBeNull();
   });

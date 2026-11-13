@@ -130,10 +130,11 @@ overwrite), with these rules:
   ultimately failed (orphan records): that is deliberate
   over-recording — the safe direction — and retention sweeps them.
 - **Concurrency needs no lock.** Each record is written to a hidden
-  temp file and atomically `rename`-published, so readers never see
-  a partial record; appends are independent file creations and
-  cannot interleave or lose each other's data — across processes
-  too. The retention sweep only removes files whose UTC date prefix
+  temp file and atomically published via hard `link` + `unlink` —
+  `link` fails `EEXIST` rather than overwriting a final name, and
+  readers never see a partial record; appends are independent file
+  creations and cannot interleave or lose each other's data —
+  across processes too. The retention sweep only removes files whose UTC date prefix
   is older than `ANON_AUDIT_RETENTION_DAYS` (default 90) plus stale
   `.tmp` orphans — it can never include a file being appended
   (appends always carry today's date). Legacy `YYYY-MM-DD.jsonl`

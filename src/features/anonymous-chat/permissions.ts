@@ -108,17 +108,22 @@ export async function resolveEffectivePermissions(args: {
 
   // Threads inherit the parent channel's permission overwrites;
   // discord.js ThreadChannel.permissionsFor delegates to the parent,
-  // which is exactly the semantics Discord applies. Private-thread
-  // membership is checked separately by the service.
-  let parent = channel.parent;
-  if (!parent && channel.parentId) {
-    try {
-      parent = await fetchChannel(channel.parentId);
-    } catch {
-      return null;
-    }
+  // which is exactly the semantics Discord applies. The parent is
+  // ALWAYS resolved through the fresh-fetch adapter: the thread's
+  // cached `parent` can carry stale overwrites even when the thread
+  // itself was just re-fetched, and this decision must reflect the
+  // current permission state. Private-thread membership is checked
+  // separately by the service.
+  if (!channel.parentId) {
+    return null;
   }
-  if (!parent) {
+  let parent: AnonChannelLike | null;
+  try {
+    parent = await fetchChannel(channel.parentId);
+  } catch {
+    return null;
+  }
+  if (!parent || parent.guildId !== guild.id) {
     return null;
   }
 
