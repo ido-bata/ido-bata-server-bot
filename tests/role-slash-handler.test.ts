@@ -62,13 +62,18 @@ function makeRoleManager() {
 }
 
 describe("role-slash handler", () => {
-  it("replies unknown for unregistered commands", async () => {
-    const { interaction, reply } = makeInteraction({ commandName: "missing" });
-    const handler = createRoleSlashHandler();
+  it("ignores chat-input commands owned by other features", async () => {
+    // `anon`, `poll`, `ping`, etc. are registered by other feature
+    // handlers. This dispatcher must not answer them — replying
+    // `unknown command` raced the owning handler (v0.2.2 /anon bug).
+    for (const commandName of ["anon", "poll", "ping", "missing"]) {
+      const { interaction, reply } = makeInteraction({ commandName });
+      const handler = createRoleSlashHandler();
 
-    await handler.handleInteraction(interaction);
+      await handler.handleInteraction(interaction);
 
-    expect(reply).toHaveBeenCalledWith({ content: "unknown command", ephemeral: true });
+      expect(reply).not.toHaveBeenCalled();
+    }
   });
 
   it("ignores interactions that are not chat input commands", async () => {

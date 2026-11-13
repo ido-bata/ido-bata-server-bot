@@ -65,16 +65,18 @@ describe("slash command handler", () => {
     });
   });
 
-  it("replies with `unknown command` for unknown command names", async () => {
+  it("ignores chat-input commands owned by other features", async () => {
     const handler = createSlashCommandHandler();
-    const { interaction, reply } = createInteractionHarness("nope");
+    // `role`, `poll`, `timekeeper`, etc. are registered by other feature
+    // handlers. This dispatcher must not answer them — replying
+    // `unknown command` raced the owning handler (v0.2.2 /anon bug).
+    for (const commandName of ["role", "poll", "timekeeper", "nope"]) {
+      const { interaction, reply } = createInteractionHarness(commandName);
 
-    await handler.handleInteraction(interaction);
+      await handler.handleInteraction(interaction);
 
-    expect(reply).toHaveBeenCalledWith({
-      content: "unknown command",
-      ephemeral: true,
-    });
+      expect(reply).not.toHaveBeenCalled();
+    }
   });
 
   it("ignores interactions that are not chat-input commands", async () => {
