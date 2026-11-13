@@ -1,10 +1,7 @@
-import { basename, dirname } from "node:path";
-
 import { z } from "zod";
 
-import { getStorageDriver } from "../../lib/storage/index.js";
 import { STORAGE_KEYS } from "../../lib/storage/keys.js";
-import { createLocalFileStorage } from "../../lib/storage/local.js";
+import { resolveStorageTarget } from "../../lib/storage/target.js";
 import type { StorageDriver } from "../../lib/storage/types.js";
 
 const JST_OFFSET_MINUTES = 9 * 60;
@@ -57,16 +54,12 @@ export type LoadResult = {
 };
 
 function resolveStore(options: LoadOptions): { driver: StorageDriver; key: string } {
-  if (options.filePath) {
-    return {
-      driver: createLocalFileStorage({ root: dirname(options.filePath) }),
-      key: basename(options.filePath),
-    };
-  }
-  return {
-    driver: options.driver ?? getStorageDriver(),
-    key: options.key ?? STORAGE_KEYS.scheduledAnnouncements,
-  };
+  return resolveStorageTarget({
+    defaultKey: STORAGE_KEYS.scheduledAnnouncements,
+    driver: options.driver,
+    filePath: options.filePath,
+    key: options.key,
+  });
 }
 
 export async function loadScheduledAnnouncements(options: LoadOptions = {}): Promise<LoadResult> {

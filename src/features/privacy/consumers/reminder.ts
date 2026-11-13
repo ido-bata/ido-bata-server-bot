@@ -6,12 +6,10 @@
  * — ENOENT (no persisted file) is treated as success, since there is
  * nothing to remove.
  */
-import { basename, dirname } from "node:path";
 import { z } from "zod";
-import { getStorageDriver } from "../../../lib/storage/index.js";
 import { mutateJsonObject } from "../../../lib/storage/json.js";
 import { STORAGE_KEYS } from "../../../lib/storage/keys.js";
-import { createLocalFileStorage } from "../../../lib/storage/local.js";
+import { resolveStorageTarget } from "../../../lib/storage/target.js";
 import type { StorageDriver } from "../../../lib/storage/types.js";
 import type { DeleteResult } from "../types.js";
 
@@ -40,19 +38,6 @@ const storeSchema = z.object({
   reminders: z.array(entrySchema),
 });
 
-function resolveStore(options: ReminderDeleteOptions): { driver: StorageDriver; key: string } {
-  if (options.filePath) {
-    return {
-      driver: createLocalFileStorage({ root: dirname(options.filePath) }),
-      key: basename(options.filePath),
-    };
-  }
-  return {
-    driver: options.driver ?? getStorageDriver(),
-    key: options.key ?? STORAGE_KEYS.reminders,
-  };
-}
-
 export function deleteUserData(
   userId: string,
   options: ReminderDeleteOptions = {},
@@ -61,7 +46,12 @@ export function deleteUserData(
 }
 
 async function runDelete(userId: string, options: ReminderDeleteOptions): Promise<DeleteResult> {
-  const { driver, key } = resolveStore(options);
+  const { driver, key } = resolveStorageTarget({
+    defaultKey: STORAGE_KEYS.reminders,
+    driver: options.driver,
+    filePath: options.filePath,
+    key: options.key,
+  });
   const outcome = await mutateJsonObject({
     driver,
     key,

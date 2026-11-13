@@ -7,12 +7,10 @@
  * can report a partial failure to `/privacy delete` instead of declaring
  * success on a corrupted store.
  */
-import { basename, dirname } from "node:path";
 import { z } from "zod";
-import { getStorageDriver } from "../../../lib/storage/index.js";
 import { mutateJsonObject } from "../../../lib/storage/json.js";
 import { STORAGE_KEYS } from "../../../lib/storage/keys.js";
-import { createLocalFileStorage } from "../../../lib/storage/local.js";
+import { resolveStorageTarget } from "../../../lib/storage/target.js";
 import type { StorageDriver } from "../../../lib/storage/types.js";
 import type { DeleteResult } from "../types.js";
 
@@ -31,19 +29,6 @@ export type TimekeeperDeleteOptions = {
 
 const historySchema = z.record(z.string(), z.array(z.string()));
 
-function resolveStore(options: TimekeeperDeleteOptions): { driver: StorageDriver; key: string } {
-  if (options.filePath) {
-    return {
-      driver: createLocalFileStorage({ root: dirname(options.filePath) }),
-      key: basename(options.filePath),
-    };
-  }
-  return {
-    driver: options.driver ?? getStorageDriver(),
-    key: options.key ?? STORAGE_KEYS.timekeeperHistory,
-  };
-}
-
 export function deleteUserData(
   userId: string,
   options: TimekeeperDeleteOptions = {},
@@ -52,7 +37,12 @@ export function deleteUserData(
 }
 
 async function runDelete(userId: string, options: TimekeeperDeleteOptions): Promise<DeleteResult> {
-  const { driver, key } = resolveStore(options);
+  const { driver, key } = resolveStorageTarget({
+    defaultKey: STORAGE_KEYS.timekeeperHistory,
+    driver: options.driver,
+    filePath: options.filePath,
+    key: options.key,
+  });
   const outcome = await mutateJsonObject({
     driver,
     key,
