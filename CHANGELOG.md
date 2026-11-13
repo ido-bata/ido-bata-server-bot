@@ -82,6 +82,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Dependency advisories (#111)**: bumped `zod` and pinned `undici` past known security advisories; `bun audit --production` is green again.
 - **Error-log sanitization**: `safeErrorFields` emits only whitelisted values — known-safe error class names, whitelisted Node errno / undici string codes or bounded numeric Discord codes, and HTTP status 100–599. `error.message`, stacks, payloads, snowflakes, and arbitrary strings can never reach logs, metrics, TUI, or the error-forwarder.
 
+## [0.2.3] — 2026-11-13
+
+### Fixed
+
+- **Slash command routing (#115 / PR #116)**: `src/features/role-slash/handler.ts` and `src/features/slash-commands/handler.ts` replied `unknown command` to any chat-input command outside their own registries. Because discord.js fans out every `InteractionCreate` to all listeners, commands owned by other features (`/anon`, `/role`, `/poll`, `/timekeeper`, `/remind`, `/birthday`, `/calendar`) could receive a competing `unknown command` response — observed in production on `/anon` under v0.2.2. Both dispatchers now return silently for commands they do not own, so each interaction is answered exactly once by its owning handler; unknown *subcommands* within an owned command still return `unknown subcommand`. New `tests/interaction-routing.test.ts` registers all production interaction listeners and asserts exactly-one response across `/anon`, `/role`, `/ping`, `/privacy`, `/timekeeper`, `/poll`, `/help`, and `/birthday`, with zero recorded calls for unowned or non-chat-input interactions.
+
 ## [0.1.0] — initial integration
 
 First integrated release of the timekeeper + reaction-roles Discord bot.

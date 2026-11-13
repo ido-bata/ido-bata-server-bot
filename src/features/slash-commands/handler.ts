@@ -48,13 +48,12 @@ export function createSlashCommandHandler(deps: HandlerDependencies = {}) {
   async function dispatch(interaction: InteractionLike): Promise<void> {
     const definition = registry.find(interaction.commandName);
 
+    // discord.js fans every chat-input interaction out to all
+    // InteractionCreate listeners, so commands owned by other features
+    // (/role, /poll, /timekeeper, ...) reach this dispatcher too. Only
+    // the owning handler may answer; replying `unknown command` here
+    // races the real handler and was the v0.2.2 /anon regression.
     if (!definition) {
-      if (interaction.isRepliable()) {
-        await interaction.reply({
-          content: "unknown command",
-          ephemeral: true,
-        });
-      }
       return;
     }
 
