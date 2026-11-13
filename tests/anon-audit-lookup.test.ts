@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import type {
+  AnonAuditAttemptPlaintext,
+  AnonAuditPostedPlaintext,
+} from "../src/features/anonymous-chat/audit-crypto.js";
 import { lookupAnonAuditRecords } from "../src/features/anonymous-chat/audit-lookup.js";
 import { createAnonAuditSink } from "../src/features/anonymous-chat/audit-store.js";
 import type { AnonAuditConfig } from "../src/features/anonymous-chat/config.js";
@@ -129,12 +133,86 @@ describe("lookupAnonAuditRecords", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    // A pure anomaly scan must not dump the whole decrypted history.
+    expect(result.matched).toHaveLength(0);
     expect(result.unmatchedAttempts).toHaveLength(1);
     expect(result.unmatchedAttempts[0]).toMatchObject({
       kind: "attempt",
       userId: "user-2",
       attemptId: "c".repeat(32),
     });
+  });
+
+  it("fails closed on a posted record missing messageId", async () => {
+    const sink = createAnonAuditSink(auditConfig());
+    await sink.record({
+      kind: "posted",
+      guildId: "g",
+      channelId: "c",
+      ciphertext: sink.seal({
+        v: 2,
+        kind: "posted",
+        attemptId: "f".repeat(32),
+        userId: "user-bad",
+        guildId: "g",
+        channelId: "c",
+        postedAt: "t",
+      } as unknown as AnonAuditPostedPlaintext),
+    });
+    const result = await lookupAnonAuditRecords({
+      dir,
+      privateKeys: [privateKey],
+      filter: { userId: "user-bad" },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("fails closed on an unsupported record version", async () => {
+    const sink = createAnonAuditSink(auditConfig());
+    await sink.record({
+      kind: "attempt",
+      guildId: "g",
+      channelId: "c",
+      ciphertext: sink.seal({
+        v: 3,
+        kind: "attempt",
+        attemptId: "0".repeat(32),
+        userId: "user-v3",
+        guildId: "g",
+        channelId: "c",
+        postedAt: "t",
+      } as unknown as AnonAuditAttemptPlaintext),
+    });
+    const result = await lookupAnonAuditRecords({
+      dir,
+      privateKeys: [privateKey],
+      filter: { userId: "user-v3" },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("still resolves legacy v1 records without v2 markers", async () => {
+    const sink = createAnonAuditSink(auditConfig());
+    await sink.record({
+      kind: "attempt",
+      guildId: "g",
+      channelId: "c",
+      ciphertext: sink.seal({
+        userId: "user-legacy",
+        guildId: "g",
+        channelId: "c",
+        postedAt: "t",
+      } as unknown as AnonAuditAttemptPlaintext),
+    });
+    const result = await lookupAnonAuditRecords({
+      dir,
+      privateKeys: [privateKey],
+      filter: { userId: "user-legacy" },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.matched).toHaveLength(1);
+    expect(result.matched[0]?.plaintext.userId).toBe("user-legacy");
   });
 
   it("tries multiple keys for rotation overlap", async () => {

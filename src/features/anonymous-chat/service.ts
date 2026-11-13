@@ -372,6 +372,13 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       // If this throws, the attempt record remains as an orphan — a
       // record for a message that was never posted. That is the safe
       // direction (over-recording) and is swept by retention.
+      // Re-check auditState at the send boundary: a concurrent post
+      // may have flipped it to "error" (posted-record failure) while
+      // this request was in preflight. Aborting here leaves only the
+      // orphan attempt record — never an unlinked public message.
+      if (auditState !== "active") {
+        return { ok: false, reason: "unavailable" };
+      }
       let sent: { id: string; delete: () => Promise<unknown> };
       try {
         sent = await channel.send({
@@ -407,14 +414,17 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
           ciphertext: audit.seal(postedPlaintext),
         });
       } catch (error) {
+        // Flip auditState BEFORE awaiting the delete: a slow Discord
+        // delete must not leave a window where new posts still pass
+        // the active gate.
+        auditState = "error";
         try {
           await sent.delete();
         } catch {
           // Best effort only — the message may already be gone or the
-          // delete may fail; either way auditState flips to "error"
-          // below so no further unlinked posts accumulate.
+          // delete may fail; auditState is already "error" so no
+          // further unlinked posts accumulate.
         }
-        auditState = "error";
         logger?.error(
           safeErrorFields(error),
           "anonymous-chat: posted audit record failed; message deleted best-effort, /anon disabled",

@@ -649,6 +649,89 @@ describe("anonymous-chat service — audit mode", () => {
     expect(await service.post(INPUT)).toEqual({ ok: false, reason: "unavailable" });
   });
 
+  it("flips auditState to error before awaiting the best-effort delete", async () => {
+    let resolveDelete: (() => void) | undefined;
+    const del = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveDelete = resolve;
+        }),
+    );
+    const { channel } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+      sendImpl: async () => ({ id: "msg-44", delete: del }),
+    });
+    const audit = makeAudit({
+      record: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("disk full")),
+    });
+    const { service } = makeDeps({ channel, config: auditConfig(), audit });
+
+    const pending = service.post(INPUT);
+    await vi.waitFor(() => expect(del).toHaveBeenCalledTimes(1));
+    // The Discord delete is still unresolved, but the gate must
+    // already be closed — a slow delete cannot leave a window where
+    // new posts pass the active check.
+    expect(service.auditState).toBe("error");
+    expect(await service.post({ ...INPUT, userId: "user-2" })).toEqual({
+      ok: false,
+      reason: "unavailable",
+    });
+    resolveDelete?.();
+    await expect(pending).resolves.toEqual({ ok: false, reason: "audit_failed" });
+  });
+
+  it("aborts an in-flight post at the send boundary once auditState flips", async () => {
+    const { channel, send } = makeChannel({
+      permsByMemberId: {
+        "user-1": bitsOf(VIEW, SEND),
+        "user-2": bitsOf(VIEW, SEND),
+        "bot-1": bitsOf(VIEW, SEND),
+      },
+    });
+    // Two concurrent posts. The FIRST attempt record is held on a
+    // gate; the other post runs attempt → send → posted-failure and
+    // flips auditState to "error". When the gate releases, the held
+    // post must stop BEFORE channel.send — leaving only its orphan
+    // attempt record, never an unlinked public message.
+    let releaseGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    let attemptCalls = 0;
+    const audit = makeAudit({
+      record: vi.fn(async (input: { kind: string }) => {
+        if (input.kind === "attempt") {
+          attemptCalls += 1;
+          if (attemptCalls === 1) {
+            await gate;
+          }
+        }
+        if (input.kind === "posted") {
+          throw new Error("disk full");
+        }
+      }),
+    });
+    const { service } = makeDeps({ channel, config: auditConfig(), audit });
+
+    const p1 = service.post(INPUT);
+    const p2 = service.post({ ...INPUT, userId: "user-2" });
+    await vi.waitFor(() => expect(attemptCalls).toBeGreaterThanOrEqual(1));
+    await vi.waitFor(() => expect(service.auditState).toBe("error"));
+    releaseGate?.();
+
+    const results = await Promise.all([p1, p2]);
+    expect(results.filter((r) => r.ok)).toHaveLength(0);
+    expect(results.filter((r) => !r.ok && r.reason === "audit_failed")).toHaveLength(1);
+    expect(results.filter((r) => !r.ok && r.reason === "unavailable")).toHaveLength(1);
+    // Exactly one public send happened — the post whose posted-record
+    // failed (its message was deleted best-effort). The gated post
+    // never reached Discord.
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it("denies audit writes when consent authorization fails", async () => {
     const { channel, send } = makeChannel({
       permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },

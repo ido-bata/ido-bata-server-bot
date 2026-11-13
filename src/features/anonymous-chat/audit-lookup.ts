@@ -95,6 +95,32 @@ function decryptRecord(
       ) {
         throw new Error("malformed decrypted record");
       }
+      // Discriminated v2 schema: any v2 marker (v/kind/attemptId/
+      // messageId) requires the full shape for its kind. Records with
+      // NONE of those fields are legacy v1 mappings ({userId, guildId,
+      // channelId, postedAt}) and stay valid for deletion-era files.
+      const hasV2Marker =
+        "v" in plaintext ||
+        "kind" in plaintext ||
+        "attemptId" in plaintext ||
+        "messageId" in plaintext;
+      if (hasV2Marker) {
+        if (plaintext.v !== 2) {
+          throw new Error("unsupported audit record version");
+        }
+        if (plaintext.kind !== "attempt" && plaintext.kind !== "posted") {
+          throw new Error("unknown audit record kind");
+        }
+        if (typeof plaintext.attemptId !== "string" || plaintext.attemptId.length === 0) {
+          throw new Error("audit record missing attemptId");
+        }
+        if (
+          plaintext.kind === "posted" &&
+          (typeof plaintext.messageId !== "string" || plaintext.messageId.length === 0)
+        ) {
+          throw new Error("posted audit record missing messageId");
+        }
+      }
       return plaintext as AnonAuditPlaintextRecord;
     } catch (error) {
       lastError = error;
@@ -142,6 +168,11 @@ export async function lookupAnonAuditRecords(options: {
   const matched: AnonAuditLookupMatch[] = [];
   const attempts: AnonAuditPlaintextRecord[] = [];
   const postedAttemptIds = new Set<string>();
+  // `matched` is populated only for identifier queries. A pure
+  // --unmatched anomaly scan must not dump the whole decrypted
+  // history — the caller asked for orphan attempts only.
+  const hasIdFilter =
+    filter.messageId !== undefined || filter.userId !== undefined || filter.attemptId !== undefined;
   let scanned = 0;
 
   try {
@@ -186,7 +217,7 @@ export async function lookupAnonAuditRecords(options: {
         if (plaintext.kind === "posted" && typeof plaintext.attemptId === "string") {
           postedAttemptIds.add(plaintext.attemptId);
         }
-        if (matchesFilter(plaintext, filter)) {
+        if (hasIdFilter && matchesFilter(plaintext, filter)) {
           matched.push({ file: name, plaintext });
         }
       }
@@ -203,7 +234,9 @@ export async function lookupAnonAuditRecords(options: {
   const unmatchedAttempts =
     filter.unmatchedAttempts === true
       ? attempts.filter(
-          (a) => typeof a.attemptId !== "string" || !postedAttemptIds.has(a.attemptId),
+          (a) =>
+            matchesFilter(a, filter) &&
+            (typeof a.attemptId !== "string" || !postedAttemptIds.has(a.attemptId)),
         )
       : [];
 
