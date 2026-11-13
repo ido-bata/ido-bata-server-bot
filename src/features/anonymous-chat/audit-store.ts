@@ -25,10 +25,12 @@
  * reports that honestly instead of claiming a deletion it cannot do.
  *
  * Concurrency: every record is published by writing a hidden
- * `.<name>.tmp` file and atomically `rename`-ing it to the final
- * name, so readers never observe a partial record. Appends are
- * independent file creations and cannot interleave or lose each
- * other's data — no lock is required. The retention sweep only
+ * `.<name>.tmp` file and atomically `link`-ing it to the final name
+ * (hard link — fails `EEXIST` rather than overwriting), then
+ * unlinking the temp. Readers never observe a partial record and a
+ * name collision can never silently replace an existing record.
+ * Appends are independent file creations and cannot interleave or
+ * lose each other's data — no lock is required. The retention sweep only
  * removes files whose UTC date prefix is older than `retentionDays`
  * (plus stale `.tmp` orphans), which can never include a file being
  * appended (appends always carry today's date). The custodian
@@ -38,7 +40,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { type AnonAuditPlaintext, createAnonCipher } from "./audit-crypto.js";
@@ -147,18 +149,35 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
         cid: input.channelId,
         ct: input.ciphertext,
       })}\n`;
-      // Publish atomically: write a hidden temp file, then rename to
-      // the final name. Readers (privacy detection, custodian
-      // deletion) only ever see complete records — never a partial
-      // or empty file at a record name. The random suffix makes
-      // collisions impossible; `wx` on the temp guards the temp
-      // name itself.
-      const finalName = recordFileName(new Date());
-      const tempName = `.${finalName}-${randomBytes(4).toString("hex")}.tmp`;
-      const tempPath = join(dir, tempName);
-      const finalPath = join(dir, finalName);
-      await writeFile(tempPath, line, { encoding: "utf8", mode: 0o600, flag: "wx" });
-      await rename(tempPath, finalPath);
+      // Publish atomically with no-replace semantics: write a hidden
+      // temp file, hard-link it to the final name, then unlink the
+      // temp. `link` fails EEXIST if the final name is taken (rename
+      // would silently overwrite an existing record), and readers
+      // (privacy detection, custodian deletion) only ever see
+      // complete records — never a partial or empty file at a
+      // record name. Temp files are removed on any failure; a
+      // leftover temp is still harmless (the sweep removes stale
+      // `.tmp` orphans).
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const finalName = recordFileName(new Date());
+        const tempPath = join(dir, `.${finalName}-${randomBytes(4).toString("hex")}.tmp`);
+        const finalPath = join(dir, finalName);
+        try {
+          await writeFile(tempPath, line, { encoding: "utf8", mode: 0o600, flag: "wx" });
+          await link(tempPath, finalPath);
+          await unlink(tempPath).catch(() => {});
+          return;
+        } catch (error) {
+          await rm(tempPath, { force: true }).catch(() => {});
+          if (isNodeError(error) && error.code === "EEXIST") {
+            lastError = error;
+            continue;
+          }
+          throw error;
+        }
+      }
+      throw lastError;
     },
     sweep: async () => {
       await mkdir(dir, { recursive: true, mode: 0o700 });

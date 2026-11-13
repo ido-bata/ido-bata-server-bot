@@ -132,8 +132,11 @@ describe("createAnonAuditSink", () => {
     // Backdate the temp file beyond TMP_STALE_MS (1h).
     const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
     utimesSync(stale, old, old);
+    // A fresh in-flight temp must survive the sweep.
+    writeFileSync(join(dir, ".2099-01-01T00-00-00-000Z-bbbb2222.tmp"), "in-flight");
     await sink.sweep();
-    expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toHaveLength(0);
+    const temps = readdirSync(dir).filter((name) => name.endsWith(".tmp"));
+    expect(temps).toEqual([".2099-01-01T00-00-00-000Z-bbbb2222.tmp"]);
   });
 
   it("serializes concurrent appends without losing records", async () => {

@@ -102,6 +102,33 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     expect(readFileSync(file, "utf8")).toBe("not-json\n");
   });
 
+  it("fails closed when a record decrypts to a malformed mapping", async () => {
+    await seed(["u1"]);
+    // A valid ciphertext whose plaintext lacks the sealed schema must
+    // not be treated as "another user's record" — it might be the
+    // target's, so the whole run aborts before any removal.
+    const sink = createAnonAuditSink(auditConfig());
+    const malformed = JSON.stringify({
+      v: 1,
+      gid: "g",
+      cid: "c",
+      ct: sink.seal({} as Parameters<typeof sink.seal>[0]),
+    });
+    writeFileSync(join(dir, "2026-11-13T12-00-00-000Z-deadbeef.jsonl"), `${malformed}\n`);
+
+    const result = await deleteAnonAuditUserRecords({
+      dir,
+      privateKey,
+      userId: "u1",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("undecryptable or malformed");
+    }
+    // Nothing was modified — the u1 record file is still present.
+    expect(recordFiles()).toHaveLength(2);
+  });
+
   it("fails closed on an empty record file and modifies nothing", async () => {
     await seed(["u1", "u2"]);
     // An empty file may be an interrupted write hiding the target —

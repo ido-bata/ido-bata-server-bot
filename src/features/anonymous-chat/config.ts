@@ -15,9 +15,9 @@
 export type AnonAuditConfig = {
   /** PEM (`-----BEGIN PUBLIC KEY-----`) or base64/base64url SPKI DER. */
   publicKey: string;
-  /** Directory holding daily `YYYY-MM-DD.jsonl` audit files. */
+  /** Directory holding per-record `<UTC-ts>-<rand>.jsonl` audit files. */
   dir: string;
-  /** Daily audit files older than this many days are swept. */
+  /** Record files older than this many days are swept. */
   retentionDays: number;
 };
 

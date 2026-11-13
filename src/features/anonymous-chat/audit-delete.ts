@@ -75,7 +75,11 @@ export async function deleteAnonAuditUserRecords(options: {
   const { dir, privateKey, userId } = options;
   const key = createPrivateKey(privateKey);
 
-  const decryptUserId = (ct: string): string | null => {
+  // A record we cannot fully parse — bad JSON, failed decrypt, or a
+  // plaintext that does not match the sealed schema — might belong
+  // to the target user, so it aborts the whole run rather than being
+  // silently treated as "someone else's record".
+  const decryptUserId = (ct: string): string => {
     const opened = privateDecrypt(
       {
         key,
@@ -85,9 +89,20 @@ export async function deleteAnonAuditUserRecords(options: {
       Buffer.from(ct, "base64"),
     ).toString("utf8");
     const plaintext: unknown = JSON.parse(opened);
-    return isRecord(plaintext) && "userId" in plaintext && typeof plaintext.userId === "string"
-      ? plaintext.userId
-      : null;
+    if (
+      !isRecord(plaintext) ||
+      !("userId" in plaintext) ||
+      typeof plaintext.userId !== "string" ||
+      !("guildId" in plaintext) ||
+      typeof plaintext.guildId !== "string" ||
+      !("channelId" in plaintext) ||
+      typeof plaintext.channelId !== "string" ||
+      !("postedAt" in plaintext) ||
+      typeof plaintext.postedAt !== "string"
+    ) {
+      throw new Error("malformed decrypted record");
+    }
+    return plaintext.userId;
   };
 
   try {
@@ -152,13 +167,13 @@ export async function deleteAnonAuditUserRecords(options: {
             error: `record file ${name} has no ciphertext; nothing was modified`,
           };
         }
-        let plaintextUserId: string | null;
+        let plaintextUserId: string;
         try {
           plaintextUserId = decryptUserId(record.ct);
         } catch {
           return {
             ok: false,
-            error: `undecryptable record in ${name}; nothing was modified`,
+            error: `undecryptable or malformed record in ${name}; nothing was modified`,
           };
         }
         if (plaintextUserId === userId) {
@@ -190,16 +205,23 @@ export async function deleteAnonAuditUserRecords(options: {
         await rm(path, { force: true });
         continue;
       }
-      // Legacy rewrite: temp file + atomic rename. No current writer
-      // targets `YYYY-MM-DD.jsonl` names, so this cannot race an
-      // append; two concurrent custodian runs are an ops error.
+      // Legacy rewrite: temp file + atomic rename (replace semantics —
+      // the legacy file exists by design). No current writer targets
+      // `YYYY-MM-DD.jsonl` names, so this cannot race an append; two
+      // concurrent custodian runs are an ops error. The temp is
+      // removed if the write or rename fails.
       const tempPath = join(dir, `.${plan.name}-${randomBytes(8).toString("hex")}.tmp`);
-      await writeFile(tempPath, `${plan.kept.join("\n")}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
-        flag: "wx",
-      });
-      await rename(tempPath, path);
+      try {
+        await writeFile(tempPath, `${plan.kept.join("\n")}\n`, {
+          encoding: "utf8",
+          mode: 0o600,
+          flag: "wx",
+        });
+        await rename(tempPath, path);
+      } catch (error) {
+        await rm(tempPath, { force: true }).catch(() => {});
+        throw error;
+      }
     }
 
     return { ok: true, scanned, removed };
