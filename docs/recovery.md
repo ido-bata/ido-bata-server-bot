@@ -9,7 +9,7 @@ How a fresh AI agent recovers this project's in-flight work **without** dependin
 3. Ticket branch + commit graph
 4. CI / required-check state on the PR
 5. This `docs/` directory and `CLAUDE.md` / `AGENTS.md`
-6. Local persisted state on disk (e.g. `data/timekeeper-history.json`) — read but never assume it's authoritative for *intent*
+6. Local persisted state on disk (e.g. `data/timekeeper-history.json`) — read but never assume it's authoritative for *intent*. On Altare the persisted state lives in the storage backend (U3), not on the app disk — see `docs/adr/0004-altare-migration-u3-persistence.md` and `docs/operations/altare-migration.md`.
 
 Conversation transcripts, native session IDs, supervisor-local DBs, and shell history are **transient optimizations**. They may be reused when available but never the canonical recovery path.
 
