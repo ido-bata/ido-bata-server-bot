@@ -16,13 +16,26 @@
  *     record (over-recording — the safe direction, swept by
  *     retention); a seal/append failure rejects the post before any
  *     public side effect.
- *   - When audit is CONFIGURED but broken (invalid key, sink init
- *     failure), `/anon` refuses to post entirely — it never falls
- *     back to unlogged anonymous posting. Only the explicit
- *     "no ANON_AUDIT_PUBLIC_KEY" configuration yields ephemeral mode.
+ *   - Audit is MANDATORY (Issue #118, ADR-0003 §3): unless the audit
+ *     sink is `active`, `/anon` refuses every post — there is no
+ *     unlogged posting mode. `auditState: "disabled"` (no public key
+ *     configured) and `"error"` (configured but broken, or a
+ *     posted-record write failed) both fail closed.
+ *   - Two-phase records: an `attempt` record (with a random
+ *     `attemptId`) is sealed+appended BEFORE the public send; a
+ *     `posted` record carrying the real `messageId` is appended
+ *     immediately after a successful send. A posted-record failure
+ *     deletes the message best-effort, flips `auditState` to
+ *     `"error"`, and refuses the post — no live anonymous message
+ *     may lack exact messageId correlation.
  */
 
 import { PermissionFlagsBits } from "discord.js";
+import {
+  type AnonAuditAttemptPlaintext,
+  type AnonAuditPostedPlaintext,
+  newAnonAttemptId,
+} from "./audit-crypto.js";
 import type { AnonAuditSink } from "./audit-store.js";
 import { createAnonAuditSink } from "./audit-store.js";
 import type { AnonymousChatConfig } from "./config.js";
@@ -88,9 +101,11 @@ export type AnonymousChatService = {
   post: (input: AnonPostInput) => Promise<AnonPostResult>;
   /**
    * Audit persistence state: `active` = records are written,
-   * `disabled` = explicit ephemeral mode (no key configured),
-   * `error` = audit was configured but the sink failed to initialize —
-   * `/anon` refuses to post and status must not claim audit is on.
+   * `disabled` = no public key configured — `/anon` refuses all posts
+   * (audit is mandatory, Issue #118), `error` = audit was configured
+   * but the sink failed to initialize or a posted-record write
+   * failed — `/anon` refuses all posts. Transitions to `"error"` at
+   * runtime are possible (posted-record failure).
    */
   auditState: "disabled" | "active" | "error";
 };
@@ -124,10 +139,11 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
   const { config, logger } = deps;
   const cooldown = new AnonCooldown(config.cooldownMs, deps.now);
 
-  // Build the audit sink once. A configured-but-broken audit is NOT
-  // ephemeral mode: `auditState: "error"` makes every post fail closed
-  // so an operator misconfiguration can never produce unlogged
-  // anonymous posts (ADR-0003 §3).
+  // Build the audit sink once. Audit is MANDATORY (Issue #118):
+  // `auditState` other than `"active"` makes every post fail closed —
+  // an operator misconfiguration can never produce unlogged anonymous
+  // posts (ADR-0003 §3). `auditState` is mutable: a posted-record
+  // failure after a successful send degrades it to `"error"`.
   // Retention must not depend on new posts or a restart: sweep on a
   // timer as well as at startup and before each append. `unref` keeps
   // the interval from holding the process open; the sweep is
@@ -160,6 +176,8 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
     setInterval(() => sweepAudit(audit as AnonAuditSink), RETENTION_SWEEP_INTERVAL_MS).unref();
     auditState = "active";
   } else {
+    // No public key configured → "disabled": /anon refuses every
+    // post. This is NOT a posting mode — audit is mandatory.
     auditState = "disabled";
   }
 
@@ -182,13 +200,17 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
   }
 
   return {
-    auditState,
+    get auditState() {
+      return auditState;
+    },
     async post(input) {
-      // Configured-but-broken audit refuses ALL posts — never degrade
-      // to unlogged anonymity. Checked before message validation so a
-      // broken deployment reports `unavailable` for every input and
-      // does not burn users' cooldown windows.
-      if (auditState === "error") {
+      // Audit is mandatory: anything other than an active sink
+      // ("disabled" = no key configured, "error" = broken sink or a
+      // prior posted-record failure) refuses ALL posts — never
+      // degrade to unlogged anonymity. Checked before message
+      // validation so a broken deployment reports `unavailable` for
+      // every input and does not burn users' cooldown windows.
+      if (auditState !== "active" || !audit) {
         return { ok: false, reason: "unavailable" };
       }
       const text = input.message.trim();
@@ -295,14 +317,15 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       }
 
       // ---- consent pre-flight (fail closed before any public post) ----
-      if (audit) {
-        let consentOk = true;
-        if (deps.authorizeAudit) {
-          try {
-            consentOk = await deps.authorizeAudit(input.userId);
-          } catch {
-            consentOk = false;
-          }
+      // The consent gate only exists when the consent subsystem is
+      // deployed (`authorizeAudit` provided); audit itself is always
+      // active here (enforced above).
+      if (deps.authorizeAudit) {
+        let consentOk: boolean;
+        try {
+          consentOk = await deps.authorizeAudit(input.userId);
+        } catch {
+          consentOk = false;
         }
         if (!consentOk) {
           logger?.warn({}, "anonymous-chat: audit consent denied");
@@ -310,51 +333,93 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
         }
       }
 
-      // ---- audit seal + append BEFORE the public post ----
-      // The audit record must be durable before any public side effect:
-      // Discord assigns the message id only after send, so the sealed
-      // mapping carries {userId, guildId, channelId, postedAt} and the
-      // custodian correlates by channel + time. A seal or append
-      // failure rejects the post BEFORE sending — there is no window in
-      // which a public anonymous message exists without its audit
-      // record (a crash between append and send leaves only an orphan
-      // record, which is the safe direction; a send whose response is
-      // lost is still covered because the record already exists).
-      if (audit) {
-        try {
-          const postedAt = new Date(deps.now?.() ?? Date.now()).toISOString();
-          const ciphertext = audit.seal({
-            userId: input.userId,
-            guildId: input.guildId,
-            channelId: input.channelId,
-            postedAt,
-          });
-          await audit.record({
-            userId: input.userId,
-            guildId: input.guildId,
-            channelId: input.channelId,
-            postedAt,
-            ciphertext,
-          });
-        } catch (error) {
-          // Never fall back to an unlogged post.
-          logger?.error(safeErrorFields(error), "anonymous-chat: audit seal/append failed");
-          return { ok: false, reason: "audit_failed" };
-        }
+      // ---- audit phase 1: attempt record BEFORE the public post ----
+      // The attempt record must be durable before any public side
+      // effect: Discord assigns the message id only after send, so
+      // phase 1 seals {attemptId, userId, guildId, channelId,
+      // postedAt} and phase 2 (below) seals the same attemptId plus
+      // the real messageId. A seal or append failure rejects the post
+      // BEFORE sending — there is no window in which a public
+      // anonymous message exists without its attempt record (a crash
+      // between append and send leaves only an orphan record, which
+      // is the safe direction; a send whose response is lost is still
+      // covered because the attempt record already exists).
+      const attemptId = newAnonAttemptId();
+      const attemptPostedAt = new Date(deps.now?.() ?? Date.now()).toISOString();
+      try {
+        const attemptPlaintext: AnonAuditAttemptPlaintext = {
+          v: 2,
+          kind: "attempt",
+          attemptId,
+          userId: input.userId,
+          guildId: input.guildId,
+          channelId: input.channelId,
+          postedAt: attemptPostedAt,
+        };
+        await audit.record({
+          kind: "attempt",
+          guildId: input.guildId,
+          channelId: input.channelId,
+          ciphertext: audit.seal(attemptPlaintext),
+        });
+      } catch (error) {
+        // Never fall back to an unlogged post.
+        logger?.error(safeErrorFields(error), "anonymous-chat: audit seal/append failed");
+        return { ok: false, reason: "audit_failed" };
       }
 
       // ---- public post ----
-      // If this throws, the audit record remains as an orphan — a
+      // If this throws, the attempt record remains as an orphan — a
       // record for a message that was never posted. That is the safe
       // direction (over-recording) and is swept by retention.
+      let sent: { id: string; delete: () => Promise<unknown> };
       try {
-        await channel.send({
+        sent = await channel.send({
           content: text,
           allowedMentions: { parse: [] },
         });
       } catch (error) {
         logger?.warn(safeErrorFields(error), "anonymous-chat: channel send failed");
         return { ok: false, reason: "post_failed" };
+      }
+
+      // ---- audit phase 2: posted record with the real messageId ----
+      // Every acknowledged anonymous message must carry exact
+      // messageId→author correlation. If this record cannot be
+      // persisted, the live message would violate that invariant, so
+      // we delete it best-effort, degrade auditState to "error" (no
+      // further posts until operator intervention), and refuse.
+      try {
+        const postedPlaintext: AnonAuditPostedPlaintext = {
+          v: 2,
+          kind: "posted",
+          attemptId,
+          messageId: sent.id,
+          userId: input.userId,
+          guildId: input.guildId,
+          channelId: input.channelId,
+          postedAt: new Date(deps.now?.() ?? Date.now()).toISOString(),
+        };
+        await audit.record({
+          kind: "posted",
+          guildId: input.guildId,
+          channelId: input.channelId,
+          ciphertext: audit.seal(postedPlaintext),
+        });
+      } catch (error) {
+        try {
+          await sent.delete();
+        } catch {
+          // Best effort only — the message may already be gone or the
+          // delete may fail; either way auditState flips to "error"
+          // below so no further unlinked posts accumulate.
+        }
+        auditState = "error";
+        logger?.error(
+          safeErrorFields(error),
+          "anonymous-chat: posted audit record failed; message deleted best-effort, /anon disabled",
+        );
+        return { ok: false, reason: "audit_failed" };
       }
 
       return { ok: true };

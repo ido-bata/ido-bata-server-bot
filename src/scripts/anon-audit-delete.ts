@@ -21,6 +21,8 @@
 import { readFile } from "node:fs/promises";
 
 import { deleteAnonAuditUserRecords } from "../features/anonymous-chat/audit-delete.js";
+import { appendAnonAuditOperation } from "../features/anonymous-chat/audit-ops.js";
+import { resolveAnonAuditDir } from "../features/anonymous-chat/config.js";
 
 function parseArgs(argv: string[]): { keyFile: string; dir: string; userId: string } {
   const args: { keyFile?: string; dir?: string; userId?: string } = {};
@@ -61,7 +63,13 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  // Counts only — never echo the user id or record contents.
+  // Operation record: counts only — never the user id or contents.
+  await appendAnonAuditOperation(resolveAnonAuditDir(args.dir), {
+    op: "delete",
+    scanned: result.scanned,
+    removed: result.removed,
+    keys: 1,
+  }).catch(() => {});
   console.log(`anon-audit-delete: scanned=${result.scanned} removed=${result.removed}`);
 }
 

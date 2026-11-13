@@ -74,6 +74,14 @@ function makeConfig(overrides: Partial<AnonymousChatConfig> = {}): AnonymousChat
   };
 }
 
+function makePassThroughAudit(): AnonAuditSink {
+  return {
+    seal: vi.fn(() => "ct"),
+    record: vi.fn(async () => undefined),
+    sweep: vi.fn(async () => undefined),
+  };
+}
+
 function makeDeps(
   overrides: {
     channel?: AnonChannelLike | null;
@@ -105,7 +113,15 @@ function makeDeps(
     fetchBotMember: async () => botMemberObj,
     isThreadMember: overrides.isThreadMember ?? (async () => overrides.threadMember ?? true),
     authorizeAudit: overrides.authorizeAudit,
-    audit: overrides.audit,
+    // Audit is mandatory (Issue #118): deps without an explicit audit
+    // get a pass-through sink so permission/validation tests exercise
+    // the post path — UNLESS config.audit is set, in which case the
+    // service builds the real sink (broken-key tests rely on that).
+    // `audit: null` still yields "disabled".
+    audit:
+      overrides.audit === undefined && overrides.config?.audit == null
+        ? makePassThroughAudit()
+        : overrides.audit,
     now: overrides.now,
     logger,
   });
@@ -479,13 +495,14 @@ describe("anonymous-chat service — audit mode", () => {
     return makeConfig({
       audit: {
         publicKey: "unused-injected-sink",
+        keyId: "v1",
         dir: "data/anon-audit",
         retentionDays: 90,
       },
     });
   }
 
-  it("seals and records BEFORE posting — no public post without a durable record", async () => {
+  it("writes attempt record BEFORE send and posted record with messageId AFTER", async () => {
     const { channel, send } = makeChannel({
       permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
     });
@@ -493,31 +510,44 @@ describe("anonymous-chat service — audit mode", () => {
     const { service } = makeDeps({ channel, config: auditConfig(), audit });
     const result = await service.post(INPUT);
     expect(result).toEqual({ ok: true });
-    expect(audit.seal).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userId: "user-1",
-        guildId: "guild-1",
-        channelId: "chan-1",
-      }),
+
+    // Two seal calls: attempt (pre-send, no messageId) then posted
+    // (post-send, carries the real messageId from channel.send).
+    const sealCalls = (audit.seal as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0] as Record<string, unknown>,
     );
-    // The sealed mapping must not carry a message id — Discord assigns
-    // it only after send, and the record must exist before the send.
-    const sealed = (audit.seal as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Record<
-      string,
-      unknown
-    >;
-    expect(sealed).not.toHaveProperty("messageId");
-    expect(audit.record).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userId: "user-1",
-        ciphertext: "sealed-ct",
-      }),
+    expect(sealCalls).toHaveLength(2);
+    expect(sealCalls[0]).toMatchObject({
+      v: 2,
+      kind: "attempt",
+      userId: "user-1",
+      guildId: "guild-1",
+      channelId: "chan-1",
+    });
+    expect(sealCalls[0]).not.toHaveProperty("messageId");
+    expect(sealCalls[1]).toMatchObject({
+      v: 2,
+      kind: "posted",
+      userId: "user-1",
+      messageId: "msg-1",
+    });
+    // Both phases share the same random attemptId for correlation.
+    expect(sealCalls[1]?.attemptId).toBe(sealCalls[0]?.attemptId);
+    expect(typeof sealCalls[0]?.attemptId).toBe("string");
+
+    const recordCalls = (audit.record as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0] as Record<string, unknown>,
     );
+    expect(recordCalls).toHaveLength(2);
+    expect(recordCalls[0]).toMatchObject({ kind: "attempt", ciphertext: "sealed-ct" });
+    expect(recordCalls[1]).toMatchObject({ kind: "posted", ciphertext: "sealed-ct" });
     expect(send).toHaveBeenCalled();
-    // Ordering: record completes before channel.send is invoked.
-    const recordOrder = (audit.record as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
+
+    // Ordering: attempt record < send < posted record.
+    const orders = (audit.record as ReturnType<typeof vi.fn>).mock.invocationCallOrder;
     const sendOrder = send.mock.invocationCallOrder[0]!;
-    expect(recordOrder).toBeLessThan(sendOrder);
+    expect(orders[0]!).toBeLessThan(sendOrder);
+    expect(orders[1]!).toBeGreaterThan(sendOrder);
   });
 
   it("rejects the post when sealing fails — send is never called", async () => {
@@ -561,8 +591,62 @@ describe("anonymous-chat service — audit mode", () => {
     // Over-recording is the safe direction: the record exists even
     // though no message was posted (ADR-0003 §3).
     expect(await service.post(INPUT)).toEqual({ ok: false, reason: "post_failed" });
-    expect(audit.record).toHaveBeenCalled();
+    // Only the attempt record exists — the send failed before the
+    // posted phase. Over-recording is the safe direction.
+    const recordCalls = (audit.record as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0] as Record<string, unknown>,
+    );
+    expect(recordCalls).toHaveLength(1);
+    expect(recordCalls[0]).toMatchObject({ kind: "attempt" });
     expect(send).toHaveBeenCalled();
+  });
+
+  it("deletes the message and fails closed when the posted record cannot be written", async () => {
+    const del = vi.fn(async () => undefined);
+    const { channel, send } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+      sendImpl: async () => ({ id: "msg-42", delete: del }),
+    });
+    // Attempt record succeeds; the posted record fails.
+    const audit = makeAudit({
+      record: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("disk full")),
+    });
+    const { service } = makeDeps({ channel, config: auditConfig(), audit });
+
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "audit_failed" });
+    expect(send).toHaveBeenCalledTimes(1);
+    // The live message is removed best-effort so no anonymous post
+    // lacks exact messageId correlation (ADR-0003 §3).
+    expect(del).toHaveBeenCalledTimes(1);
+    // The feature degrades to error: subsequent posts refuse too.
+    expect(service.auditState).toBe("error");
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "unavailable" });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("still fails closed when the posted-record delete also fails", async () => {
+    const del = vi.fn(async () => {
+      throw new Error("delete failed");
+    });
+    const { channel } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+      sendImpl: async () => ({ id: "msg-43", delete: del }),
+    });
+    const audit = makeAudit({
+      record: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("disk full")),
+    });
+    const { service } = makeDeps({ channel, config: auditConfig(), audit });
+
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "audit_failed" });
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(service.auditState).toBe("error");
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "unavailable" });
   });
 
   it("denies audit writes when consent authorization fails", async () => {
@@ -601,8 +685,18 @@ describe("anonymous-chat service — audit mode", () => {
 
 describe("anonymous-chat service — auditState", () => {
   it("reports disabled when no audit config and no injected sink", () => {
-    const { service } = makeDeps();
+    const { service } = makeDeps({ audit: null });
     expect(service.auditState).toBe("disabled");
+  });
+
+  it("refuses ALL posts when audit is disabled — no unlogged posting mode", async () => {
+    const { channel, send } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+    });
+    const { service } = makeDeps({ channel, audit: null });
+    expect(service.auditState).toBe("disabled");
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "unavailable" });
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("reports active when an audit sink is injected", () => {
@@ -621,6 +715,7 @@ describe("anonymous-chat service — auditState", () => {
       config: makeConfig({
         audit: {
           publicKey: "not-valid-key-material",
+          keyId: "v1",
           dir: "data/anon-audit",
           retentionDays: 90,
         },
@@ -638,6 +733,7 @@ describe("anonymous-chat service — auditState", () => {
       config: makeConfig({
         audit: {
           publicKey: "not-valid-key-material",
+          keyId: "v1",
           dir: "data/anon-audit",
           retentionDays: 90,
         },

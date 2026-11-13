@@ -2,20 +2,33 @@
  * On-disk store for `/anon` audit records (ADR-0003 §3).
  *
  * Layout: `data/anon-audit/<UTC timestamp>-<random>.jsonl` — ONE
- * immutable file per anonymous post attempt that passed consent. The
- * audit record is written BEFORE the public send, so no public
- * anonymous message can exist without a durable audit record:
+ * immutable file per audit record. Two records are written per
+ * anonymous post (ADR-0003 §3, Issue #118):
  *
- *   { v, gid, cid, ct }
+ *   attempt — BEFORE the public send:
+ *     { v: 2, kid, kind: "attempt", gid, cid, ct }
+ *     ct seals { v:2, kind:"attempt", attemptId, userId, guildId,
+ *                channelId, postedAt }
  *
- * - `gid`/`cid` : plaintext operational metadata (guild, channel).
- *   Never the message body, never the user id. There is no plaintext
- *   message id: Discord assigns it only after send, and the audit
- *   record must exist before the send — the custodian correlates via
- *   the decrypted `channelId` + `postedAt`.
- * - `ct`   : base64 RSA-OAEP ciphertext of the author mapping
- *   `{ userId, guildId, channelId, postedAt }`. Only the
- *   offline key holder can open it.
+ *   posted — immediately AFTER a successful send, carrying the real
+ *   Discord messageId:
+ *     { v: 2, kid, kind: "posted", gid, cid, ct }
+ *     ct seals { v: 2, kind:"posted", attemptId, messageId, userId,
+ *                guildId, channelId, postedAt }
+ *
+ * - `gid`/`cid`/`kind`/`kid`/`v` : plaintext operational metadata
+ *   (guild, channel, record kind, key id). Never the message body,
+ *   never the user id, never the messageId — `messageId` stays inside
+ *   the ciphertext so the bot host cannot build a plaintext
+ *   message→record index.
+ * - `ct`   : base64 RSA-OAEP ciphertext. Only the offline key holder
+ *   can open it; `kid` selects which private key applies after
+ *   rotation.
+ *
+ * Audit is MANDATORY: the service refuses to post unless a sink is
+ * active, so no public anonymous message can exist without at least
+ * its attempt record, and every acknowledged post gets its posted
+ * record (or the message is deleted and the feature fails closed).
  *
  * There is intentionally NO per-user lookup index: any deterministic
  * tag computable by the bot is dictionary-attackable over the public
@@ -43,7 +56,11 @@ import { closeSync, fsyncSync, mkdirSync, openSync } from "node:fs";
 import { link, mkdir, open, readdir, rm, stat, unlink } from "node:fs/promises";
 import { dirname, join, parse, resolve } from "node:path";
 
-import { type AnonAuditPlaintext, createAnonCipher } from "./audit-crypto.js";
+import {
+  type AnonAuditAttemptPlaintext,
+  type AnonAuditPostedPlaintext,
+  createAnonCipher,
+} from "./audit-crypto.js";
 import type { AnonAuditConfig } from "./config.js";
 
 // Matches both the current per-record names (`YYYY-MM-DDT…-rand.jsonl`)
@@ -53,19 +70,20 @@ const FILE_NAME_PATTERN = /^\d{4}-\d{2}-\d{2}(?:T.*)?\.jsonl$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TMP_STALE_MS = 60 * 60 * 1000;
 
+export type AnonAuditRecordKind = "attempt" | "posted";
+
 export type AnonAuditRecordInput = {
-  userId: string;
+  kind: AnonAuditRecordKind;
   guildId: string;
   channelId: string;
-  postedAt: string;
   /** base64 RSA-OAEP ciphertext produced by `sink.seal`. */
   ciphertext: string;
 };
 
 export type AnonAuditSink = {
-  /** RSA-OAEP seal the author mapping. Throws on crypto failure. */
-  seal: (plaintext: AnonAuditPlaintext) => string;
-  /** Persist a sealed record for a post attempt (before the send). */
+  /** RSA-OAEP seal an attempt/posted payload. Throws on crypto failure. */
+  seal: (plaintext: AnonAuditAttemptPlaintext | AnonAuditPostedPlaintext) => string;
+  /** Persist a sealed record (attempt pre-send, posted post-send). */
   record: (input: AnonAuditRecordInput) => Promise<void>;
   /** Sweep expired record files without appending. */
   sweep: () => Promise<void>;
@@ -169,7 +187,9 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
       await mkdir(dir, { recursive: true, mode: 0o700 });
       await sweepExpired(dir, config.retentionDays, Date.now());
       const line = `${JSON.stringify({
-        v: 1,
+        v: 2,
+        kid: config.keyId,
+        kind: input.kind,
         gid: input.guildId,
         cid: input.channelId,
         ct: input.ciphertext,
