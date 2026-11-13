@@ -23,7 +23,7 @@
  * gone and is skipped.
  */
 import { constants, createPrivateKey, privateDecrypt, randomBytes } from "node:crypto";
-import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 // Current per-record names (`YYYY-MM-DDT…-rand.jsonl`) plus legacy
@@ -220,8 +220,7 @@ export async function deleteAnonAuditUserRecords(options: {
       // Legacy rewrite: temp file + atomic rename (replace semantics —
       // the legacy file exists by design). No current writer targets
       // `YYYY-MM-DD.jsonl` names, so this cannot race an append; two
-      // concurrent custodian runs are an ops error. The temp is
-      // removed if the write or rename fails.
+      // concurrent custodian runs are an ops error.
       const tempPath = join(dir, `.${plan.name}-${randomBytes(8).toString("hex")}.tmp`);
       try {
         await writeFile(tempPath, `${plan.kept.join("\n")}\n`, {
@@ -229,6 +228,33 @@ export async function deleteAnonAuditUserRecords(options: {
           mode: 0o600,
           flag: "wx",
         });
+      } catch (error) {
+        // EEXIST: the temp belongs to another attempt — never remove
+        // a file we did not create. Any other failure means `wx` did
+        // not hand the name to someone else, so a partial file here
+        // can only be ours.
+        if (!(isNodeError(error) && error.code === "EEXIST")) {
+          await rm(tempPath, { force: true }).catch(() => {});
+        }
+        throw error;
+      }
+      // Re-check the target immediately before publishing: if the
+      // retention sweep removed the legacy file after inspection,
+      // every record in it is already gone — recreating it via
+      // rename would resurrect expired ciphertext. (A sweep landing
+      // in the remaining window is self-correcting: the recreated
+      // file keeps its old date prefix and the next sweep removes it
+      // again.)
+      try {
+        await lstat(path);
+      } catch (error) {
+        await rm(tempPath, { force: true }).catch(() => {});
+        if (isNodeError(error) && error.code === "ENOENT") {
+          continue;
+        }
+        throw error;
+      }
+      try {
         await rename(tempPath, path);
       } catch (error) {
         await rm(tempPath, { force: true }).catch(() => {});
