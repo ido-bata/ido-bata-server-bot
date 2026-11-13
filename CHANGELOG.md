@@ -88,6 +88,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 - **Slash command routing (#115 / PR #116)**: `src/features/role-slash/handler.ts` and `src/features/slash-commands/handler.ts` replied `unknown command` to any chat-input command outside their own registries. Because discord.js fans out every `InteractionCreate` to all listeners, commands owned by other features (`/anon`, `/role`, `/poll`, `/timekeeper`, `/remind`, `/birthday`, `/calendar`) could receive a competing `unknown command` response — observed in production on `/anon` under v0.2.2. Both dispatchers now return silently for commands they do not own, so each interaction is answered exactly once by its owning handler; unknown *subcommands* within an owned command still return `unknown subcommand`. New `tests/interaction-routing.test.ts` registers all production interaction listeners and asserts exactly-one response across `/anon`, `/role`, `/ping`, `/privacy`, `/timekeeper`, `/poll`, `/help`, and `/birthday`, with zero recorded calls for unowned or non-chat-input interactions.
 
+## [0.3.0] — 2026-11-13
+
+### Added
+
+- **Mandatory anonymous-chat audit (#118, ADR-0003)**: `/anon` audit persistence is no longer optional. Without `ANON_AUDIT_PUBLIC_KEY`, or on any audit init/persist failure, the service refuses every post (`auditState: "disabled" | "active" | "error"`) — the ephemeral no-log posting mode is removed. Each post now writes an encrypted `attempt` record BEFORE the Discord send and a `posted` record carrying the real `messageId` afterwards, correlated by a random `attemptId`. Send failure leaves a safe orphan attempt record; a post-send audit failure deletes the message best-effort, flips `auditState` to `"error"` before awaiting the delete, re-checks state at the send boundary for in-flight posts, and refuses all further posts until restart.
+- **Versioned audit envelopes (v2)**: plaintext metadata carries `v`, `kid` (key rotation), `kind`, `gid`, `cid`, `ct`; user id, attempt id, and message id remain inside the RSA-OAEP-SHA256 ciphertext only.
+- **Custodian tooling**: `bun run anon:audit:lookup` decrypts records offline by `--message` / `--user` / `--attempt` / `--unmatched` (orphan-attempt anomaly report), accepts multiple `--key-file` for rotation overlap, and fails closed on corrupt/undecryptable/malformed records. Both lookup and `anon:audit:delete` write mandatory fsynced `start`/`end` entries to `operations.jsonl` — lookup cannot decrypt without a durable start record or print plaintext without a durable end record; delete cannot remove records without a durable start record. Entries contain counts only, never query values or ciphertext.
+- **Live audit-state propagation**: the service exposes `onAuditStateChange`; a runtime `active → error` degradation is pushed into the status store so the TUI reflects it immediately.
+
+### Changed
+
+- **ADR-0003 revised**: audit is mandatory; documents the two-phase record model, key custody / decrypt-approval / rotation runbook, and the explicit limit that Bot-host administrators cannot be fully excluded from anonymity.
+- `docs/privacy.md` and the privacy consumer inventory updated for mandatory audit, custodian lookup/deletion, and consent interplay (no `message-history` grant → `/anon` unavailable).
+
 ## [0.1.0] — initial integration
 
 First integrated release of the timekeeper + reaction-roles Discord bot.
