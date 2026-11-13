@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,8 +16,23 @@ import type { Logger } from "../src/features/ical-calendar/logger.js";
 import { createCalendarService } from "../src/features/ical-calendar/service.js";
 import type { CalendarEvent } from "../src/features/ical-calendar/types.js";
 import { createLocalFileStorage } from "../src/lib/storage/local.js";
+import type { StorageDriver } from "../src/lib/storage/types.js";
 
 const tmpPaths: string[] = [];
+
+/**
+ * The service persists the calendar cache through the storage backend.
+ * Tests point it at a temp directory so the repository's `data/` stays
+ * untouched.
+ */
+let driver: StorageDriver;
+
+beforeEach(() => {
+  // The service persists the calendar cache through the storage backend;
+  // every test gets its own temp directory so the repository's `data/`
+  // stays untouched.
+  driver = createLocalFileStorage({ root: mkdtempSync(join(tmpdir(), "ical-service-")) });
+});
 
 function makeConfig(overrides: Partial<IcalCalendarConfig> = {}): IcalCalendarConfig {
   const basePath = join(
@@ -27,7 +42,7 @@ function makeConfig(overrides: Partial<IcalCalendarConfig> = {}): IcalCalendarCo
   tmpPaths.push(basePath);
   return {
     announcementChannelId: null,
-    cacheKey: basePath.replace(".json", "-cache.json"),
+    cacheKey: "calendar-cache.json",
     dataKey: basePath,
     fetchIntervalMs: 60 * 60 * 1000,
     lookAheadDays: 7,
@@ -201,6 +216,7 @@ describe("ical-calendar service", () => {
 
     const service = await createCalendarService({
       config,
+      driver,
       fetcher,
       now: () => now,
     });
@@ -221,6 +237,7 @@ describe("ical-calendar service", () => {
     });
     const service = await createCalendarService({
       config,
+      driver,
       fetcher,
       logger,
       now: () => now,
@@ -237,6 +254,7 @@ describe("ical-calendar service", () => {
     const now = new Date("2026-09-13T00:00:00Z");
     const service = await createCalendarService({
       config: { ...config, fetchIntervalMs: 10 },
+      driver,
       now: () => now,
       fetcher: createCalendarFetcher({ rateLimitMs: 0 }),
     });
@@ -276,6 +294,7 @@ describe("ical-calendar service", () => {
 
     const service = await createCalendarService({
       config: { ...config, cacheKey: "calendar-cache.json" },
+      driver,
       fetcher: workingFetcher,
       now: () => now,
     });
@@ -296,6 +315,7 @@ describe("ical-calendar service", () => {
     });
     const brokenService = await createCalendarService({
       config: { ...config, cacheKey: "calendar-cache.json" },
+      driver,
       fetcher: failingFetcher,
       now: () => now,
     });
