@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { constants, generateKeyPairSync, privateDecrypt } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -102,11 +102,83 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     expect(readFileSync(file, "utf8")).toBe("not-json\n");
   });
 
+  it("fails closed on an empty record file and modifies nothing", async () => {
+    await seed(["u1", "u2"]);
+    // An empty file may be an interrupted write hiding the target —
+    // it must block ALL removals, not pass inspection silently.
+    writeFileSync(join(dir, "2026-11-13T99-99-99-999Z-empty.jsonl"), "");
+
+    const result = await deleteAnonAuditUserRecords({
+      dir,
+      privateKey,
+      userId: "u1",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("empty");
+    }
+    expect(recordFiles()).toHaveLength(3);
+  });
+
+  it("rewrites a legacy daily file keeping other users' records", async () => {
+    // Legacy format: YYYY-MM-DD.jsonl, one record per line.
+    const sink = createAnonAuditSink(auditConfig());
+    const lines: string[] = [];
+    for (const userId of ["u1", "u2"]) {
+      lines.push(
+        JSON.stringify({
+          v: 1,
+          gid: "g",
+          cid: "c",
+          mid: "m",
+          ct: sink.seal({ userId, guildId: "g", channelId: "c", postedAt: "t" }),
+        }),
+      );
+    }
+    writeFileSync(join(dir, "2026-11-01.jsonl"), `${lines.join("\n")}\n`);
+
+    const result = await deleteAnonAuditUserRecords({
+      dir,
+      privateKey,
+      userId: "u1",
+    });
+    expect(result).toMatchObject({ ok: true, scanned: 2, removed: 1 });
+    const remaining = readFileSync(join(dir, "2026-11-01.jsonl"), "utf8");
+    expect(remaining.trim().split("\n")).toHaveLength(1);
+    // The kept record still decrypts to u2.
+    const kept = JSON.parse(remaining.trim()) as { ct: string };
+    const opened = privateDecrypt(
+      { key: privateKey, oaepHash: "sha256", padding: constants.RSA_PKCS1_OAEP_PADDING },
+      Buffer.from(kept.ct, "base64"),
+    ).toString("utf8");
+    expect(JSON.parse(opened)).toMatchObject({ userId: "u2" });
+  });
+
+  it("removes a legacy daily file entirely when all records match", async () => {
+    const sink = createAnonAuditSink(auditConfig());
+    const line = JSON.stringify({
+      v: 1,
+      gid: "g",
+      cid: "c",
+      ct: sink.seal({ userId: "u1", guildId: "g", channelId: "c", postedAt: "t" }),
+    });
+    writeFileSync(join(dir, "2026-11-01.jsonl"), `${line}\n${line}\n`);
+
+    const result = await deleteAnonAuditUserRecords({
+      dir,
+      privateKey,
+      userId: "u1",
+    });
+    expect(result).toMatchObject({ ok: true, scanned: 2, removed: 2 });
+    expect(recordFiles()).toHaveLength(0);
+  });
+
   it("fails closed on a multi-record file rather than dropping others", async () => {
     await seed(["u1"]);
     const file = join(dir, recordFiles()[0]!);
-    // Simulate a legacy/appended file holding two records: partial
-    // deletion is impossible without a rewrite, so the run must abort.
+    // A CURRENT-format file must hold exactly one record — a second
+    // line means the layout is unexpected, so the run must abort
+    // rather than risk a partial rewrite.
     writeFileSync(file, `${readFileSync(file, "utf8")}{"v":1,"ct":"x"}\n`);
 
     const result = await deleteAnonAuditUserRecords({

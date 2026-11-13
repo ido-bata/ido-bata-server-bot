@@ -24,24 +24,32 @@
  * (`src/scripts/anon-audit-delete.ts`); the bot-side privacy consumer
  * reports that honestly instead of claiming a deletion it cannot do.
  *
- * Concurrency: every record is its own immutable file, so appends are
- * atomic creations (`wx`) and never share mutable state — no lock is
- * required. The retention sweep only removes files whose UTC date
- * prefix is older than `retentionDays`, which can never include a
- * file being appended (appends always carry today's date). The
- * custodian deletion script deletes whole files, never rewrites
- * them, so a concurrent append can never be lost.
+ * Concurrency: every record is published by writing a hidden
+ * `.<name>.tmp` file and atomically `rename`-ing it to the final
+ * name, so readers never observe a partial record. Appends are
+ * independent file creations and cannot interleave or lose each
+ * other's data — no lock is required. The retention sweep only
+ * removes files whose UTC date prefix is older than `retentionDays`
+ * (plus stale `.tmp` orphans), which can never include a file being
+ * appended (appends always carry today's date). The custodian
+ * deletion script removes whole per-record files — or rewrites
+ * legacy daily files, which no writer targets anymore — so a
+ * concurrent append can never be lost.
  */
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { type AnonAuditPlaintext, createAnonCipher } from "./audit-crypto.js";
 import type { AnonAuditConfig } from "./config.js";
 
-const FILE_NAME_PATTERN = /^\d{4}-\d{2}-\d{2}T.*\.jsonl$/;
+// Matches both the current per-record names (`YYYY-MM-DDT…-rand.jsonl`)
+// and legacy daily files (`YYYY-MM-DD.jsonl`) so privacy detection and
+// retention still cover data written by earlier revisions.
+const FILE_NAME_PATTERN = /^\d{4}-\d{2}-\d{2}(?:T.*)?\.jsonl$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const TMP_STALE_MS = 60 * 60 * 1000;
 
 export type AnonAuditRecordInput = {
   userId: string;
@@ -72,7 +80,7 @@ function recordFileName(date: Date): string {
 }
 
 function fileDay(name: string): string | null {
-  const match = /^(\d{4}-\d{2}-\d{2})T/.exec(name);
+  const match = /^(\d{4}-\d{2}-\d{2})(?:T|\.jsonl$)/.exec(name);
   return match?.[1] ?? null;
 }
 
@@ -89,6 +97,20 @@ async function sweepExpired(dir: string, retentionDays: number, nowMs: number): 
 
   const cutoff = nowMs - retentionDays * DAY_MS;
   for (const name of entries) {
+    // Orphaned temp files from interrupted writes: hidden `.*.tmp`
+    // names never match FILE_NAME_PATTERN, so remove them once they
+    // are clearly stale (an in-flight write is never this old).
+    if (name.endsWith(".tmp")) {
+      try {
+        const info = await stat(join(dir, name));
+        if (nowMs - info.mtimeMs > TMP_STALE_MS) {
+          await rm(join(dir, name), { force: true });
+        }
+      } catch {
+        // Vanished or unreadable — nothing to do.
+      }
+      continue;
+    }
     const day = fileDay(name);
     if (!day || !name.endsWith(".jsonl")) {
       continue;
@@ -125,14 +147,18 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
         cid: input.channelId,
         ct: input.ciphertext,
       })}\n`;
-      // `wx` fails if the name somehow exists — never overwrite a
-      // record. Each record is an independent file, so concurrent
-      // appends cannot interleave or lose each other's data.
-      await writeFile(join(dir, recordFileName(new Date())), line, {
-        encoding: "utf8",
-        mode: 0o600,
-        flag: "wx",
-      });
+      // Publish atomically: write a hidden temp file, then rename to
+      // the final name. Readers (privacy detection, custodian
+      // deletion) only ever see complete records — never a partial
+      // or empty file at a record name. The random suffix makes
+      // collisions impossible; `wx` on the temp guards the temp
+      // name itself.
+      const finalName = recordFileName(new Date());
+      const tempName = `.${finalName}-${randomBytes(4).toString("hex")}.tmp`;
+      const tempPath = join(dir, tempName);
+      const finalPath = join(dir, finalName);
+      await writeFile(tempPath, line, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      await rename(tempPath, finalPath);
     },
     sweep: async () => {
       await mkdir(dir, { recursive: true, mode: 0o700 });

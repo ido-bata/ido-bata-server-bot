@@ -129,17 +129,21 @@ overwrite), with these rules:
   `channelId` + `postedAt`. Records may exist for send attempts that
   ultimately failed (orphan records): that is deliberate
   over-recording — the safe direction — and retention sweeps them.
-- **Concurrency needs no lock.** Because every record is an
-  independent immutable file created with `wx`, appends are atomic
-  and cannot interleave or lose each other's data — across processes
+- **Concurrency needs no lock.** Each record is written to a hidden
+  temp file and atomically `rename`-published, so readers never see
+  a partial record; appends are independent file creations and
+  cannot interleave or lose each other's data — across processes
   too. The retention sweep only removes files whose UTC date prefix
-  is older than `ANON_AUDIT_RETENTION_DAYS` (default 90), which can
-  never include a file being appended (appends always carry today's
-  date). Custodian deletion removes whole files rather than
-  rewriting them, so a concurrent append can never be dropped —
-  this replaces an earlier daily-JSONL + mkdir-lock design whose
-  stale-breaking and read-modify-write paths could not be made
-  race-free.
+  is older than `ANON_AUDIT_RETENTION_DAYS` (default 90) plus stale
+  `.tmp` orphans — it can never include a file being appended
+  (appends always carry today's date). Legacy `YYYY-MM-DD.jsonl`
+  daily files from earlier revisions are still detected, swept, and
+  handled by the custodian (kept-lines rewrite — safe because no
+  current writer targets those names). Custodian deletion removes
+  whole per-record files, so a concurrent append can never be
+  dropped. This replaces an earlier daily-JSONL + mkdir-lock design
+  whose stale-breaking and read-modify-write paths could not be
+  made race-free.
 - **No bot-computable per-user index — by design.** An earlier
   revision stored `idx = HMAC(indexKey, userId)` for `/privacy
   delete` lookup. That was rejected: any deterministic tag over a
@@ -158,8 +162,9 @@ overwrite), with these rules:
   operation: `bun run anon:audit:delete -- --key-file <private.pem>
   --dir <audit-dir> --user <id>` (`src/scripts/anon-audit-delete.ts`
   → `audit-delete.ts`) decrypts every record file, then removes the
-  matching files. It inspects ALL records before removing ANY file
-  and aborts on corrupt/undecryptable/multi-record files — an
+  matching files (legacy daily files are rewritten with kept lines).
+  It inspects ALL records before modifying ANY file and aborts on
+  corrupt/undecryptable/empty/multi-record-current files — an
   uninspectable record is never assumed safe to keep or drop.
 - The private key is never accepted from env — private-key PEM
   material is explicitly rejected — never written to disk, never

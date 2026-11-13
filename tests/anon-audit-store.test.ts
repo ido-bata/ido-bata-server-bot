@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -90,6 +90,12 @@ describe("createAnonAuditSink", () => {
   it("sweeps files older than the retention window before appending", async () => {
     const oldName = oldRecordName("2020-01-01");
     writeFileSync(join(dir, oldName), '{"v":1,"ct":"x"}\n');
+    // Legacy daily format is swept by the same date-prefix rule.
+    const legacyName = "2020-01-02.jsonl";
+    writeFileSync(join(dir, legacyName), '{"v":1,"ct":"x"}\n');
+    // A recent legacy file must survive.
+    const recentLegacy = `${new Date().toISOString().slice(0, 10)}.jsonl`;
+    writeFileSync(join(dir, recentLegacy), '{"v":1,"ct":"x"}\n');
 
     const sink = createAnonAuditSink(auditConfig({ retentionDays: 30 }));
     await sink.record({
@@ -102,7 +108,32 @@ describe("createAnonAuditSink", () => {
 
     const remaining = recordFiles();
     expect(remaining).not.toContain(oldName);
-    expect(remaining).toHaveLength(1); // only today's record remains
+    expect(remaining).not.toContain(legacyName);
+    expect(remaining).toContain(recentLegacy);
+    expect(remaining).toHaveLength(2); // legacy-today + new record
+  });
+
+  it("leaves no temp files behind after a successful record", async () => {
+    const sink = createAnonAuditSink(auditConfig());
+    await sink.record({
+      userId: "u1",
+      guildId: "g",
+      channelId: "c",
+      postedAt: "t",
+      ciphertext: "ct",
+    });
+    expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toHaveLength(0);
+  });
+
+  it("sweeps stale orphan temp files but keeps fresh ones", async () => {
+    const sink = createAnonAuditSink(auditConfig());
+    const stale = join(dir, ".2020-01-01T00-00-00-000Z-aaaa1111.tmp");
+    writeFileSync(stale, "partial");
+    // Backdate the temp file beyond TMP_STALE_MS (1h).
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(stale, old, old);
+    await sink.sweep();
+    expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toHaveLength(0);
   });
 
   it("serializes concurrent appends without losing records", async () => {
@@ -147,5 +178,10 @@ describe("hasAnonAuditRecords", () => {
     writeFileSync(join(dir, "notes.txt"), "hello");
     writeFileSync(join(dir, "2026-11-13T00-00-00-000Z-empty.jsonl"), "");
     expect(await hasAnonAuditRecords(dir)).toBe(false);
+  });
+
+  it("detects legacy daily files", async () => {
+    writeFileSync(join(dir, "2026-11-13.jsonl"), '{"v":1,"ct":"x"}\n');
+    expect(await hasAnonAuditRecords(dir)).toBe(true);
   });
 });

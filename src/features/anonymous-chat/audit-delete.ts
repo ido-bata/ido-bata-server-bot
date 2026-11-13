@@ -6,24 +6,30 @@
  * host. The audit-key custodian runs this OFFLINE with the private
  * key (see `src/scripts/anon-audit-delete.ts`).
  *
- * Each audit record is its own immutable file, so deletion is a
- * per-file `rm` — never a read-modify-write rewrite. A concurrent
- * bot append creates a different file and can never be lost, which
- * is why no cross-process lock is needed.
+ * Current records are one-per-file and published atomically, so
+ * deletion is a per-file `rm` — a concurrent bot append creates a
+ * different file and can never be lost. Legacy daily files
+ * (`YYYY-MM-DD.jsonl`, one record per line, written by earlier
+ * revisions) are handled by kept-lines rewrite: no current writer
+ * targets those names, so the rewrite cannot race an append.
  *
  * Fail-closed contract: EVERY record file is decrypted and inspected
- * before ANY file is removed. A corrupt file, a missing `ct`, an
- * undecryptable record, or an unreadable file aborts the run — we
- * cannot prove such a record is not the target user's, so nothing is
- * touched and the caller gets an error, never a partial "success".
- * A file that vanished between listing and reading (retention sweep)
- * is already gone and is skipped.
+ * before ANY file is modified. A corrupt file, a missing `ct`, an
+ * undecryptable record, an unreadable file, an empty file, or a
+ * multi-record CURRENT-format file aborts the run — we cannot prove
+ * such content is not the target user's, so nothing is touched and
+ * the caller gets an error, never a partial "success". A file that
+ * vanished between listing and reading (retention sweep) is already
+ * gone and is skipped.
  */
-import { constants, createPrivateKey, privateDecrypt } from "node:crypto";
-import { readdir, readFile, rm } from "node:fs/promises";
+import { constants, createPrivateKey, privateDecrypt, randomBytes } from "node:crypto";
+import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const FILE_NAME_PATTERN = /^\d{4}-\d{2}-\d{2}T.*\.jsonl$/;
+// Current per-record names (`YYYY-MM-DDT…-rand.jsonl`) plus legacy
+// daily files (`YYYY-MM-DD.jsonl`).
+const FILE_NAME_PATTERN = /^\d{4}-\d{2}-\d{2}(?:T.*)?\.jsonl$/;
+const LEGACY_NAME_PATTERN = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 
 export type AnonAuditDeleteOutcome = {
   ok: true;
@@ -52,6 +58,10 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   );
 }
 
+type Plan =
+  | { kind: "remove-file"; name: string }
+  | { kind: "rewrite-file"; name: string; kept: string[] };
+
 /**
  * Remove every audit record whose decrypted `userId` matches.
  * `privateKey` accepts a PEM string (PKCS8) — the custodian's key,
@@ -65,12 +75,28 @@ export async function deleteAnonAuditUserRecords(options: {
   const { dir, privateKey, userId } = options;
   const key = createPrivateKey(privateKey);
 
+  const decryptUserId = (ct: string): string | null => {
+    const opened = privateDecrypt(
+      {
+        key,
+        oaepHash: "sha256",
+        padding: constants.RSA_PKCS1_OAEP_PADDING,
+      },
+      Buffer.from(ct, "base64"),
+    ).toString("utf8");
+    const plaintext: unknown = JSON.parse(opened);
+    return isRecord(plaintext) && "userId" in plaintext && typeof plaintext.userId === "string"
+      ? plaintext.userId
+      : null;
+  };
+
   try {
     const names = (await readdir(dir)).filter((name) => FILE_NAME_PATTERN.test(name));
 
-    // Phase 1: inspect EVERY record before removing ANY file.
-    const remove: string[] = [];
+    // Phase 1: inspect EVERY record before modifying ANY file.
+    const plans: Plan[] = [];
     let scanned = 0;
+    let removed = 0;
     for (const name of names) {
       const path = join(dir, name);
       let raw: string;
@@ -87,15 +113,27 @@ export async function deleteAnonAuditUserRecords(options: {
         };
       }
       const lines = raw.split("\n").filter((line) => line.trim() !== "");
-      // Records are written one-per-file; a multi-line file cannot be
-      // partially deleted without a rewrite, so refuse rather than
-      // risk dropping another user's record.
-      if (lines.length > 1) {
+      const legacy = LEGACY_NAME_PATTERN.test(name);
+      // An empty record file can be an interrupted write — it might
+      // be hiding the target user's record, so refuse rather than
+      // assume it is safe.
+      if (lines.length === 0) {
+        return { ok: false, error: `empty record file ${name}; nothing was modified` };
+      }
+      // Current-format files hold exactly one record; a multi-line
+      // current file cannot be partially deleted without a rewrite
+      // that could race nothing — but we refuse anyway because the
+      // layout is unexpected. Legacy daily files legitimately hold
+      // many lines.
+      if (!legacy && lines.length > 1) {
         return {
           ok: false,
           error: `multi-record file ${name}; nothing was modified`,
         };
       }
+
+      const kept: string[] = [];
+      let fileRemoves = 0;
       for (const line of lines) {
         scanned += 1;
         let record: AuditRecord;
@@ -114,19 +152,9 @@ export async function deleteAnonAuditUserRecords(options: {
             error: `record file ${name} has no ciphertext; nothing was modified`,
           };
         }
-        let plaintextUserId: unknown;
+        let plaintextUserId: string | null;
         try {
-          const opened = privateDecrypt(
-            {
-              key,
-              oaepHash: "sha256",
-              padding: constants.RSA_PKCS1_OAEP_PADDING,
-            },
-            Buffer.from(record.ct, "base64"),
-          ).toString("utf8");
-          const plaintext: unknown = JSON.parse(opened);
-          plaintextUserId =
-            isRecord(plaintext) && "userId" in plaintext ? plaintext.userId : undefined;
+          plaintextUserId = decryptUserId(record.ct);
         } catch {
           return {
             ok: false,
@@ -134,21 +162,47 @@ export async function deleteAnonAuditUserRecords(options: {
           };
         }
         if (plaintextUserId === userId) {
-          remove.push(name);
-          break; // one record per file — no need to scan further lines
+          removed += 1;
+          fileRemoves += 1;
+          continue;
         }
+        kept.push(line);
+      }
+
+      if (!legacy) {
+        // One record per file: either the whole file goes or it stays.
+        if (fileRemoves > 0) {
+          plans.push({ kind: "remove-file", name });
+        }
+      } else if (fileRemoves > 0) {
+        plans.push(
+          kept.length === 0 ? { kind: "remove-file", name } : { kind: "rewrite-file", name, kept },
+        );
       }
       // Yield periodically so large histories do not starve other work.
       await new Promise((resolve) => setImmediate(resolve));
     }
 
-    // Phase 2: remove only after every record inspected cleanly. Each
-    // file is immutable, so `rm` cannot drop a concurrent append.
-    for (const name of remove) {
-      await rm(join(dir, name), { force: true });
+    // Phase 2: modify only after every record inspected cleanly.
+    for (const plan of plans) {
+      const path = join(dir, plan.name);
+      if (plan.kind === "remove-file") {
+        await rm(path, { force: true });
+        continue;
+      }
+      // Legacy rewrite: temp file + atomic rename. No current writer
+      // targets `YYYY-MM-DD.jsonl` names, so this cannot race an
+      // append; two concurrent custodian runs are an ops error.
+      const tempPath = join(dir, `.${plan.name}-${randomBytes(8).toString("hex")}.tmp`);
+      await writeFile(tempPath, `${plan.kept.join("\n")}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      });
+      await rename(tempPath, path);
     }
 
-    return { ok: true, scanned, removed: remove.length };
+    return { ok: true, scanned, removed };
   } catch (error) {
     return {
       ok: false,
