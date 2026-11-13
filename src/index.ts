@@ -82,7 +82,6 @@ import {
   type InstanceLease,
   LeaseConflictError,
   LeaseUnsupportedError,
-  probeConditionalWriteSupport,
 } from "./lib/storage/lease.js";
 import { createRuntimeStatusStore } from "./runtime/status-store.js";
 import { mountTui, resolveTuiMode } from "./tui/render.jsx";
@@ -617,7 +616,7 @@ async function main(): Promise<void> {
   // migration cutover, or a duplicated Altare deployment — refuses to
   // start instead of processing the same events twice.
   const leaseDriver = getLeaseDriver();
-  const conditionalWrites = await probeConditionalWriteSupport(leaseDriver);
+  const conditionalWrites = await leaseDriver.probeConditionalWrites();
   if (!conditionalWrites && process.env.LEASE_ALLOW_UNCONDITIONAL !== "true") {
     // The lease's exclusivity depends on conditional writes. Without them
     // two instances could both believe they own the lease, so the bot

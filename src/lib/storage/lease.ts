@@ -171,7 +171,7 @@ export async function acquireInstanceLease(options: AcquireLeaseOptions): Promis
   // The exclusivity of the lease depends on conditional writes. Probe the
   // backend before handing out a term: a backend that ignores the
   // conditions would let two instances believe they own the lease.
-  const conditionalWrites = await probeConditionalWriteSupport(driver);
+  const conditionalWrites = await driver.probeConditionalWrites();
   if (!conditionalWrites) {
     throw new LeaseUnsupportedError(
       "the storage backend does not support conditional writes; the instance lease cannot be exclusive",

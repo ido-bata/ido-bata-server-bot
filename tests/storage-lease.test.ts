@@ -8,7 +8,6 @@ import {
   LeaseConflictError,
   LeaseLostError,
   LeaseUnsupportedError,
-  probeConditionalWriteSupport,
 } from "../src/lib/storage/lease.js";
 import { createLocalFileStorage } from "../src/lib/storage/local.js";
 import type { StorageDriver } from "../src/lib/storage/types.js";
@@ -238,7 +237,7 @@ describe("instance lease (u3 backend)", () => {
   });
 
   it("detects that the backend supports conditional writes", async () => {
-    expect(await probeConditionalWriteSupport(driver)).toBe(true);
+    expect(await driver.probeConditionalWrites()).toBe(true);
   });
 
   it("reports the loss through onLost when the renewal finds a foreign term", async () => {
@@ -307,7 +306,7 @@ describe("instance lease (backend without conditional writes)", () => {
   });
 
   it("reports that conditional writes are unavailable", async () => {
-    expect(await probeConditionalWriteSupport(driver)).toBe(false);
+    expect(await driver.probeConditionalWrites()).toBe(false);
   });
 
   it("refuses to hand out a lease it cannot make exclusive", async () => {
