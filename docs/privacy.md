@@ -232,12 +232,15 @@ the correct default until the custodian role is staffed.
   until expiry.
 - **Selective deletion**: on a user request, the custodian runs
   `bun run anon:audit:delete -- --key-file <private.pem> --dir
-  <audit-dir> --user <id>`. Inspection anomalies (corrupt,
-  undecryptable, empty, or malformed records) abort the run BEFORE
-  anything is modified. An operational failure during the deletion
-  phase itself can leave partial progress — the run is safe to
-  repeat after fixing the cause, since inspection is deterministic
-  and already-removed records simply no longer match.
+  <audit-dir> --user <id>` against the live audit directory (or a
+  copy). A copy-based run changes only the copy — the custodian must
+  apply the deletions to the authoritative directory afterwards, and
+  records created after the copy are not covered. Inspection
+  anomalies (corrupt, undecryptable, empty, or malformed records)
+  abort the run BEFORE anything is modified. An operational failure
+  during the deletion phase itself can leave partial progress — the
+  run is safe to repeat after fixing the cause, since inspection is
+  deterministic and already-removed records simply no longer match.
 - **Consent revocation**: revoking `message-history` stops future
   audit writes immediately. Existing ciphertext records are retained
   until the retention sweep or a custodian deletion — revocation is

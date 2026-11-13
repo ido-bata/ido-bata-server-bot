@@ -130,6 +130,67 @@ describe("resolveEffectivePermissions — admin / owner bypass", () => {
   });
 });
 
+describe("resolveEffectivePermissions — member timeout", () => {
+  // Discord timeouts are not permission bits: permissionsFor ignores
+  // communicationDisabledUntil, but a timed-out member cannot send
+  // messages — even admins. /anon must mirror that.
+  it("denies a timed-out regular member even when bits allow sending", async () => {
+    const channel = textChannel(() => bitsOf(VIEW, SEND));
+    const timedOut = {
+      ...member("user-1"),
+      communicationDisabledUntilTimestamp: Date.now() + 60_000,
+    };
+    const result = await resolveEffectivePermissions({
+      channel,
+      member: timedOut,
+      guild: GUILD,
+      fetchChannel: fetchChannelNull,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("denies a timed-out admin/owner — timeout applies to everyone", async () => {
+    const channel = textChannel(() => bitsOf(VIEW, SEND));
+    const timedOutAdmin = {
+      ...member("admin-1", [ADMIN]),
+      communicationDisabledUntilTimestamp: Date.now() + 60_000,
+    };
+    const result = await resolveEffectivePermissions({
+      channel,
+      member: timedOutAdmin,
+      guild: GUILD,
+      fetchChannel: fetchChannelNull,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("allows a member whose timeout already expired", async () => {
+    const channel = textChannel(() => bitsOf(VIEW, SEND));
+    const expired = { ...member("user-1"), communicationDisabledUntilTimestamp: Date.now() - 1 };
+    const result = await resolveEffectivePermissions({
+      channel,
+      member: expired,
+      guild: GUILD,
+      fetchChannel: fetchChannelNull,
+    });
+    expect(result?.has(SEND)).toBe(true);
+  });
+
+  it("treats missing/null timeout as not timed out", async () => {
+    const channel = textChannel(() => bitsOf(VIEW, SEND));
+    for (const until of [undefined, null]) {
+      const m = { ...member("user-1"), communicationDisabledUntilTimestamp: until };
+      const result = await resolveEffectivePermissions({
+        channel,
+        member: m,
+        guild: GUILD,
+        fetchChannel: fetchChannelNull,
+      });
+      expect(result?.has(SEND)).toBe(true);
+    }
+  });
+});
+
 describe("resolveEffectivePermissions — threads", () => {
   // Discord threads carry no permission_overwrites; permissions come
   // wholesale from the parent channel (discord.js delegates likewise).

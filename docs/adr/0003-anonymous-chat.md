@@ -126,7 +126,10 @@ overwrite), with these rules:
   no plaintext `mid`: Discord assigns the message id only after
   send, and the audit record must be durable before the send — the
   custodian correlates records to messages via the decrypted
-  `channelId` + `postedAt`. Records may exist for send attempts that
+  `channelId` + `postedAt`. This key is not unique: attempts in the
+  same channel sharing a millisecond `postedAt` produce identical
+  keys, so a message cannot be attributed to one author from the key
+  alone. Records may exist for send attempts that
   ultimately failed (orphan records): that is deliberate
   over-recording — the safe direction — and retention sweeps them.
 - **Concurrency needs no lock.** Each record is written to a hidden
@@ -192,12 +195,18 @@ overwrite), with these rules:
   2. **Selective deletion**: a user deletion request is handled by
      the custodian running
      `bun run anon:audit:delete -- --key-file <private.pem> --dir
-     <audit-dir> --user <id>` against a copy of (or direct access to)
-     the audit directory. The script inspects every record before
-     modifying anything: inspection anomalies abort the run with NO
-     modifications, while an operational failure during the delete
-     phase itself can leave partial progress — safe to rerun after
-     fixing the cause since inspection is deterministic.
+     <audit-dir> --user <id>` against the live audit directory
+     (preferred, during a quiet window) or a copy of it. A copy-based
+     run only changes the copy: the custodian must then apply the
+     same deletions to the authoritative directory (re-run against
+     it, or remove the identified files), and records created AFTER
+     the copy was taken are not covered by that run — they remain
+     until retention or a later deletion. The script inspects every
+     record before modifying anything: inspection anomalies abort
+     the run with NO modifications, while an operational failure
+     during the delete phase itself can leave partial progress —
+     safe to rerun after fixing the cause since inspection is
+     deterministic.
   3. **Consent revocation**: revoking `message-history` stops FUTURE
      audit writes immediately (the consent gate fails closed). It
      does NOT retroactively delete records already written — those

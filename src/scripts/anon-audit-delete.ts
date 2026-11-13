@@ -10,8 +10,12 @@
  *     --dir data/anon-audit --user <discord-user-id>
  *
  * The private key must never live on the bot host; this script is
- * meant to run on the custodian's own machine against a copied audit
- * dir. See `src/features/anonymous-chat/audit-delete.ts` for the
+ * meant to run on the custodian's own machine. Prefer `--dir`
+ * pointing at the LIVE audit directory (quiet window); a copy-based
+ * run changes only the copy — the custodian must then apply the same
+ * deletions to the authoritative directory, and records created
+ * after the copy are not covered by that run. See
+ * `src/features/anonymous-chat/audit-delete.ts` for the
  * fail-closed deletion semantics.
  */
 import { readFile } from "node:fs/promises";

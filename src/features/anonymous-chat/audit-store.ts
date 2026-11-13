@@ -39,9 +39,9 @@
  * concurrent append can never be lost.
  */
 import { randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync } from "node:fs";
 import { link, mkdir, open, readdir, rm, stat, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, parse, resolve } from "node:path";
 
 import { type AnonAuditPlaintext, createAnonCipher } from "./audit-crypto.js";
 import type { AnonAuditConfig } from "./config.js";
@@ -125,6 +125,30 @@ async function sweepExpired(dir: string, retentionDays: number, nowMs: number): 
 }
 
 /**
+ * fsync every ancestor directory of `dir` so a newly created audit
+ * directory (and any intermediate component `mkdir -p` had to make)
+ * survives a host crash. `dirHandle.sync()` inside `record()` only
+ * covers dirents INSIDE the audit dir — the audit dir's own dirent
+ * lives in its parent. Called once at sink creation; a failure throws
+ * so the service fails closed (`auditState: "error"`) rather than
+ * accept records whose directory entry is not durable.
+ */
+function syncAncestorDirs(dir: string): void {
+  let current = resolve(dir);
+  const { root } = parse(current);
+  while (current !== root) {
+    const parent = dirname(current);
+    const handle = openSync(parent, "r");
+    try {
+      fsyncSync(handle);
+    } finally {
+      closeSync(handle);
+    }
+    current = parent;
+  }
+}
+
+/**
  * Build the audit sink for a resolved config. Throws when the public
  * key material is invalid or the audit directory cannot be created —
  * the caller treats that as "audit broken" and must refuse to post
@@ -137,6 +161,7 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
   // permissions fails HERE — the service maps that to
   // `auditState: "error"` instead of discovering it on the first post.
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  syncAncestorDirs(dir);
 
   return {
     seal: (plaintext) => sealFn(JSON.stringify(plaintext)),

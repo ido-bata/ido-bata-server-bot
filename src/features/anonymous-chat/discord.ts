@@ -33,7 +33,10 @@ export function createDiscordAnonAdapters(client: Client): DiscordAnonAdapters {
     },
     fetchGuild: async (guildId) => {
       try {
-        const guild = await client.guilds.fetch(guildId);
+        // Force refresh: a plain guilds.fetch returns the cached
+        // guild, whose role overwrites/owner can lag gateway updates
+        // — stale role permissions would wrongly authorize /anon.
+        const guild = await client.guilds.fetch({ guild: guildId, force: true });
         return guild as unknown as AnonGuildLike;
       } catch {
         return null;

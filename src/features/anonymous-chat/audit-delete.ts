@@ -23,7 +23,7 @@
  * gone and is skipped.
  */
 import { constants, createPrivateKey, privateDecrypt, randomBytes } from "node:crypto";
-import { lstat, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 // Current per-record names (`YYYY-MM-DDT…-rand.jsonl`) plus legacy
@@ -254,12 +254,32 @@ export async function deleteAnonAuditUserRecords(options: {
         }
         throw error;
       }
+      // Flush the replacement to stable storage BEFORE the rename:
+      // writeFile resolving does not imply the data reached disk, and
+      // a crash between rename and flush could lose other users'
+      // kept records along with the deleted ones.
+      const tempHandle = await open(tempPath, "r+");
+      try {
+        await tempHandle.sync();
+      } finally {
+        await tempHandle.close();
+      }
       try {
         await rename(tempPath, path);
       } catch (error) {
         await rm(tempPath, { force: true }).catch(() => {});
         throw error;
       }
+    }
+
+    // Make the deletions/replacements themselves durable: dirent
+    // changes (unlinks, renames) need a directory fsync, same as the
+    // writer's publish path.
+    const dirHandle = await open(dir, "r");
+    try {
+      await dirHandle.sync();
+    } finally {
+      await dirHandle.close();
     }
 
     return { ok: true, scanned, removed };

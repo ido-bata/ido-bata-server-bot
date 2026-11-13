@@ -30,6 +30,8 @@ export type AnonMemberLike = {
   id: string;
   permissions: { has: (bit: bigint) => boolean };
   roles: { cache: { has: (id: string) => boolean } };
+  /** GuildMember.communicationDisabledUntilTimestamp (ms epoch, null = none). */
+  communicationDisabledUntilTimestamp?: number | null;
 };
 
 export type AnonGuildLike = {
@@ -78,6 +80,18 @@ function isAdminOrOwner(member: AnonMemberLike, guild: AnonGuildLike): boolean {
   return member.id === guild.ownerId || member.permissions.has(PermissionFlagsBits.Administrator);
 }
 
+/**
+ * Discord timeouts are NOT permission bits — `permissionsFor`
+ * ignores `communicationDisabledUntil`, but a timed-out member
+ * cannot send messages at all (the restriction applies even to
+ * admins/owner). Checked before the admin/owner bypass so `/anon`
+ * mirrors "could this member post normally".
+ */
+function isTimedOut(member: AnonMemberLike, now: number = Date.now()): boolean {
+  const until = member.communicationDisabledUntilTimestamp;
+  return typeof until === "number" && until > now;
+}
+
 function allPermissions(): PermissionsBitField {
   return new PermissionsBitField(PermissionsBitField.All);
 }
@@ -97,6 +111,10 @@ export async function resolveEffectivePermissions(args: {
   fetchChannel: (channelId: string) => Promise<AnonChannelLike | null>;
 }): Promise<AnonBits | null> {
   const { channel, member, guild, fetchChannel } = args;
+
+  if (isTimedOut(member)) {
+    return null;
+  }
 
   if (isAdminOrOwner(member, guild)) {
     return allPermissions();

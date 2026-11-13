@@ -128,16 +128,24 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
   // ephemeral mode: `auditState: "error"` makes every post fail closed
   // so an operator misconfiguration can never produce unlogged
   // anonymous posts (ADR-0003 §3).
+  // Retention must not depend on new posts or a restart: sweep on a
+  // timer as well as at startup and before each append. `unref` keeps
+  // the interval from holding the process open; the sweep is
+  // idempotent so overlapping or missed ticks are harmless.
+  const RETENTION_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+  const sweepAudit = (sink: AnonAuditSink) => {
+    void sink.sweep().catch((error: unknown) => {
+      logger?.warn(safeErrorFields(error), "anonymous-chat: audit retention sweep failed");
+    });
+  };
+
   let audit = deps.audit;
   let auditState: AnonymousChatService["auditState"];
   if (audit === undefined && config.audit) {
     try {
       audit = createAnonAuditSink(config.audit);
-      // Best-effort retention sweep at startup; failures are logged, not
-      // fatal — the next append sweeps again.
-      void audit.sweep().catch((error: unknown) => {
-        logger?.warn(safeErrorFields(error), "anonymous-chat: audit retention sweep failed");
-      });
+      sweepAudit(audit);
+      setInterval(() => sweepAudit(audit as AnonAuditSink), RETENTION_SWEEP_INTERVAL_MS).unref();
       auditState = "active";
     } catch (error) {
       logger?.error(
@@ -148,9 +156,8 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       auditState = "error";
     }
   } else if (audit) {
-    void audit.sweep().catch((error: unknown) => {
-      logger?.warn(safeErrorFields(error), "anonymous-chat: audit retention sweep failed");
-    });
+    sweepAudit(audit);
+    setInterval(() => sweepAudit(audit as AnonAuditSink), RETENTION_SWEEP_INTERVAL_MS).unref();
     auditState = "active";
   } else {
     auditState = "disabled";
