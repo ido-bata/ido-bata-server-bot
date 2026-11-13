@@ -231,8 +231,21 @@ bun run storage:migrate -- import --from ./backup-$(date +%F)
 bun run storage:migrate -- verify --from ./backup-$(date +%F)
 ```
 
-Step 3 must report zero missing and zero mismatched objects. Schedule
-steps 1–3 with cron on a host that holds the bucket credentials.
+Step 3 must report zero missing and zero mismatched objects.
+
+Schedule steps 1–3 with cron on a host that holds the bucket credentials:
+
+```cron
+# 03:17 daily — backup the primary bucket and verify the copy
+17 3 * * * cd /srv/ido-bata && set -a && . /srv/ido-bata/backup.env && set +a && \
+  bun run storage:migrate -- export --out ./backups/$(date +\%F) && \
+  S3_BUCKET=ido-bata-bot-backup bun run storage:migrate -- import --from ./backups/$(date +\%F) && \
+  bun run storage:migrate -- verify --from ./backups/$(date +\%F)
+```
+
+`backup.env` holds the bucket credentials (chmod 600, owned by the bot
+user). The job must fail loudly: a backup that cannot be verified is not a
+backup.
 
 ### 7.2 Restore drill (run it before you need it)
 
