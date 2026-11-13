@@ -94,6 +94,7 @@ function makeDeps(
     fetchChannel?: (channelId: string) => Promise<AnonChannelLike | null>;
     authorizeAudit?: (userId: string) => Promise<boolean>;
     audit?: AnonAuditSink | null;
+    onAuditStateChange?: (state: "disabled" | "active" | "error") => void;
     now?: () => number;
   } = {},
 ) {
@@ -122,6 +123,7 @@ function makeDeps(
       overrides.audit === undefined && overrides.config?.audit == null
         ? makePassThroughAudit()
         : overrides.audit,
+    onAuditStateChange: overrides.onAuditStateChange,
     now: overrides.now,
     logger,
   });
@@ -730,6 +732,37 @@ describe("anonymous-chat service — audit mode", () => {
     // failed (its message was deleted best-effort). The gated post
     // never reached Discord.
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("notifies onAuditStateChange on the runtime active→error transition", async () => {
+    const onAuditStateChange = vi.fn();
+    const { channel } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+    });
+    const audit = makeAudit({
+      record: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("disk full")),
+    });
+    const { service } = makeDeps({
+      channel,
+      config: auditConfig(),
+      audit,
+      onAuditStateChange,
+    });
+
+    // Construction reports the initial state, then the posted-record
+    // failure must fire exactly one more transition to "error" — this
+    // is what keeps statusStore/TUI from showing a stale "active".
+    expect(onAuditStateChange).toHaveBeenCalledWith("active");
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "audit_failed" });
+    expect(service.auditState).toBe("error");
+    expect(onAuditStateChange).toHaveBeenLastCalledWith("error");
+    expect(onAuditStateChange.mock.calls.filter((c) => c[0] === "error")).toHaveLength(1);
+    // A second failure must not re-fire — transitions only.
+    await service.post(INPUT);
+    expect(onAuditStateChange.mock.calls.filter((c) => c[0] === "error")).toHaveLength(1);
   });
 
   it("denies audit writes when consent authorization fails", async () => {

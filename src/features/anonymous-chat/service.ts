@@ -93,6 +93,12 @@ export type AnonymousChatServiceDeps = {
   authorizeAudit?: (userId: string) => Promise<boolean>;
   /** Injectable audit sink; built from `config.audit` when omitted. */
   audit?: AnonAuditSink | null;
+  /**
+   * Called on every auditState transition (including the initial state
+   * chosen at construction) so the composition root can reflect a
+   * runtime `active → error` degradation into the status store / TUI.
+   */
+  onAuditStateChange?: (state: AnonymousChatService["auditState"]) => void;
   now?: () => number;
   logger?: AnonLogger;
 };
@@ -157,28 +163,35 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
 
   let audit = deps.audit;
   let auditState: AnonymousChatService["auditState"];
+  const setAuditState = (next: AnonymousChatService["auditState"]) => {
+    if (auditState === next) {
+      return;
+    }
+    auditState = next;
+    deps.onAuditStateChange?.(next);
+  };
   if (audit === undefined && config.audit) {
     try {
       audit = createAnonAuditSink(config.audit);
       sweepAudit(audit);
       setInterval(() => sweepAudit(audit as AnonAuditSink), RETENTION_SWEEP_INTERVAL_MS).unref();
-      auditState = "active";
+      setAuditState("active");
     } catch (error) {
       logger?.error(
         safeErrorFields(error),
         "anonymous-chat: failed to initialize audit sink; /anon disabled",
       );
       audit = null;
-      auditState = "error";
+      setAuditState("error");
     }
   } else if (audit) {
     sweepAudit(audit);
     setInterval(() => sweepAudit(audit as AnonAuditSink), RETENTION_SWEEP_INTERVAL_MS).unref();
-    auditState = "active";
+    setAuditState("active");
   } else {
     // No public key configured → "disabled": /anon refuses every
     // post. This is NOT a posting mode — audit is mandatory.
-    auditState = "disabled";
+    setAuditState("disabled");
   }
 
   async function resolveMemberPermissions(
@@ -416,8 +429,9 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       } catch (error) {
         // Flip auditState BEFORE awaiting the delete: a slow Discord
         // delete must not leave a window where new posts still pass
-        // the active gate.
-        auditState = "error";
+        // the active gate. The transition callback fires synchronously
+        // so statusStore/TUI reflect the degradation immediately.
+        setAuditState("error");
         try {
           await sent.delete();
         } catch {

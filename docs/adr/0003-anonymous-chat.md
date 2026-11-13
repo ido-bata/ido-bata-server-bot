@@ -214,11 +214,18 @@ selective deletion remains an offline custodian operation
   `--attempt <attemptId>`, `--unmatched`) decrypts records offline
   and prints the correlation. This is the only path that maps a real
   Discord `messageId` to an author, and it requires the private key.
-- **Operation records**: custodian tools append a plaintext-safe
-  entry to `<audit-dir>/operations.jsonl` — timestamp, operation,
-  records scanned/matched, `kid`. Query values (user ids,
-  message ids) are never written to the ops log; the custodian keeps
-  the approval record (who approved, why, when) in their own
+- **Operation records**: custodian tools append privacy-safe
+  `start`/`end` entries to `<audit-dir>/operations.jsonl` —
+  timestamp, operation, phase, records scanned/matched/removed,
+  key count. The records are MANDATORY, not best-effort: lookup
+  writes `start` before any decryption and `end` before plaintext
+  is printed — a failed `end` append withholds all decrypted
+  output; delete writes `start` before any record is removed — a
+  failed `start` aborts the run entirely — and `end` after, with a
+  failed `end` reported loudly. No disclosure or deletion completes
+  without a durable operation record. Query values (user ids,
+  message ids) are never written to the ops log; the custodian
+  keeps the approval record (who approved, why, when) in their own
   procedure outside the repo.
 - **Key rotation**: generate a new RSA-3072 keypair offline, deploy
   only the new public key with a new `ANON_AUDIT_KEY_ID`, keep the
@@ -260,9 +267,13 @@ remain until retention or custodian deletion (documented honestly).
 - TUI/status-store meta carries counts/state only (the `auditState`
   value itself). Metrics are not wired with per-user labels. The
   posted-record failure path logs only safe fields plus the audit
-  state transition — never the message id or user id.
+  state transition — never the message id or user id. Runtime
+  `active → error` transitions are pushed to the status store via
+  the service's `onAuditStateChange` callback, so the TUI reflects
+  the degradation immediately rather than showing a stale "active".
 - `operations.jsonl` (custodian ops log) contains no user ids,
-  message ids, attempt ids, or ciphertext — counts and `kid` only.
+  message ids, attempt ids, or ciphertext — counts and key counts
+  only.
 
 ## Consequences
 

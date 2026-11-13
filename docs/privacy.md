@@ -239,9 +239,14 @@ custodian's machine — never on the bot host.
   until expiry.
 - **Decrypt approval**: every decrypt/lookup/delete operation requires
   an explicit custodian approval recorded outside the repo (who
-  approved, why, when). The tools themselves append a privacy-safe
-  entry to `<audit-dir>/operations.jsonl` (timestamp, operation,
-  records scanned/matched, `kid`) — query values are never logged.
+  approved, why, when). The tools themselves append privacy-safe
+  `start`/`end` entries to `<audit-dir>/operations.jsonl` (timestamp,
+  operation, phase, records scanned/matched/removed, key count) —
+  query values are never logged. The operation record is mandatory:
+  lookup cannot decrypt without a durable `start` record and cannot
+  print plaintext without a durable `end` record; delete cannot
+  remove records without a durable `start` record, and a failed `end`
+  record is reported as an error rather than completing silently.
 - **Correlation (messageId → author)**: on a moderation or safety
   request, the custodian runs
   `bun run anon:audit:lookup -- --key-file <private.pem> --dir
@@ -276,4 +281,7 @@ custodian's machine — never on the bot host.
   key); `error` = key configured but invalid, sink init failed, or a
   posted-record write failed after a successful send. Both are
   intentional fail-closed behavior — never bypass by unsetting the
-  key to restore posting.
+  key to restore posting. A runtime transition to `error` is pushed
+  to the status store / TUI immediately via the service's
+  `onAuditStateChange` callback, so operators see the degraded state
+  without a restart.

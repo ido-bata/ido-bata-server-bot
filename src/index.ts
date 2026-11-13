@@ -381,26 +381,34 @@ async function main(): Promise<void> {
     rootLogger.warn({ component: "anonymous-chat" }, anonConfigWarning);
   }
   const anonConsentService = privacyConsentService;
+  // Publish the anon audit state into the status store / TUI. The
+  // service invokes this on EVERY transition — including a runtime
+  // `active → error` degradation when a posted-record write fails —
+  // so the panel never shows a stale "active" (Issue #118).
+  const publishAnonAuditState = (audit: "disabled" | "active" | "error") => {
+    statusStore.set({
+      features: {
+        ...statusStore.snapshot.features,
+        "anonymous-chat": {
+          state: "enabled",
+          meta: { audit },
+        },
+      },
+    });
+  };
   const anonService = createAnonymousChatService({
     config: anonConfig,
     ...createDiscordAnonAdapters(client),
     authorizeAudit: anonConsentService
       ? async (userId) => (await anonConsentService.authorize(userId, "message-history")).ok
       : undefined,
+    onAuditStateChange: publishAnonAuditState,
     logger: {
       warn: (obj, msg) => rootLogger.warn({ component: "anonymous-chat", ...obj }, msg),
       error: (obj, msg) => rootLogger.error({ component: "anonymous-chat", ...obj }, msg),
     },
   });
-  statusStore.set({
-    features: {
-      ...statusStore.snapshot.features,
-      "anonymous-chat": {
-        state: "enabled",
-        meta: { audit: anonService.auditState },
-      },
-    },
-  });
+  publishAnonAuditState(anonService.auditState);
   registerSlashCommandHandlers(client, {
     commandDeps: {
       privacy:
