@@ -38,10 +38,27 @@ afterEach(() => cleanup());
 function auditConfig(overrides: Partial<AnonAuditConfig> = {}): AnonAuditConfig {
   return {
     publicKey,
+    keyId: "v1",
     dir,
     retentionDays: 90,
     ...overrides,
   };
+}
+
+function attemptPlaintext() {
+  return {
+    v: 2 as const,
+    kind: "attempt" as const,
+    attemptId: "a".repeat(32),
+    userId: "u1",
+    guildId: "g1",
+    channelId: "c1",
+    postedAt: "2026-11-13T00:00:00.000Z",
+  };
+}
+
+function recordInput(ciphertext: string, kind: "attempt" | "posted" = "attempt") {
+  return { kind, guildId: "g1", channelId: "c1", ciphertext };
 }
 
 function recordFiles(): string[] {
@@ -55,19 +72,8 @@ function oldRecordName(date: string): string {
 describe("createAnonAuditSink", () => {
   it("writes one immutable file per record", async () => {
     const sink = createAnonAuditSink(auditConfig());
-    const ct = sink.seal({
-      userId: "u1",
-      guildId: "g1",
-      channelId: "c1",
-      postedAt: "2026-11-13T00:00:00.000Z",
-    });
-    await sink.record({
-      userId: "u1",
-      guildId: "g1",
-      channelId: "c1",
-      postedAt: "2026-11-13T00:00:00.000Z",
-      ciphertext: ct,
-    });
+    const ct = sink.seal(attemptPlaintext());
+    await sink.record(recordInput(ct));
 
     const files = recordFiles();
     expect(files).toHaveLength(1);
@@ -75,19 +81,36 @@ describe("createAnonAuditSink", () => {
 
     const line = readFileSync(join(dir, files[0]!), "utf8").trim();
     const record = JSON.parse(line) as Record<string, unknown>;
-    expect(record.v).toBe(1);
+    expect(record.v).toBe(2);
+    expect(record.kid).toBe("v1");
+    expect(record.kind).toBe("attempt");
     expect(record.gid).toBe("g1");
     expect(record.cid).toBe("c1");
-    // No plaintext message id: Discord assigns it only after send and
-    // the audit record must exist before the send (ADR-0003 §3).
+    // No plaintext message id or attempt id: Discord assigns the
+    // messageId only after send and both stay inside the ciphertext
+    // (ADR-0003 §3) — the bot host must not build a re-identification
+    // index from stored data.
     expect(record).not.toHaveProperty("mid");
+    expect(record).not.toHaveProperty("messageId");
+    expect(record).not.toHaveProperty("attemptId");
     // No searchable per-user index may exist — it would be
     // dictionary-attackable over the public guild roster (ADR-0003 §3).
     expect(record).not.toHaveProperty("idx");
     expect(record).not.toHaveProperty("uidx");
-    // The stored line must not contain the raw user id or plaintext body.
+    // The stored line must not contain the raw user id, attempt id,
+    // message id, or plaintext body.
     expect(line).not.toContain('"u1"');
+    expect(line).not.toContain("a".repeat(32));
     expect(typeof record.ct).toBe("string");
+  });
+
+  it("writes the configured key id into the envelope for rotation", async () => {
+    const sink = createAnonAuditSink(auditConfig({ keyId: "v2-next" }));
+    await sink.record(recordInput("ct", "posted"));
+    const line = readFileSync(join(dir, recordFiles()[0]!), "utf8").trim();
+    const record = JSON.parse(line) as Record<string, unknown>;
+    expect(record.kid).toBe("v2-next");
+    expect(record.kind).toBe("posted");
   });
 
   it("creates a missing audit directory eagerly at sink construction", () => {
@@ -107,13 +130,7 @@ describe("createAnonAuditSink", () => {
     writeFileSync(join(dir, recentLegacy), '{"v":1,"ct":"x"}\n');
 
     const sink = createAnonAuditSink(auditConfig({ retentionDays: 30 }));
-    await sink.record({
-      userId: "u1",
-      guildId: "g",
-      channelId: "c",
-      postedAt: "t",
-      ciphertext: "ct",
-    });
+    await sink.record(recordInput("ct"));
 
     const remaining = recordFiles();
     expect(remaining).not.toContain(oldName);
@@ -124,13 +141,7 @@ describe("createAnonAuditSink", () => {
 
   it("leaves no temp files behind after a successful record", async () => {
     const sink = createAnonAuditSink(auditConfig());
-    await sink.record({
-      userId: "u1",
-      guildId: "g",
-      channelId: "c",
-      postedAt: "t",
-      ciphertext: "ct",
-    });
+    await sink.record(recordInput("ct"));
     expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toHaveLength(0);
   });
 
@@ -150,17 +161,7 @@ describe("createAnonAuditSink", () => {
 
   it("serializes concurrent appends without losing records", async () => {
     const sink = createAnonAuditSink(auditConfig());
-    await Promise.all(
-      Array.from({ length: 20 }, (_, i) =>
-        sink.record({
-          userId: `u${i % 3}`,
-          guildId: "g",
-          channelId: "c",
-          postedAt: "t",
-          ciphertext: `ct-${i}`,
-        }),
-      ),
-    );
+    await Promise.all(Array.from({ length: 20 }, (_, i) => sink.record(recordInput(`ct-${i}`))));
     expect(recordFiles()).toHaveLength(20);
   });
 });
@@ -176,13 +177,7 @@ describe("hasAnonAuditRecords", () => {
 
   it("returns true when a non-empty record file exists", async () => {
     const sink = createAnonAuditSink(auditConfig());
-    await sink.record({
-      userId: "u1",
-      guildId: "g",
-      channelId: "c",
-      postedAt: "t",
-      ciphertext: "ct",
-    });
+    await sink.record(recordInput("ct"));
     expect(await hasAnonAuditRecords(dir)).toBe(true);
   });
 
@@ -199,13 +194,7 @@ describe("hasAnonAuditRecords", () => {
 
   it("publishes records with mode 0600", async () => {
     const sink = createAnonAuditSink(auditConfig());
-    await sink.record({
-      userId: "u1",
-      guildId: "g",
-      channelId: "c",
-      postedAt: "t",
-      ciphertext: "ct",
-    });
+    await sink.record(recordInput("ct"));
     const file = join(dir, recordFiles()[0]!);
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
@@ -214,15 +203,7 @@ describe("hasAnonAuditRecords", () => {
     const sink = createAnonAuditSink(auditConfig());
     chmodSync(dir, 0o500);
     try {
-      await expect(
-        sink.record({
-          userId: "u1",
-          guildId: "g",
-          channelId: "c",
-          postedAt: "t",
-          ciphertext: "ct",
-        }),
-      ).rejects.toThrow();
+      await expect(sink.record(recordInput("ct"))).rejects.toThrow();
       // No final record AND no leftover temp may exist.
       expect(recordFiles()).toHaveLength(0);
       expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toHaveLength(0);

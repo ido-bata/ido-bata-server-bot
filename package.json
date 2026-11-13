@@ -19,7 +19,8 @@
     "anon:audit:delete": "tsx src/scripts/anon-audit-delete.ts",
     "start": "tsx src/index.ts",
     "test": "vitest run",
-    "type-check": "tsc --project tsconfig.json --noEmit"
+    "type-check": "tsc --project tsconfig.json --noEmit",
+    "anon:audit:lookup": "tsx src/scripts/anon-audit-lookup.ts"
   },
   "keywords": [],
   "author": "",

@@ -74,6 +74,14 @@ function makeConfig(overrides: Partial<AnonymousChatConfig> = {}): AnonymousChat
   };
 }
 
+function makePassThroughAudit(): AnonAuditSink {
+  return {
+    seal: vi.fn(() => "ct"),
+    record: vi.fn(async () => undefined),
+    sweep: vi.fn(async () => undefined),
+  };
+}
+
 function makeDeps(
   overrides: {
     channel?: AnonChannelLike | null;
@@ -86,6 +94,7 @@ function makeDeps(
     fetchChannel?: (channelId: string) => Promise<AnonChannelLike | null>;
     authorizeAudit?: (userId: string) => Promise<boolean>;
     audit?: AnonAuditSink | null;
+    onAuditStateChange?: (state: "disabled" | "active" | "error") => void;
     now?: () => number;
   } = {},
 ) {
@@ -105,7 +114,16 @@ function makeDeps(
     fetchBotMember: async () => botMemberObj,
     isThreadMember: overrides.isThreadMember ?? (async () => overrides.threadMember ?? true),
     authorizeAudit: overrides.authorizeAudit,
-    audit: overrides.audit,
+    // Audit is mandatory (Issue #118): deps without an explicit audit
+    // get a pass-through sink so permission/validation tests exercise
+    // the post path — UNLESS config.audit is set, in which case the
+    // service builds the real sink (broken-key tests rely on that).
+    // `audit: null` still yields "disabled".
+    audit:
+      overrides.audit === undefined && overrides.config?.audit == null
+        ? makePassThroughAudit()
+        : overrides.audit,
+    onAuditStateChange: overrides.onAuditStateChange,
     now: overrides.now,
     logger,
   });
@@ -479,13 +497,14 @@ describe("anonymous-chat service — audit mode", () => {
     return makeConfig({
       audit: {
         publicKey: "unused-injected-sink",
+        keyId: "v1",
         dir: "data/anon-audit",
         retentionDays: 90,
       },
     });
   }
 
-  it("seals and records BEFORE posting — no public post without a durable record", async () => {
+  it("writes attempt record BEFORE send and posted record with messageId AFTER", async () => {
     const { channel, send } = makeChannel({
       permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
     });
@@ -493,31 +512,44 @@ describe("anonymous-chat service — audit mode", () => {
     const { service } = makeDeps({ channel, config: auditConfig(), audit });
     const result = await service.post(INPUT);
     expect(result).toEqual({ ok: true });
-    expect(audit.seal).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userId: "user-1",
-        guildId: "guild-1",
-        channelId: "chan-1",
-      }),
+
+    // Two seal calls: attempt (pre-send, no messageId) then posted
+    // (post-send, carries the real messageId from channel.send).
+    const sealCalls = (audit.seal as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0] as Record<string, unknown>,
     );
-    // The sealed mapping must not carry a message id — Discord assigns
-    // it only after send, and the record must exist before the send.
-    const sealed = (audit.seal as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Record<
-      string,
-      unknown
-    >;
-    expect(sealed).not.toHaveProperty("messageId");
-    expect(audit.record).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userId: "user-1",
-        ciphertext: "sealed-ct",
-      }),
+    expect(sealCalls).toHaveLength(2);
+    expect(sealCalls[0]).toMatchObject({
+      v: 2,
+      kind: "attempt",
+      userId: "user-1",
+      guildId: "guild-1",
+      channelId: "chan-1",
+    });
+    expect(sealCalls[0]).not.toHaveProperty("messageId");
+    expect(sealCalls[1]).toMatchObject({
+      v: 2,
+      kind: "posted",
+      userId: "user-1",
+      messageId: "msg-1",
+    });
+    // Both phases share the same random attemptId for correlation.
+    expect(sealCalls[1]?.attemptId).toBe(sealCalls[0]?.attemptId);
+    expect(typeof sealCalls[0]?.attemptId).toBe("string");
+
+    const recordCalls = (audit.record as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0] as Record<string, unknown>,
     );
+    expect(recordCalls).toHaveLength(2);
+    expect(recordCalls[0]).toMatchObject({ kind: "attempt", ciphertext: "sealed-ct" });
+    expect(recordCalls[1]).toMatchObject({ kind: "posted", ciphertext: "sealed-ct" });
     expect(send).toHaveBeenCalled();
-    // Ordering: record completes before channel.send is invoked.
-    const recordOrder = (audit.record as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
+
+    // Ordering: attempt record < send < posted record.
+    const orders = (audit.record as ReturnType<typeof vi.fn>).mock.invocationCallOrder;
     const sendOrder = send.mock.invocationCallOrder[0]!;
-    expect(recordOrder).toBeLessThan(sendOrder);
+    expect(orders[0]!).toBeLessThan(sendOrder);
+    expect(orders[1]!).toBeGreaterThan(sendOrder);
   });
 
   it("rejects the post when sealing fails — send is never called", async () => {
@@ -561,8 +593,213 @@ describe("anonymous-chat service — audit mode", () => {
     // Over-recording is the safe direction: the record exists even
     // though no message was posted (ADR-0003 §3).
     expect(await service.post(INPUT)).toEqual({ ok: false, reason: "post_failed" });
-    expect(audit.record).toHaveBeenCalled();
+    // Only the attempt record exists — the send failed before the
+    // posted phase. Over-recording is the safe direction.
+    const recordCalls = (audit.record as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0] as Record<string, unknown>,
+    );
+    expect(recordCalls).toHaveLength(1);
+    expect(recordCalls[0]).toMatchObject({ kind: "attempt" });
     expect(send).toHaveBeenCalled();
+  });
+
+  it("deletes the message and fails closed when the posted record cannot be written", async () => {
+    const del = vi.fn(async () => undefined);
+    const { channel, send } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+      sendImpl: async () => ({ id: "msg-42", delete: del }),
+    });
+    // Attempt record succeeds; the posted record fails.
+    const audit = makeAudit({
+      record: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("disk full")),
+    });
+    const { service } = makeDeps({ channel, config: auditConfig(), audit });
+
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "audit_failed" });
+    expect(send).toHaveBeenCalledTimes(1);
+    // The live message is removed best-effort so no anonymous post
+    // lacks exact messageId correlation (ADR-0003 §3).
+    expect(del).toHaveBeenCalledTimes(1);
+    // The feature degrades to error: subsequent posts refuse too.
+    expect(service.auditState).toBe("error");
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "unavailable" });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("still fails closed when the posted-record delete also fails", async () => {
+    const del = vi.fn(async () => {
+      throw new Error("delete failed");
+    });
+    const { channel } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+      sendImpl: async () => ({ id: "msg-43", delete: del }),
+    });
+    const audit = makeAudit({
+      record: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("disk full")),
+    });
+    const { service } = makeDeps({ channel, config: auditConfig(), audit });
+
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "audit_failed" });
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(service.auditState).toBe("error");
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("flips auditState to error before awaiting the best-effort delete", async () => {
+    let resolveDelete: (() => void) | undefined;
+    const del = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveDelete = resolve;
+        }),
+    );
+    const onAuditStateChange = vi.fn();
+    const { channel } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+      sendImpl: async () => ({ id: "msg-44", delete: del }),
+    });
+    const audit = makeAudit({
+      record: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("disk full")),
+    });
+    const { service } = makeDeps({
+      channel,
+      config: auditConfig(),
+      audit,
+      onAuditStateChange,
+    });
+
+    const pending = service.post(INPUT);
+    await vi.waitFor(() => expect(del).toHaveBeenCalledTimes(1));
+    // The Discord delete is still unresolved, but the gate must
+    // already be closed AND the observer already notified — a slow
+    // delete cannot leave a window where new posts pass the active
+    // check or the TUI shows a stale state.
+    expect(service.auditState).toBe("error");
+    expect(onAuditStateChange).toHaveBeenCalledWith("error");
+    expect(await service.post({ ...INPUT, userId: "user-2" })).toEqual({
+      ok: false,
+      reason: "unavailable",
+    });
+    resolveDelete?.();
+    await expect(pending).resolves.toEqual({ ok: false, reason: "audit_failed" });
+  });
+
+  it("still deletes the message and returns audit_failed when the state observer throws", async () => {
+    const del = vi.fn(async () => undefined);
+    const { channel } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+      sendImpl: async () => ({ id: "msg-45", delete: del }),
+    });
+    const audit = makeAudit({
+      record: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("disk full")),
+    });
+    const { service } = makeDeps({
+      channel,
+      config: auditConfig(),
+      audit,
+      // A buggy observer must never break the state machine — the
+      // posted-record path still owes the message delete and the
+      // audit_failed result.
+      onAuditStateChange: () => {
+        throw new Error("observer boom");
+      },
+    });
+
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "audit_failed" });
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(service.auditState).toBe("error");
+  });
+
+  it("aborts an in-flight post at the send boundary once auditState flips", async () => {
+    const { channel, send } = makeChannel({
+      permsByMemberId: {
+        "user-1": bitsOf(VIEW, SEND),
+        "user-2": bitsOf(VIEW, SEND),
+        "bot-1": bitsOf(VIEW, SEND),
+      },
+    });
+    // Two concurrent posts. The FIRST attempt record is held on a
+    // gate; the other post runs attempt → send → posted-failure and
+    // flips auditState to "error". When the gate releases, the held
+    // post must stop BEFORE channel.send — leaving only its orphan
+    // attempt record, never an unlinked public message.
+    let releaseGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    let attemptCalls = 0;
+    const audit = makeAudit({
+      record: vi.fn(async (input: { kind: string }) => {
+        if (input.kind === "attempt") {
+          attemptCalls += 1;
+          if (attemptCalls === 1) {
+            await gate;
+          }
+        }
+        if (input.kind === "posted") {
+          throw new Error("disk full");
+        }
+      }),
+    });
+    const { service } = makeDeps({ channel, config: auditConfig(), audit });
+
+    const p1 = service.post(INPUT);
+    const p2 = service.post({ ...INPUT, userId: "user-2" });
+    await vi.waitFor(() => expect(attemptCalls).toBeGreaterThanOrEqual(1));
+    await vi.waitFor(() => expect(service.auditState).toBe("error"));
+    releaseGate?.();
+
+    const results = await Promise.all([p1, p2]);
+    expect(results.filter((r) => r.ok)).toHaveLength(0);
+    expect(results.filter((r) => !r.ok && r.reason === "audit_failed")).toHaveLength(1);
+    expect(results.filter((r) => !r.ok && r.reason === "unavailable")).toHaveLength(1);
+    // Exactly one public send happened — the post whose posted-record
+    // failed (its message was deleted best-effort). The gated post
+    // never reached Discord.
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("notifies onAuditStateChange on the runtime active→error transition", async () => {
+    const onAuditStateChange = vi.fn();
+    const { channel } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+    });
+    const audit = makeAudit({
+      record: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("disk full")),
+    });
+    const { service } = makeDeps({
+      channel,
+      config: auditConfig(),
+      audit,
+      onAuditStateChange,
+    });
+
+    // Construction reports the initial state, then the posted-record
+    // failure must fire exactly one more transition to "error" — this
+    // is what keeps statusStore/TUI from showing a stale "active".
+    expect(onAuditStateChange).toHaveBeenCalledWith("active");
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "audit_failed" });
+    expect(service.auditState).toBe("error");
+    expect(onAuditStateChange).toHaveBeenLastCalledWith("error");
+    expect(onAuditStateChange.mock.calls.filter((c) => c[0] === "error")).toHaveLength(1);
+    // A second failure must not re-fire — transitions only.
+    await service.post(INPUT);
+    expect(onAuditStateChange.mock.calls.filter((c) => c[0] === "error")).toHaveLength(1);
   });
 
   it("denies audit writes when consent authorization fails", async () => {
@@ -601,8 +838,18 @@ describe("anonymous-chat service — audit mode", () => {
 
 describe("anonymous-chat service — auditState", () => {
   it("reports disabled when no audit config and no injected sink", () => {
-    const { service } = makeDeps();
+    const { service } = makeDeps({ audit: null });
     expect(service.auditState).toBe("disabled");
+  });
+
+  it("refuses ALL posts when audit is disabled — no unlogged posting mode", async () => {
+    const { channel, send } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+    });
+    const { service } = makeDeps({ channel, audit: null });
+    expect(service.auditState).toBe("disabled");
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "unavailable" });
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("reports active when an audit sink is injected", () => {
@@ -621,6 +868,7 @@ describe("anonymous-chat service — auditState", () => {
       config: makeConfig({
         audit: {
           publicKey: "not-valid-key-material",
+          keyId: "v1",
           dir: "data/anon-audit",
           retentionDays: 90,
         },
@@ -638,6 +886,7 @@ describe("anonymous-chat service — auditState", () => {
       config: makeConfig({
         audit: {
           publicKey: "not-valid-key-material",
+          keyId: "v1",
           dir: "data/anon-audit",
           retentionDays: 90,
         },

@@ -23,24 +23,38 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-function auditConfig(): AnonAuditConfig {
-  return { publicKey, dir, retentionDays: 90 };
+function auditConfig(overrides: Partial<AnonAuditConfig> = {}): AnonAuditConfig {
+  return { publicKey, keyId: "v1", dir, retentionDays: 90, ...overrides };
+}
+
+type SealInput = Parameters<ReturnType<typeof createAnonAuditSink>["seal"]>[0];
+
+function attemptPlaintext(userId: string) {
+  return {
+    v: 2 as const,
+    kind: "attempt" as const,
+    attemptId: "a".repeat(32),
+    userId,
+    guildId: "g",
+    channelId: "c",
+    postedAt: "t",
+  };
+}
+
+// Legacy v1 records sealed the bare mapping without v/kind/attemptId —
+// simulate them with a cast since `seal` is typed for v2 payloads.
+function legacyPlaintext(userId: string) {
+  return { userId, guildId: "g", channelId: "c", postedAt: "t" } as unknown as SealInput;
 }
 
 async function seed(userIds: string[]): Promise<void> {
   const sink = createAnonAuditSink(auditConfig());
   for (const userId of userIds) {
     await sink.record({
-      userId,
+      kind: "attempt",
       guildId: "g",
       channelId: "c",
-      postedAt: "t",
-      ciphertext: sink.seal({
-        userId,
-        guildId: "g",
-        channelId: "c",
-        postedAt: "t",
-      }),
+      ciphertext: sink.seal(attemptPlaintext(userId)),
     });
   }
 }
@@ -173,7 +187,7 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
           gid: "g",
           cid: "c",
           mid: "m",
-          ct: sink.seal({ userId, guildId: "g", channelId: "c", postedAt: "t" }),
+          ct: sink.seal(legacyPlaintext(userId)),
         }),
       );
     }
@@ -202,7 +216,7 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
       v: 1,
       gid: "g",
       cid: "c",
-      ct: sink.seal({ userId: "u1", guildId: "g", channelId: "c", postedAt: "t" }),
+      ct: sink.seal(legacyPlaintext("u1")),
     });
     writeFileSync(join(dir, "2026-11-01.jsonl"), `${line}\n${line}\n`);
 
@@ -242,22 +256,12 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
       privateKeyEncoding: { format: "pem", type: "pkcs8" },
     });
     // Write a record sealed under a DIFFERENT key — undecryptable here.
-    const foreign = createAnonAuditSink({
-      publicKey: otherPub,
-      dir,
-      retentionDays: 90,
-    });
+    const foreign = createAnonAuditSink(auditConfig({ publicKey: otherPub }));
     await foreign.record({
-      userId: "uX",
+      kind: "attempt",
       guildId: "g",
       channelId: "c",
-      postedAt: "t",
-      ciphertext: foreign.seal({
-        userId: "uX",
-        guildId: "g",
-        channelId: "c",
-        postedAt: "t",
-      }),
+      ciphertext: foreign.seal(attemptPlaintext("uX")),
     });
 
     const result = await deleteAnonAuditUserRecords({

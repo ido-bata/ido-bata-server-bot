@@ -3,18 +3,21 @@
  *
  * All values come from env vars read once at boot in `src/index.ts`.
  *
- * Audit modes (ADR-0003 §3):
- *   - `ANON_AUDIT_PUBLIC_KEY` unset → `audit: null` — explicit
- *     ephemeral mode; `/anon` stores nothing.
+ * Audit is MANDATORY (Issue #118, ADR-0003 §3): there is no unlogged
+ * posting mode.
+ *   - `ANON_AUDIT_PUBLIC_KEY` unset → `audit: null` — the service
+ *     reports `auditState: "disabled"` and refuses every post.
  *   - `ANON_AUDIT_PUBLIC_KEY` set → audit configured. If the key
  *     material is invalid the service reports `auditState: "error"`
  *     and refuses to post — a configured audit must never silently
- *     degrade to unlogged anonymous posts.
+ *     degrade.
  */
 
 export type AnonAuditConfig = {
   /** PEM (`-----BEGIN PUBLIC KEY-----`) or base64/base64url SPKI DER. */
   publicKey: string;
+  /** Key id written into each record envelope; bump on rotation. */
+  keyId: string;
   /** Directory holding per-record `<UTC-ts>-<rand>.jsonl` audit files. */
   dir: string;
   /** Record files older than this many days are swept. */
@@ -28,7 +31,7 @@ export type AnonymousChatConfig = {
   cooldownMs: number;
   /** Maximum trimmed message length accepted by `/anon`. */
   maxMessageLength: number;
-  /** Audit persistence config, or null for ephemeral-only mode. */
+  /** Audit persistence config, or null when no public key is set. */
   audit: AnonAuditConfig | null;
 };
 
@@ -36,6 +39,7 @@ const DEFAULT_COOLDOWN_SECONDS = 30;
 const DEFAULT_MAX_MESSAGE_LENGTH = 1000;
 const DEFAULT_AUDIT_DIR = "data/anon-audit";
 const DEFAULT_AUDIT_RETENTION_DAYS = 90;
+const DEFAULT_AUDIT_KEY_ID = "v1";
 
 /**
  * Resolve the audit directory from raw env input — trim, and fall
@@ -52,6 +56,7 @@ export type AnonConfigEnv = {
   ANON_COOLDOWN_SECONDS?: string;
   ANON_MAX_MESSAGE_LENGTH?: string;
   ANON_AUDIT_PUBLIC_KEY?: string;
+  ANON_AUDIT_KEY_ID?: string;
   /** Deprecated: the HMAC lookup index was removed (ADR-0003 §3). */
   ANON_AUDIT_INDEX_KEY?: string;
   ANON_AUDIT_DIR?: string;
@@ -85,12 +90,21 @@ function resolveAudit(env: AnonConfigEnv): { audit: AnonAuditConfig | null; warn
   const publicKey = env.ANON_AUDIT_PUBLIC_KEY?.trim() ?? "";
 
   if (!publicKey) {
-    return { audit: null };
+    // Audit is mandatory (Issue #118): an unset key does not mean
+    // "ephemeral mode", it means /anon refuses every post. Warn at
+    // boot so a missing key is an visible ops gap, not a silent
+    // feature outage.
+    return {
+      audit: null,
+      warning:
+        "anonymous-chat: ANON_AUDIT_PUBLIC_KEY is not set; /anon will refuse all posts (audit is required)",
+    };
   }
 
   return {
     audit: {
       publicKey,
+      keyId: env.ANON_AUDIT_KEY_ID?.trim() || DEFAULT_AUDIT_KEY_ID,
       dir: resolveAnonAuditDir(env.ANON_AUDIT_DIR),
       retentionDays: parsePositiveInt(env.ANON_AUDIT_RETENTION_DAYS, DEFAULT_AUDIT_RETENTION_DAYS),
     },
