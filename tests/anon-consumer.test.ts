@@ -27,7 +27,7 @@ describe("anonymous-chat-audit privacy consumer", () => {
   });
 
   it("fails honestly when audit records exist — bot cannot selectively delete", async () => {
-    writeFileSync(join(dir, "2026-11-13.jsonl"), '{"v":1,"ct":"x"}\n');
+    writeFileSync(join(dir, "2026-11-13T00-00-00-000Z-abcd1234.jsonl"), '{"v":1,"ct":"x"}\n');
     const result = await deleteUserData("user-1", { dir });
     expect(result.ok).toBe(false);
     if (!result.ok) {

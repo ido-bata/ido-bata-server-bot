@@ -115,19 +115,31 @@ overwrite), with these rules:
   default and the privacy-maximal mode; it is a documented mode, not a
   silent scope reduction — the Issue makes persistence conditional
   ("保存する場合").
-- When set, every successful post attempt appends one record to
-  `data/anon-audit/YYYY-MM-DD.jsonl` (UTC day files) BEFORE the
-  public send: `{ v, gid, cid, ct }` where `gid`/`cid` are plaintext
-  operational metadata (guild, channel) and `ct` is RSA-OAEP-SHA256
-  ciphertext (base64) of the author mapping
-  `{ userId, guildId, channelId, postedAt }`. The message body is
-  never stored (it lives in the public message). There is no
-  plaintext `mid`: Discord assigns the message id only after send,
-  and the audit record must be durable before the send — the
+- When set, every post attempt that passes consent appends one
+  record to `data/anon-audit/` BEFORE the public send. Each record
+  is its OWN immutable file (`<UTC timestamp>-<random>.jsonl`,
+  mode `0600`) containing a single line `{ v, gid, cid, ct }` where
+  `gid`/`cid` are plaintext operational metadata (guild, channel)
+  and `ct` is RSA-OAEP-SHA256 ciphertext (base64) of the author
+  mapping `{ userId, guildId, channelId, postedAt }`. The message
+  body is never stored (it lives in the public message). There is
+  no plaintext `mid`: Discord assigns the message id only after
+  send, and the audit record must be durable before the send — the
   custodian correlates records to messages via the decrypted
   `channelId` + `postedAt`. Records may exist for send attempts that
   ultimately failed (orphan records): that is deliberate
-over-recording — the safe direction — and retention sweeps them.
+  over-recording — the safe direction — and retention sweeps them.
+- **Concurrency needs no lock.** Because every record is an
+  independent immutable file created with `wx`, appends are atomic
+  and cannot interleave or lose each other's data — across processes
+  too. The retention sweep only removes files whose UTC date prefix
+  is older than `ANON_AUDIT_RETENTION_DAYS` (default 90), which can
+  never include a file being appended (appends always carry today's
+  date). Custodian deletion removes whole files rather than
+  rewriting them, so a concurrent append can never be dropped —
+  this replaces an earlier daily-JSONL + mkdir-lock design whose
+  stale-breaking and read-modify-write paths could not be made
+  race-free.
 - **No bot-computable per-user index — by design.** An earlier
   revision stored `idx = HMAC(indexKey, userId)` for `/privacy
   delete` lookup. That was rejected: any deterministic tag over a
@@ -145,9 +157,9 @@ over-recording — the safe direction — and retention sweeps them.
   cannot perform. Actual selective deletion is an OFFLINE custodian
   operation: `bun run anon:audit:delete -- --key-file <private.pem>
   --dir <audit-dir> --user <id>` (`src/scripts/anon-audit-delete.ts`
-  → `audit-delete.ts`) decrypts every `ct`, removes matches, and
-  rewrites files atomically. It inspects ALL records before touching
-  ANY file and aborts on corrupt/undecryptable lines — an
+  → `audit-delete.ts`) decrypts every record file, then removes the
+  matching files. It inspects ALL records before removing ANY file
+  and aborts on corrupt/undecryptable/multi-record files — an
   uninspectable record is never assumed safe to keep or drop.
 - The private key is never accepted from env — private-key PEM
   material is explicitly rejected — never written to disk, never
@@ -155,16 +167,8 @@ over-recording — the safe direction — and retention sweeps them.
   `ANON_AUDIT_INDEX_KEY` env var is ignored with a warning.
 - Audit files/dirs are created `0600`/`0700`; the audit directory is
   created eagerly at sink construction so a fresh deployment or bad
-  permissions surfaces as `auditState: "error"` at startup. Appends,
-  retention sweeps, and custodian rewrites are serialized through an
-  in-process promise chain AND a cross-process mkdir-based directory
-  lock (`withAnonAuditFileLock`). The file lock is ownership-aware:
-  the holder publishes a unique token in `<lock>/owner` and
-  heartbeats it; a waiter breaks a lock only when its heartbeat is
-  stale (>30 s), so a live-but-slow holder (e.g. the custodian
-  decrypting a large history) is never evicted, and release is
-  token-checked so a holder cannot delete a successor's lock after a
-  stale-break race.
+  permissions surfaces as `auditState: "error"` at startup. The
+  retention sweep runs at service start and before each append.
 - Ordering per post: audit-health → validate → cooldown → deny-list →
   resolve → consent → seal → append audit → `channel.send`. Because
   the audit record is durable BEFORE the public send, no public

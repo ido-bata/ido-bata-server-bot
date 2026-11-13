@@ -1,10 +1,10 @@
 /**
  * On-disk store for `/anon` audit records (ADR-0003 §3).
  *
- * Layout: `data/anon-audit/YYYY-MM-DD.jsonl` — one JSON object per
- * anonymous post ATTEMPT that passed consent (the audit record is
- * written BEFORE the public send, so no public anonymous message can
- * exist without a durable audit record):
+ * Layout: `data/anon-audit/<UTC timestamp>-<random>.jsonl` — ONE
+ * immutable file per anonymous post attempt that passed consent. The
+ * audit record is written BEFORE the public send, so no public
+ * anonymous message can exist without a durable audit record:
  *
  *   { v, gid, cid, ct }
  *
@@ -24,25 +24,24 @@
  * (`src/scripts/anon-audit-delete.ts`); the bot-side privacy consumer
  * reports that honestly instead of claiming a deletion it cannot do.
  *
- * Files older than `retentionDays` are swept before each append. All
- * failure modes throw — the service treats them as fail-closed.
+ * Concurrency: every record is its own immutable file, so appends are
+ * atomic creations (`wx`) and never share mutable state — no lock is
+ * required. The retention sweep only removes files whose UTC date
+ * prefix is older than `retentionDays`, which can never include a
+ * file being appended (appends always carry today's date). The
+ * custodian deletion script deletes whole files, never rewrites
+ * them, so a concurrent append can never be lost.
  */
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { type AnonAuditPlaintext, createAnonCipher } from "./audit-crypto.js";
 import type { AnonAuditConfig } from "./config.js";
 
-const FILE_NAME_PATTERN = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
+const FILE_NAME_PATTERN = /^\d{4}-\d{2}-\d{2}T.*\.jsonl$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const LOCK_DIR_NAME = ".anon-audit.lock";
-const LOCK_OWNER_FILE = "owner";
-const LOCK_HEARTBEAT_MS = 5_000;
-const LOCK_STALE_MS = 30_000;
-const LOCK_TIMEOUT_MS = 10_000;
-const LOCK_RETRY_MS = 50;
 
 export type AnonAuditRecordInput = {
   userId: string;
@@ -56,142 +55,25 @@ export type AnonAuditRecordInput = {
 export type AnonAuditSink = {
   /** RSA-OAEP seal the author mapping. Throws on crypto failure. */
   seal: (plaintext: AnonAuditPlaintext) => string;
-  /** Append a sealed record for a successfully posted message. */
+  /** Persist a sealed record for a post attempt (before the send). */
   record: (input: AnonAuditRecordInput) => Promise<void>;
-  /** Sweep expired daily files without appending. */
+  /** Sweep expired record files without appending. */
   sweep: () => Promise<void>;
 };
 
-function utcDay(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-function fileNameFor(date: Date): string {
-  return `${utcDay(date)}.jsonl`;
-}
-
 /**
- * Latest heartbeat timestamp published by the lock holder, or `null`
- * when no usable owner file exists (fall back to the lock dir mtime —
- * a holder that crashed between `mkdir` and writing its owner file is
- * still detectable as stale).
+ * Record file name: UTC timestamp + random suffix. The leading
+ * `YYYY-MM-DD` date drives retention; the random suffix makes every
+ * append an independent immutable file.
  */
-async function lockHeartbeatMs(lockPath: string, ownerPath: string): Promise<number | null> {
-  try {
-    const raw = await readFile(ownerPath, "utf8");
-    const owner: unknown = JSON.parse(raw);
-    if (
-      owner !== null &&
-      typeof owner === "object" &&
-      typeof (owner as { at?: unknown }).at === "number"
-    ) {
-      return (owner as { at: number }).at;
-    }
-  } catch {
-    // Owner file missing/unreadable — fall through to dir mtime.
-  }
-  try {
-    return (await stat(lockPath)).mtimeMs;
-  } catch {
-    return null;
-  }
+function recordFileName(date: Date): string {
+  const stamp = date.toISOString().replace(/[:.]/g, "-");
+  return `${stamp}-${randomBytes(8).toString("hex")}.jsonl`;
 }
 
-/**
- * Cross-process mutual exclusion for the audit directory. The in-process
- * promise chain below serializes callers inside one bot process; this
- * mkdir-based lock additionally serializes against a second bot process
- * or the offline custodian deletion script. `mkdir` is atomic on POSIX
- * and Windows, so it is a correct mutex primitive without extra deps.
- *
- * Ownership/liveness: the holder publishes a unique token in
- * `<lock>/owner` and refreshes it on a heartbeat. A waiter only breaks
- * a lock whose heartbeat is older than `LOCK_STALE_MS` — a live but
- * slow holder (e.g. the custodian decrypting a large history) is never
- * evicted. Release is token-checked so a holder can never delete a
- * successor's lock after a stale-break race.
- */
-export async function withAnonAuditFileLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
-  // The audit dir must exist BEFORE the lock dir can be created inside
-  // it — on a fresh deployment `mkdir(lockPath)` would fail ENOENT.
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  const lockPath = join(dir, LOCK_DIR_NAME);
-  const ownerPath = join(lockPath, LOCK_OWNER_FILE);
-  const token = randomBytes(16).toString("hex");
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
-
-  for (;;) {
-    try {
-      await mkdir(lockPath);
-      break;
-    } catch (error) {
-      if (!isNodeError(error) || error.code !== "EEXIST") {
-        throw error;
-      }
-      const heartbeat = await lockHeartbeatMs(lockPath, ownerPath);
-      if (heartbeat !== null && Date.now() - heartbeat > LOCK_STALE_MS) {
-        // Abandoned lock (holder crashed or its heartbeats stopped).
-        // Two concurrent breakers may both remove it — the subsequent
-        // mkdir race is still safe because only one can win.
-        await rm(lockPath, { recursive: true, force: true });
-        continue;
-      }
-      if (Date.now() >= deadline) {
-        throw new Error("anon-audit: timed out acquiring directory lock", { cause: error });
-      }
-      await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
-    }
-  }
-
-  const publishOwner = () =>
-    writeFile(ownerPath, JSON.stringify({ token, pid: process.pid, at: Date.now() }), {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-  await publishOwner();
-  const heartbeatTimer = setInterval(() => {
-    void publishOwner().catch(() => undefined);
-  }, LOCK_HEARTBEAT_MS);
-  heartbeatTimer.unref?.();
-
-  try {
-    return await fn();
-  } finally {
-    clearInterval(heartbeatTimer);
-    // Release only while we still own the lock — after a stale-break
-    // race the directory may belong to a successor.
-    try {
-      const owner: unknown = JSON.parse(await readFile(ownerPath, "utf8"));
-      if (
-        owner !== null &&
-        typeof owner === "object" &&
-        (owner as { token?: unknown }).token === token
-      ) {
-        await rm(lockPath, { recursive: true, force: true });
-      }
-    } catch {
-      // Lock already gone or unreadable — nothing left to release.
-    }
-  }
-}
-
-/**
- * In-process promise-chain mutex layered on top of the file lock so
- * same-process callers do not contend on the filesystem lock.
- */
-const dirLocks = new Map<string, Promise<unknown>>();
-
-function withDirLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
-  const prev = dirLocks.get(dir) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
-  dirLocks.set(
-    dir,
-    next.then(
-      () => undefined,
-      () => undefined,
-    ),
-  );
-  return next;
+function fileDay(name: string): string | null {
+  const match = /^(\d{4}-\d{2}-\d{2})T/.exec(name);
+  return match?.[1] ?? null;
 }
 
 async function sweepExpired(dir: string, retentionDays: number, nowMs: number): Promise<void> {
@@ -207,11 +89,11 @@ async function sweepExpired(dir: string, retentionDays: number, nowMs: number): 
 
   const cutoff = nowMs - retentionDays * DAY_MS;
   for (const name of entries) {
-    const match = /^(\d{4}-\d{2}-\d{2})\.jsonl$/.exec(name);
-    if (!match) {
+    const day = fileDay(name);
+    if (!day || !name.endsWith(".jsonl")) {
       continue;
     }
-    const dayStart = Date.parse(`${match[1]}T00:00:00.000Z`);
+    const dayStart = Date.parse(`${day}T00:00:00.000Z`);
     if (Number.isFinite(dayStart) && dayStart < cutoff) {
       await rm(join(dir, name), { force: true });
     }
@@ -220,8 +102,9 @@ async function sweepExpired(dir: string, retentionDays: number, nowMs: number): 
 
 /**
  * Build the audit sink for a resolved config. Throws when the public
- * key material is invalid — the caller treats that as "audit broken"
- * and must refuse to post rather than degrade to unlogged anonymity.
+ * key material is invalid or the audit directory cannot be created —
+ * the caller treats that as "audit broken" and must refuse to post
+ * rather than degrade to unlogged anonymity.
  */
 export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
   const sealFn = createAnonCipher(config.publicKey);
@@ -231,32 +114,35 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
   // `auditState: "error"` instead of discovering it on the first post.
   mkdirSync(dir, { recursive: true, mode: 0o700 });
 
-  const locked = <T>(fn: () => Promise<T>) =>
-    withDirLock(dir, () => withAnonAuditFileLock(dir, fn));
-
   return {
     seal: (plaintext) => sealFn(JSON.stringify(plaintext)),
-    record: (input) =>
-      locked(async () => {
-        await sweepExpired(dir, config.retentionDays, Date.now());
-
-        const line = `${JSON.stringify({
-          v: 1,
-          gid: input.guildId,
-          cid: input.channelId,
-          ct: input.ciphertext,
-        })}\n`;
-        await appendFile(join(dir, fileNameFor(new Date())), line, {
-          encoding: "utf8",
-          mode: 0o600,
-        });
-      }),
-    sweep: () => locked(() => sweepExpired(dir, config.retentionDays, Date.now())),
+    record: async (input) => {
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      await sweepExpired(dir, config.retentionDays, Date.now());
+      const line = `${JSON.stringify({
+        v: 1,
+        gid: input.guildId,
+        cid: input.channelId,
+        ct: input.ciphertext,
+      })}\n`;
+      // `wx` fails if the name somehow exists — never overwrite a
+      // record. Each record is an independent file, so concurrent
+      // appends cannot interleave or lose each other's data.
+      await writeFile(join(dir, recordFileName(new Date())), line, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      });
+    },
+    sweep: async () => {
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      await sweepExpired(dir, config.retentionDays, Date.now());
+    },
   };
 }
 
 /**
- * Whether the audit directory currently holds any non-empty daily
+ * Whether the audit directory currently holds any non-empty record
  * file. Used by the `/privacy delete` consumer: the bot cannot
  * selectively delete ciphertext-only records, so it must at least
  * detect that records exist and report the honest outcome.

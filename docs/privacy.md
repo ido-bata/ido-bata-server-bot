@@ -60,7 +60,7 @@ touch only ephemeral or operational data are listed for completeness.
 | poll                | `data/polls.json`                            | Discord snowflake | `votes: Record<userId, optionIndex>` + creatorId | `activity-history`  |
 | reminder            | `data/reminders.json`                        | Discord snowflake | `{ id, userId, message, fireAt, createdAt }` | `activity-history`  |
 | state-snapshot      | `data/snapshots/<id>.snap.enc`              | bundled          | encrypted AES-256-GCM mirror of all source files | `activity-history` (special: revoke must trigger snapshot expiry via `applyRetentionPlan`) |
-| anonymous-chat      | `data/anon-audit/YYYY-MM-DD.jsonl`          | ciphertext only  | RSA-OAEP-encrypted `{userId, guildId, channelId, postedAt}` + public `gid`/`cid` metadata; record written BEFORE the public send so no anonymous message exists without an audit record; bot holds public key only — no decryptable or searchable per-user index | `message-history` |
+| anonymous-chat      | `data/anon-audit/<UTC-ts>-<rand>.jsonl`   | ciphertext only  | RSA-OAEP-encrypted `{userId, guildId, channelId, postedAt}` + public `gid`/`cid` metadata; record written BEFORE the public send so no anonymous message exists without an audit record; bot holds public key only — no decryptable or searchable per-user index | `message-history` |
 
 ### 3.2 Operational persistent (justified, no consent gate)
 
@@ -128,7 +128,7 @@ and `src/features/privacy/clear.ts` for the wire-up.
 **Exception — `data/anon-audit/`**: the anonymous-chat audit log is
 consent-gated but deliberately excluded from
 `DEFAULT_SNAPSHOT_SOURCE_PATHS`. It is already RSA-OAEP encrypted at
-rest, self-retaining (daily files swept after
+rest, self-retaining (record files swept after
 `ANON_AUDIT_RETENTION_DAYS`, default 90), and mirroring it into
 snapshots would extend retention far beyond that window — defeating the
 bounded-retention guarantee. Records contain no bot-computable per-user
@@ -199,7 +199,7 @@ message を作らず fail closed とする。
 | `ANON_MAX_MESSAGE_LENGTH` | max trimmed body length (default 1000) |
 | `ANON_AUDIT_PUBLIC_KEY` | RSA public key (PEM or base64 SPKI) for sealing the author↔message mapping. Private key MUST NOT be deployed to the bot. Setting this enables audit mode; a malformed value makes `/anon` refuse all posts (fail closed), it never degrades to unlogged posting. |
 | `ANON_AUDIT_DIR` | audit directory (default `data/anon-audit`) |
-| `ANON_AUDIT_RETENTION_DAYS` | daily-file retention (default 90) |
+| `ANON_AUDIT_RETENTION_DAYS` | record-file retention by UTC date (default 90) |
 
 `ANON_AUDIT_INDEX_KEY` (legacy HMAC lookup key) is removed — it is
 ignored with a warning if still present. Deterministic per-user tags

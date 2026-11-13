@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createAnonAuditSink,
   hasAnonAuditRecords,
-  withAnonAuditFileLock,
 } from "../src/features/anonymous-chat/audit-store.js";
 import type { AnonAuditConfig } from "../src/features/anonymous-chat/config.js";
 
@@ -36,12 +35,16 @@ function auditConfig(overrides: Partial<AnonAuditConfig> = {}): AnonAuditConfig 
   };
 }
 
-function dayFileName(date: Date): string {
-  return `${date.toISOString().slice(0, 10)}.jsonl`;
+function recordFiles(): string[] {
+  return readdirSync(dir).filter((name) => name.endsWith(".jsonl"));
+}
+
+function oldRecordName(date: string): string {
+  return `${date}T00-00-00-000Z-deadbeef.jsonl`;
 }
 
 describe("createAnonAuditSink", () => {
-  it("appends a sealed record to the daily JSONL file", async () => {
+  it("writes one immutable file per record", async () => {
     const sink = createAnonAuditSink(auditConfig());
     const ct = sink.seal({
       userId: "u1",
@@ -57,9 +60,9 @@ describe("createAnonAuditSink", () => {
       ciphertext: ct,
     });
 
-    const files = readdirSync(dir).filter((name) => name.endsWith(".jsonl"));
+    const files = recordFiles();
     expect(files).toHaveLength(1);
-    expect(files[0]).toMatch(/^\d{4}-\d{2}-\d{2}\.jsonl$/);
+    expect(files[0]).toMatch(/^\d{4}-\d{2}-\d{2}T.*-[0-9a-f]+\.jsonl$/);
 
     const line = readFileSync(join(dir, files[0]!), "utf8").trim();
     const record = JSON.parse(line) as Record<string, unknown>;
@@ -78,12 +81,15 @@ describe("createAnonAuditSink", () => {
     expect(typeof record.ct).toBe("string");
   });
 
+  it("creates a missing audit directory eagerly at sink construction", () => {
+    const fresh = join(dir, "nested", "anon-audit");
+    expect(() => createAnonAuditSink(auditConfig({ dir: fresh }))).not.toThrow();
+    expect(readdirSync(fresh)).toHaveLength(0);
+  });
+
   it("sweeps files older than the retention window before appending", async () => {
-    mkdirSync(dir, { recursive: true });
-    const oldName = "2020-01-01.jsonl";
-    writeFileSync(join(dir, oldName), '{"v":1}\n');
-    const recentName = dayFileName(new Date());
-    writeFileSync(join(dir, recentName), '{"v":1}\n');
+    const oldName = oldRecordName("2020-01-01");
+    writeFileSync(join(dir, oldName), '{"v":1,"ct":"x"}\n');
 
     const sink = createAnonAuditSink(auditConfig({ retentionDays: 30 }));
     await sink.record({
@@ -94,12 +100,12 @@ describe("createAnonAuditSink", () => {
       ciphertext: "ct",
     });
 
-    const remaining = readdirSync(dir);
+    const remaining = recordFiles();
     expect(remaining).not.toContain(oldName);
-    expect(remaining).toContain(recentName);
+    expect(remaining).toHaveLength(1); // only today's record remains
   });
 
-  it("serializes concurrent appends and sweeps without losing lines", async () => {
+  it("serializes concurrent appends without losing records", async () => {
     const sink = createAnonAuditSink(auditConfig());
     await Promise.all(
       Array.from({ length: 20 }, (_, i) =>
@@ -112,11 +118,7 @@ describe("createAnonAuditSink", () => {
         }),
       ),
     );
-    const file = join(dir, dayFileName(new Date()));
-    const lines = readFileSync(file, "utf8")
-      .split("\n")
-      .filter((line) => line.trim() !== "");
-    expect(lines).toHaveLength(20);
+    expect(recordFiles()).toHaveLength(20);
   });
 });
 
@@ -129,7 +131,7 @@ describe("hasAnonAuditRecords", () => {
     expect(await hasAnonAuditRecords(dir)).toBe(false);
   });
 
-  it("returns true when a non-empty daily file exists", async () => {
+  it("returns true when a non-empty record file exists", async () => {
     const sink = createAnonAuditSink(auditConfig());
     await sink.record({
       userId: "u1",
@@ -141,62 +143,9 @@ describe("hasAnonAuditRecords", () => {
     expect(await hasAnonAuditRecords(dir)).toBe(true);
   });
 
-  it("ignores non-daily files and empty daily files", async () => {
+  it("ignores non-record files and empty record files", async () => {
     writeFileSync(join(dir, "notes.txt"), "hello");
-    writeFileSync(join(dir, dayFileName(new Date())), "");
+    writeFileSync(join(dir, "2026-11-13T00-00-00-000Z-empty.jsonl"), "");
     expect(await hasAnonAuditRecords(dir)).toBe(false);
-  });
-});
-
-describe("withAnonAuditFileLock", () => {
-  it("creates a missing audit directory before locking (fresh deployment)", async () => {
-    const fresh = join(dir, "nested", "anon-audit");
-    const result = await withAnonAuditFileLock(fresh, async () => "ok");
-    expect(result).toBe("ok");
-    // Lock released — the directory remains but the lock dir is gone.
-    expect(readdirSync(fresh)).toHaveLength(0);
-  });
-
-  it("breaks a stale lock whose heartbeat is old", async () => {
-    const lockDir = join(dir, ".anon-audit.lock");
-    mkdirSync(lockDir, { recursive: true });
-    writeFileSync(
-      join(lockDir, "owner"),
-      JSON.stringify({ token: "dead", pid: 1, at: Date.now() - 120_000 }),
-    );
-    const result = await withAnonAuditFileLock(dir, async () => "acquired");
-    expect(result).toBe("acquired");
-    expect(readdirSync(dir)).not.toContain(".anon-audit.lock");
-  });
-
-  it("waits on a live lock and times out rather than breaking it", async () => {
-    const lockDir = join(dir, ".anon-audit.lock");
-    mkdirSync(lockDir, { recursive: true });
-    writeFileSync(
-      join(lockDir, "owner"),
-      JSON.stringify({ token: "live", pid: process.pid, at: Date.now() }),
-    );
-    // A live holder's heartbeat is fresh — the waiter must not evict
-    // it; it times out instead (LOCK_TIMEOUT_MS = 10s, retry 50ms).
-    await expect(withAnonAuditFileLock(dir, async () => "never")).rejects.toThrow(/timed out/);
-    // The live lock is untouched.
-    expect(readdirSync(dir)).toContain(".anon-audit.lock");
-  }, 15_000);
-
-  it("serializes two concurrent critical sections", async () => {
-    const order: string[] = [];
-    await Promise.all([
-      withAnonAuditFileLock(dir, async () => {
-        order.push("a-start");
-        await new Promise((resolve) => setTimeout(resolve, 30));
-        order.push("a-end");
-      }),
-      withAnonAuditFileLock(dir, async () => {
-        order.push("b-start");
-        order.push("b-end");
-      }),
-    ]);
-    // b cannot start until a finishes.
-    expect(order.indexOf("b-start")).toBeGreaterThan(order.indexOf("a-end"));
   });
 });

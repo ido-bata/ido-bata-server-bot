@@ -45,29 +45,24 @@ async function seed(userIds: string[]): Promise<void> {
   }
 }
 
-function dailyFiles(): string[] {
+function recordFiles(): string[] {
   return readdirSync(dir).filter((name) => name.endsWith(".jsonl"));
 }
 
 describe("deleteAnonAuditUserRecords (offline custodian)", () => {
-  it("removes only the target user's records", async () => {
+  it("removes only the target user's record files", async () => {
     await seed(["u1", "u2", "u1"]);
+    expect(recordFiles()).toHaveLength(3);
     const result = await deleteAnonAuditUserRecords({
       dir,
       privateKey,
       userId: "u1",
     });
     expect(result).toEqual({ ok: true, scanned: 3, removed: 2 });
-
-    const file = join(dir, dailyFiles()[0]!);
-    const remaining = readFileSync(file, "utf8")
-      .split("\n")
-      .filter((line) => line.trim() !== "");
-    // Records carry no plaintext discriminator — assert by count.
-    expect(remaining).toHaveLength(1);
+    expect(recordFiles()).toHaveLength(1);
   });
 
-  it("deletes the whole file when every record belongs to the user", async () => {
+  it("removes every file when all records belong to the user", async () => {
     await seed(["u1", "u1"]);
     const result = await deleteAnonAuditUserRecords({
       dir,
@@ -75,7 +70,7 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
       userId: "u1",
     });
     expect(result).toMatchObject({ ok: true, removed: 2 });
-    expect(dailyFiles()).toHaveLength(0);
+    expect(recordFiles()).toHaveLength(0);
   });
 
   it("succeeds with zero removals when nothing matches", async () => {
@@ -86,13 +81,13 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
       userId: "u1",
     });
     expect(result).toMatchObject({ ok: true, scanned: 1, removed: 0 });
-    expect(dailyFiles()).toHaveLength(1);
+    expect(recordFiles()).toHaveLength(1);
   });
 
-  it("fails closed on a corrupt line and modifies nothing", async () => {
+  it("fails closed on a corrupt file and modifies nothing", async () => {
     await seed(["u1"]);
-    const file = join(dir, dailyFiles()[0]!);
-    writeFileSync(file, `${readFileSync(file, "utf8")}not-json\n`);
+    const file = join(dir, recordFiles()[0]!);
+    writeFileSync(file, "not-json\n");
 
     const result = await deleteAnonAuditUserRecords({
       dir,
@@ -104,8 +99,26 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
       expect(result.error).toContain("corrupt");
     }
     // The file must be untouched — the user's record is still there.
-    expect(readFileSync(file, "utf8")).toContain("not-json");
-    expect(readFileSync(file, "utf8")).toContain('"v":1');
+    expect(readFileSync(file, "utf8")).toBe("not-json\n");
+  });
+
+  it("fails closed on a multi-record file rather than dropping others", async () => {
+    await seed(["u1"]);
+    const file = join(dir, recordFiles()[0]!);
+    // Simulate a legacy/appended file holding two records: partial
+    // deletion is impossible without a rewrite, so the run must abort.
+    writeFileSync(file, `${readFileSync(file, "utf8")}{"v":1,"ct":"x"}\n`);
+
+    const result = await deleteAnonAuditUserRecords({
+      dir,
+      privateKey,
+      userId: "u1",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("multi-record");
+    }
+    expect(recordFiles()).toHaveLength(1);
   });
 
   it("fails closed on an undecryptable record and modifies nothing", async () => {
@@ -114,7 +127,6 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
       publicKeyEncoding: { format: "pem", type: "spki" },
       privateKeyEncoding: { format: "pem", type: "pkcs8" },
     });
-    void otherPub;
     // Write a record sealed under a DIFFERENT key — undecryptable here.
     const foreign = createAnonAuditSink({
       publicKey: otherPub,
@@ -143,6 +155,6 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     if (!result.ok) {
       expect(result.error).toContain("undecryptable");
     }
-    expect(dailyFiles()).toHaveLength(1);
+    expect(recordFiles()).toHaveLength(1);
   });
 });
