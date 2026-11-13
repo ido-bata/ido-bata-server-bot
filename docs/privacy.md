@@ -55,6 +55,13 @@ The guarantees in this document are **backend independent**:
 4. `/privacy delete` removes the user-keyed records through the same port
    the feature writes through, so the delete and the write always target
    the same store.
+5. **A restore cannot resurrect deleted data.** Every deletion is
+   recorded in the append-only ledger `privacy/deletions.json` (an
+   HMAC-SHA256 digest of the subject id, never the id itself). A restore
+   merges that ledger and re-applies the recorded erasures to the
+   restored objects, so a backup taken before the deletion cannot bring
+   the subject back. `DELETION_LEDGER_KEY` must be configured for that
+   guarantee; without it the operator is warned at runtime.
 
 ## 2. Scope catalogue
 

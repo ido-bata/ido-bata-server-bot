@@ -76,6 +76,45 @@ function describeContract(name: string, createDriver: () => Promise<StorageDrive
         "anon-audit/2026-11-13T00-00-00-000Z-deadbeef.jsonl",
       ]);
     });
+
+    it("reports a version token for an object", async () => {
+      await driver.write("versioned.json", "one");
+      const first = await driver.readVersioned("versioned.json");
+      expect(first?.data).toBeDefined();
+      expect(first?.version).toBeTruthy();
+      await driver.write("versioned.json", "two");
+      const second = await driver.readVersioned("versioned.json");
+      expect(second?.version).not.toBe(first?.version);
+      expect(await driver.readVersioned("missing.json")).toBeNull();
+    });
+
+    it("writes only when the expected version still matches", async () => {
+      const created = await driver.compareAndSwap("cas.json", "first", null);
+      expect(created).toBe("written");
+
+      const versioned = await driver.readVersioned("cas.json");
+      expect(versioned?.version).toBeTruthy();
+
+      // A stale expectation must not overwrite the object.
+      expect(await driver.compareAndSwap("cas.json", "second", "stale-version")).toBe("conflict");
+      expect(await driver.readText("cas.json")).toBe("first");
+
+      // The current version may replace it.
+      expect(await driver.compareAndSwap("cas.json", "second", versioned?.version ?? null)).toBe(
+        "written",
+      );
+      expect(await driver.readText("cas.json")).toBe("second");
+    });
+
+    it("does not create an object twice", async () => {
+      expect(await driver.compareAndSwap("once.json", "a", null)).toBe("written");
+      expect(await driver.compareAndSwap("once.json", "b", null)).toBe("conflict");
+      expect(await driver.readText("once.json")).toBe("a");
+    });
+
+    it("reports whether the backend supports conditional writes", async () => {
+      expect(await driver.probeConditionalWrites()).toBe(true);
+    });
   });
 }
 

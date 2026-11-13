@@ -25,6 +25,10 @@
  * - `list` returns the entries under `prefix` sorted by key.
  * - `delete` removes the object; deleting a missing key is not an error.
  * - `move` renames an object within the same backend.
+ * - `readVersioned` returns the object together with its version token.
+ * - `compareAndSwap` writes only when the stored version still matches the
+ *   expected one. This is the primitive the instance lease needs: without
+ *   it, two instances can both believe they own the lease.
  */
 
 export type StorageEntry = {
@@ -36,6 +40,29 @@ export type StorageEntry = {
   lastModifiedMs: number;
 };
 
+/** An object plus the backend's version token for it. */
+export type VersionedObject = {
+  /** Object content. */
+  data: Uint8Array;
+  /**
+   * Opaque version token (ETag, content digest, …). `null` when the
+   * backend cannot report one — such a backend cannot offer a
+   * compare-and-swap.
+   */
+  version: string | null;
+};
+
+/**
+ * Outcome of a compare-and-swap write.
+ *
+ * - `written` — the object was replaced.
+ * - `conflict` — the stored version differed; nothing was written.
+ * - `unsupported` — the backend cannot do conditional writes at all. The
+ *   caller MUST NOT treat this as success: a guarantee that silently
+ *   degrades is worse than a visible failure.
+ */
+export type CompareAndSwapResult = "written" | "conflict" | "unsupported";
+
 export type StorageDriver = {
   /** Adapter identifier — `local` (filesystem) or `u3` (object storage). */
   readonly kind: "local" | "u3";
@@ -43,15 +70,27 @@ export type StorageDriver = {
   read: (key: string) => Promise<Uint8Array | null>;
   /** Read an object as UTF-8 text. Resolves `null` when the key is missing. */
   readText: (key: string) => Promise<string | null>;
+  /** Read an object together with its version token. */
+  readVersioned: (key: string) => Promise<VersionedObject | null>;
   /** Atomically create or replace an object. */
   write: (key: string, data: Uint8Array | string) => Promise<void>;
   /**
    * Create an object only when the key is free.
    *
    * Resolves `true` when this call created the object and `false` when the
-   * key was already taken. Never overwrites an existing object.
+   * key was already taken. It never overwrites an existing object.
    */
   writeExclusive: (key: string, data: Uint8Array | string) => Promise<boolean>;
+  /**
+   * Write only when the stored version still matches `expectedVersion`.
+   *
+   * `expectedVersion: null` means "the key must not exist yet".
+   */
+  compareAndSwap: (
+    key: string,
+    data: Uint8Array | string,
+    expectedVersion: string | null,
+  ) => Promise<CompareAndSwapResult>;
   /** List objects under `prefix`, sorted by key. */
   list: (prefix: string) => Promise<StorageEntry[]>;
   /** Delete an object. Missing keys are not an error. */
@@ -60,6 +99,15 @@ export type StorageDriver = {
   exists: (key: string) => Promise<boolean>;
   /** Move an object to another key inside the same backend. */
   move: (from: string, to: string) => Promise<void>;
+  /**
+   * Whether the backend can enforce conditional writes.
+   *
+   * The instance lease depends on it: without conditional writes two
+   * instances can both believe they own the lease. Adapters that cannot
+   * answer must report `false` — a guarantee that cannot be verified is
+   * not a guarantee.
+   */
+  probeConditionalWrites: () => Promise<boolean>;
 };
 
 /** Encode a string payload as UTF-8 bytes. */

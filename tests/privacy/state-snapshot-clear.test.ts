@@ -90,6 +90,7 @@ describe("state-snapshot privacy clear", () => {
     // claiming the snapshots were purged.
     await seedSnapshot("2026-04-01.snap.enc");
     const failingDriver: StorageDriver = {
+      compareAndSwap: driver.compareAndSwap.bind(driver),
       delete: async () => {
         throw new Error("delete failed");
       },
@@ -97,8 +98,10 @@ describe("state-snapshot privacy clear", () => {
       kind: driver.kind,
       list: driver.list.bind(driver),
       move: driver.move.bind(driver),
+      probeConditionalWrites: driver.probeConditionalWrites.bind(driver),
       read: driver.read.bind(driver),
       readText: driver.readText.bind(driver),
+      readVersioned: driver.readVersioned.bind(driver),
       write: driver.write.bind(driver),
       writeExclusive: driver.writeExclusive.bind(driver),
     };

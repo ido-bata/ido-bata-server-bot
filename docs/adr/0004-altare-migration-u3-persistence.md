@@ -1,6 +1,7 @@
 # ADR-0004 — Altare migration: U3-backed persistence layer and single-instance lease
 
-- Status: Accepted (implementation in progress on branch `121`)
+- Status: Accepted (implementation on branch `121`; revised after the
+  independent review of 2026-11-14 — see §9)
 - Date: 2026-11-14
 - Deciders: maintainer (Issue #121), implementing agent
 - Related: Issue #121, ADR-0003, `docs/privacy.md`, `docs/architecture.md`, `docs/operations/altare-migration.md`
@@ -107,12 +108,35 @@ A driver error is never swallowed:
 
 ### 4. Single-instance lease
 
-The bot acquires `locks/instance.json` in the storage backend at startup
-(`writeExclusive`, owner id = hostname + pid + boot id, expiry = now +
-TTL). A live lease held by a different owner aborts startup with an
-explicit error; the holder renews the lease every TTL/3 and releases it on
-shutdown. The lease lives in the same backend as the data, so it survives
-restarts and redeploys and still blocks a second instance.
+The lease object (`locks/instance.json`) carries a monotonically increasing
+`epoch` and a per-term random `token`. Rules:
+
+- **Every mutation is a compare-and-swap.** Acquisition, renewal and
+  release all read the object and then write it through
+  `compareAndSwap` against the version they read. A lost race reports
+  `conflict` instead of overwriting the other holder's term. A plain
+  read-then-write would let two instances both believe they own the
+  lease.
+- **Release expires the term; it never deletes the object.** A delete
+  could remove a term another instance acquired in the meantime. An
+  expired term can only be taken over through the same compare-and-swap.
+- **The backend must be able to enforce conditions.** Before handing out
+  a term the bot probes the backend (`probeConditionalWrites`). A backend
+  that ignores `If-None-Match` / `If-Match` is reported as
+  `unsupported`, and the bot **refuses to start** (fail closed) instead of
+  pretending the lease is exclusive. `LEASE_ALLOW_UNCONDITIONAL=true` is
+  an explicit operator override for a backend whose behaviour was
+  verified by hand; it is logged at startup.
+- **Losing the lease stops the bot.** A holder that cannot renew (backend
+  down, term taken over) reports the loss; the composition root then runs
+  the graceful shutdown with a non-zero exit code. Running unowned would
+  mean two instances processing the same events.
+- **The lease backend is configured independently of the data backend**
+  (`LEASE_STORAGE_BACKEND`, `LEASE_S3_*`, `LEASE_AWS_*`). During a
+  cutover the old host keeps writing its data to the local disk but takes
+  the lease in the shared bucket — a lease inside the old host's local
+  `data/` directory would be invisible to the Altare instance and would
+  not prevent a double run.
 
 ### 5. Migration tooling
 
@@ -141,6 +165,39 @@ The old host's `data/` is never deleted by these tools.
   (default 90 days) and is enforced by the same sweep, now against the
   driver.
 
+### 6b. Deletion ledger — restoring must not resurrect deleted data
+
+A `/privacy delete` removes the subject's records from the live stores. A
+backup taken *before* that deletion still contains them, so a restore
+would resurrect data the user asked to forget.
+
+- Every deletion is recorded in `privacy/deletions.json` — an append-only
+  ledger that travels with the data into every backup.
+- The ledger stores an **HMAC-SHA256 digest** of the subject id
+  (`DELETION_LEDGER_KEY`), never the id itself. The key lives in the
+  secret manager; without it the ledger cannot be matched and the
+  operator is warned.
+- A restore **merges** the imported ledger with the live one (the ledger
+  is append-only; a restore must never roll the erasure history back) and
+  then re-applies the recorded erasures to the restored objects.
+- The bot-side `/privacy delete` outcome does not depend on the ledger:
+  the deletion itself already happened, a ledger failure is logged loudly
+  but never reported as a deletion failure.
+
+### 6c. Backup and restore are proven, not described
+
+The backup procedure is the tooling itself, so it can be rehearsed:
+
+1. export the primary bucket → `storage:migrate -- export`
+2. import that export into the backup bucket (`S3_BUCKET=<backup>`) →
+   `storage:migrate -- import`
+3. restore drill: export the backup bucket and import it into an empty
+   bucket → `storage:migrate -- verify` must report zero missing and
+   zero mismatched objects.
+
+The drill is a regression test (`tests/storage-backup-restore.test.ts`),
+not a manual checklist item.
+
 ### 7. Altare runtime configuration (documented, not implied)
 
 Install `bun install --frozen-lockfile`, build `bun run build`, start
@@ -166,6 +223,13 @@ copy cannot be reused.
   partial record), fewer moving parts.
 - The app's local disk becomes a cache; a redeploy can no longer lose
   data, because nothing authoritative was there.
+- The lease now requires a backend that can enforce conditional writes.
+  The local adapter always can; an object store must be probed at startup,
+  and a backend that fails the probe stops the bot instead of starting
+  without exclusivity.
+- Every delete writes one more object (the ledger) and every restore
+  re-applies the recorded erasures — the price of not resurrecting
+  deleted data from an old backup.
 - Two backends means two code paths to test; the driver contract test
   runs against both.
 
@@ -188,6 +252,34 @@ copy cannot be reused.
 - **Monkey-patching `node:fs` to virtualise the data root.** Rejected:
   invisible global side effects on Discord.js and every dependency, and
   untestable in isolation.
+- **A lease inside the data directory (no separate configuration).**
+  Rejected after the independent review: the old host's local `data/`
+  directory is invisible to the Altare instance, so the lease would not
+  have prevented the double run it exists for.
+- **Read-then-write lease with a best-effort verification.** Rejected: a
+  takeover between the read and the write lets two instances believe they
+  own the lease. The lease needs a real compare-and-swap.
+- **Deleting the lease object on release.** Rejected: the delete can
+  remove a term another instance acquired in the meantime. Expiring the
+  term keeps the takeover on the compare-and-swap path.
+- **Storing the deleted subject id in the ledger.** Rejected: the ledger
+  would keep personal data after the deletion. An HMAC digest with a
+  secret key gives the same matching without the plaintext.
+
+## 9. Revision after the independent review (2026-11-14)
+
+The review of PR #122 raised five findings. Each was reproduced against
+the implementation and fixed:
+
+| Finding | Root cause | Fix |
+| --- | --- | --- |
+| Lease loss did not stop the bot | `onLost` was never wired | `onLost` now runs the shutdown chain with exit code 1 (`LEASE_LOST`) |
+| Lease renewal / release had a TOCTOU window | read-then-write and read-then-delete | compare-and-swap on every mutation; release expires the term instead of deleting it |
+| Conditional-write guarantee was insufficient | `If-None-Match` alone, verified after the fact | `compareAndSwap` + a startup capability probe; a backend without conditional writes stops the bot |
+| The old host did not share the lease | the lease used the data backend (local disk) | `LEASE_STORAGE_BACKEND` / `LEASE_S3_*` configure the lease backend independently |
+| Backup procedure was not executable / no restore proof | prose only | export → import → verify is the procedure; a restore drill is a regression test, and the deletion ledger keeps old backups from resurrecting deleted data |
+
+The evidence is recorded in PR #122.
 
 ## References
 

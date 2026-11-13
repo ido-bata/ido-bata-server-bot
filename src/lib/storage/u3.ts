@@ -27,16 +27,19 @@ import {
   HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
+  type PutObjectCommandOutput,
   S3Client,
 } from "@aws-sdk/client-s3";
 
 import {
+  type CompareAndSwapResult,
   decodeStorageText,
   encodeStorageData,
   isStorageNotFound,
   normalizeStorageKey,
   type StorageDriver,
   type StorageEntry,
+  type VersionedObject,
 } from "./types.js";
 
 const OWNER_METADATA_KEY = "storage-owner";
@@ -110,6 +113,26 @@ export function createU3Storage(options: U3StorageOptions): StorageDriver {
       return bytes === null ? null : decodeStorageText(bytes);
     },
 
+    async readVersioned(key: string): Promise<VersionedObject | null> {
+      try {
+        const response = await client.send(
+          new GetObjectCommand({ Bucket: options.bucket, Key: objectKey(key) }),
+        );
+        if (!response.Body) {
+          return { data: new Uint8Array(0), version: response.ETag ?? null };
+        }
+        return {
+          data: new Uint8Array(await response.Body.transformToByteArray()),
+          version: response.ETag ?? null,
+        };
+      } catch (error) {
+        if (isStorageNotFound(error)) {
+          return null;
+        }
+        throw error;
+      }
+    },
+
     async write(key: string, data: Uint8Array | string): Promise<void> {
       await client.send(
         new PutObjectCommand({
@@ -155,6 +178,66 @@ export function createU3Storage(options: U3StorageOptions): StorageDriver {
       }
     },
 
+    /**
+     * Conditional write.
+     *
+     * `expectedVersion: null` means "the key must not exist" → the request
+     * carries `If-None-Match: *`. A non-null version means "the stored
+     * ETag must still match" → the request carries `If-Match`.
+     *
+     * A backend that does not implement conditional writes answers with an
+     * error we cannot distinguish from a transport failure. The result is
+     * reported as `unsupported` so the caller can fail closed instead of
+     * silently degrading the guarantee.
+     */
+    async compareAndSwap(
+      key: string,
+      data: Uint8Array | string,
+      expectedVersion: string | null,
+    ): Promise<CompareAndSwapResult> {
+      // Pre-check: never issue a write we already know must fail. This
+      // also protects against a backend that ignores the conditional
+      // headers — the object is left untouched instead of clobbered.
+      const current = await this.readVersioned(key);
+      const currentVersion = current?.version ?? null;
+      if (currentVersion !== expectedVersion) {
+        return "conflict";
+      }
+
+      let response: PutObjectCommandOutput;
+      try {
+        response = await client.send(
+          new PutObjectCommand({
+            Body: encodeStorageData(data),
+            Bucket: options.bucket,
+            IfMatch: expectedVersion ?? undefined,
+            IfNoneMatch: expectedVersion === null ? "*" : undefined,
+            Key: objectKey(key),
+          }),
+        );
+      } catch (error) {
+        if (isPreconditionFailed(error)) {
+          return "conflict";
+        }
+        if (isNotImplemented(error)) {
+          return "unsupported";
+        }
+        throw error;
+      }
+
+      // Post-check: a backend that ignores the conditional headers answers
+      // 2xx even when the object it replaced was not ours. Comparing the
+      // stored ETag with the one we produced detects a write that raced.
+      const stored = await this.readVersioned(key);
+      if (!stored) {
+        return "conflict";
+      }
+      if (response.ETag && stored.version && response.ETag !== stored.version) {
+        return "conflict";
+      }
+      return "written";
+    },
+
     async list(prefixFilter: string): Promise<StorageEntry[]> {
       const normalized = prefixFilter === "" ? "" : normalizeStorageKey(prefixFilter);
       const entries: StorageEntry[] = [];
@@ -198,6 +281,47 @@ export function createU3Storage(options: U3StorageOptions): StorageDriver {
       }
     },
 
+    /**
+     * Probe the backend itself: a create-if-absent write must succeed once
+     * and fail the second time. A backend that ignores `If-None-Match`
+     * answers 2xx both times and is reported as not supporting
+     * conditional writes.
+     */
+    async probeConditionalWrites(): Promise<boolean> {
+      const key = `locks/probe-${randomBytes(6).toString("hex")}`;
+      const body = encodeStorageData("probe");
+      try {
+        await client.send(
+          new PutObjectCommand({
+            Body: body,
+            Bucket: options.bucket,
+            IfNoneMatch: "*",
+            Key: key,
+          }),
+        );
+      } catch {
+        return false;
+      }
+      try {
+        await client.send(
+          new PutObjectCommand({
+            Body: body,
+            Bucket: options.bucket,
+            IfNoneMatch: "*",
+            Key: key,
+          }),
+        );
+        // The second create succeeded: the condition was ignored.
+        await client.send(new DeleteObjectCommand({ Bucket: options.bucket, Key: key }));
+        return false;
+      } catch (error) {
+        await client
+          .send(new DeleteObjectCommand({ Bucket: options.bucket, Key: key }))
+          .catch(() => undefined);
+        return isPreconditionFailed(error);
+      }
+    },
+
     async move(from: string, to: string): Promise<void> {
       const sourceKey = objectKey(from);
       await client.send(
@@ -210,6 +334,23 @@ export function createU3Storage(options: U3StorageOptions): StorageDriver {
       await client.send(new DeleteObjectCommand({ Bucket: options.bucket, Key: sourceKey }));
     },
   };
+}
+
+/** Whether the backend rejected the conditional write as unimplemented. */
+function isNotImplemented(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const candidate = error as {
+    name?: unknown;
+    Code?: unknown;
+    $metadata?: { httpStatusCode?: number };
+  };
+  if (candidate.name === "NotImplemented" || candidate.Code === "NotImplemented") {
+    return true;
+  }
+  const status = candidate.$metadata?.httpStatusCode;
+  return status === 501 || status === 400;
 }
 
 function isPreconditionFailed(error: unknown): boolean {

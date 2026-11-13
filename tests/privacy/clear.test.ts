@@ -9,6 +9,7 @@ import * as birthday from "../../src/features/privacy/consumers/birthday.js";
 import * as poll from "../../src/features/privacy/consumers/poll.js";
 import * as reminder from "../../src/features/privacy/consumers/reminder.js";
 import * as timekeeper from "../../src/features/privacy/consumers/timekeeper.js";
+import { digestSubjectId, readDeletionLedger } from "../../src/lib/storage/deletions.js";
 import { setStorageDriver } from "../../src/lib/storage/index.js";
 import { createLocalFileStorage } from "../../src/lib/storage/local.js";
 
@@ -332,4 +333,21 @@ describe("clearUserData aggregator", () => {
     expect(consentService.clear).toHaveBeenCalledTimes(1);
     expect(takeFreshSnapshot).toHaveBeenCalledTimes(1);
   });
+});
+it("records the deletion in the ledger without storing the subject id", async () => {
+  const driver = createLocalFileStorage({
+    root: mkdtempSync(join(tmpdir(), "privacy-ledger-")),
+  });
+  const ledgerKey = "ledger-key-for-tests-0123456789";
+
+  const report = await clearUserData("user-erased-1", { driver, ledgerKey });
+  expect(report.ok).toBe(true);
+
+  const ledger = await readDeletionLedger(driver);
+  expect(ledger.records).toHaveLength(1);
+  expect(ledger.records[0]?.complete).toBe(true);
+  // The subject id must not appear in the ledger — only its digest.
+  const raw = await driver.readText("privacy/deletions.json");
+  expect(raw).not.toContain("user-erased-1");
+  expect(raw).toContain(digestSubjectId("user-erased-1", ledgerKey));
 });

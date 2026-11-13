@@ -23,6 +23,13 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  DELETION_LEDGER_KEY,
+  type DeletionLedger,
+  mergeDeletionLedgers,
+  readDeletionLedger,
+} from "../lib/storage/deletions.js";
+import { applyDeletionLedger } from "../lib/storage/erasure.js";
 import { createStorageDriver } from "../lib/storage/index.js";
 import { createLocalFileStorage } from "../lib/storage/local.js";
 import type { StorageDriver } from "../lib/storage/types.js";
@@ -49,6 +56,10 @@ export type MigrationReport = {
   missing: string[];
   mismatched: string[];
   extra: string[];
+  /** Subjects whose data was removed again while restoring (deletion ledger). */
+  erasedSubjects: string[];
+  /** Objects rewritten because a recorded deletion was re-applied. */
+  rewrittenObjects: string[];
 };
 
 function sha256Hex(data: Uint8Array): string {
@@ -85,6 +96,19 @@ export async function exportStorage(options: {
   return manifest;
 }
 
+/** Parse a deletion ledger from raw bytes. */
+function parseLedger(bytes: Uint8Array): DeletionLedger {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Partial<DeletionLedger>;
+    return {
+      records: Array.isArray(parsed.records) ? parsed.records : [],
+      schemaVersion: 1,
+    };
+  } catch {
+    return { records: [], schemaVersion: 1 };
+  }
+}
+
 /** Read an export manifest from disk. */
 export async function readManifest(dir: string): Promise<StorageManifest> {
   const raw = await readFile(join(dir, MANIFEST_NAME), "utf8");
@@ -108,13 +132,20 @@ export async function importStorage(options: {
   const { target, dir, allowOverwrite } = options;
   const manifest = await readManifest(dir);
   const report: MigrationReport = {
+    erasedSubjects: [],
     exported: 0,
     extra: [],
     imported: 0,
     mismatched: [],
     missing: [],
+    rewrittenObjects: [],
     verified: 0,
   };
+
+  // The deletion ledger is append-only. Capture the live ledger before the
+  // import so a restore can never roll the erasure history back.
+  const liveLedger = await readDeletionLedger(target);
+  let importedLedger = liveLedger;
 
   for (const entry of manifest.entries) {
     const bytes = await readFile(join(dir, entry.key));
@@ -129,6 +160,12 @@ export async function importStorage(options: {
         `target already holds ${entry.key}; re-run with --allow-overwrite to replace it`,
       );
     }
+    if (entry.key === DELETION_LEDGER_KEY) {
+      // Merge instead of replacing: a restore must not drop the deletion
+      // records the live store already knows about.
+      importedLedger = mergeDeletionLedgers(liveLedger, parseLedger(bytes));
+      continue;
+    }
     await target.write(entry.key, bytes);
     const written = await target.read(entry.key);
     if (written === null || sha256Hex(written) !== entry.sha256) {
@@ -136,6 +173,23 @@ export async function importStorage(options: {
     }
     report.imported += 1;
     report.verified += 1;
+  }
+
+  if (importedLedger.records.length !== liveLedger.records.length) {
+    await target.write(DELETION_LEDGER_KEY, `${JSON.stringify(importedLedger, null, 2)}\n`);
+  }
+
+  // Re-apply the recorded erasures: a backup taken before a
+  // `/privacy delete` still contains the subject.
+  const ledgerKey = process.env.DELETION_LEDGER_KEY;
+  if (ledgerKey) {
+    const erasure = await applyDeletionLedger(target, ledgerKey);
+    report.erasedSubjects = erasure.removedSubjects;
+    report.rewrittenObjects = erasure.rewrittenObjects;
+  } else {
+    console.warn(
+      "storage-migrate: DELETION_LEDGER_KEY is not configured; restored data may contain subjects deleted after the backup was taken",
+    );
   }
 
   return report;
@@ -149,11 +203,13 @@ export async function verifyStorage(options: {
   const { target, dir } = options;
   const manifest = await readManifest(dir);
   const report: MigrationReport = {
+    erasedSubjects: [],
     exported: 0,
     extra: [],
     imported: 0,
     mismatched: [],
     missing: [],
+    rewrittenObjects: [],
     verified: 0,
   };
 
@@ -252,6 +308,12 @@ async function main(): Promise<void> {
     console.log(
       `imported ${report.imported} object(s) into the ${target.kind} backend (${report.verified} verified)`,
     );
+    if (report.erasedSubjects.length > 0) {
+      console.log(
+        `re-applied ${report.erasedSubjects.length} recorded deletion(s): ${report.erasedSubjects.join(", ")}`,
+      );
+      console.log(`rewritten objects: ${report.rewrittenObjects.join(", ") || "(none)"}`);
+    }
     return;
   }
 

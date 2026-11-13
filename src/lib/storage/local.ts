@@ -9,9 +9,11 @@
  * - `writeExclusive` uses `open(O_EXCL)`, so a key can never be silently
  *   replaced by a racing writer.
  * - Both paths `fsync` the file before it becomes visible.
+ * - `compareAndSwap` serialises the read-compare-write sequence with an
+ *   `O_EXCL` lock file, so the check and the write cannot interleave.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { closeSync, fsyncSync, openSync } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
@@ -19,12 +21,20 @@ import { mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promis
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import {
+  type CompareAndSwapResult,
   decodeStorageText,
   encodeStorageData,
   normalizeStorageKey,
   type StorageDriver,
   type StorageEntry,
+  type VersionedObject,
 } from "./types.js";
+
+/** Suffix of the lock file that serialises compare-and-swap writes. */
+const LOCK_SUFFIX = ".cas-lock";
+/** How often a compare-and-swap retries when the lock is held. */
+const LOCK_ATTEMPTS = 40;
+const LOCK_RETRY_MS = 25;
 
 export type LocalFileStorageOptions = {
   /** Absolute or relative directory that holds the storage root. */
@@ -63,12 +73,50 @@ export function createLocalFileStorage(options: LocalFileStorageOptions): Storag
       if (!entry.isFile()) {
         continue;
       }
+      // Lock files are an implementation detail of compare-and-swap; they
+      // are not stored objects and must never show up in a listing.
+      if (entry.name.endsWith(LOCK_SUFFIX)) {
+        continue;
+      }
       const info = await stat(full);
       out.push({
         key: relative(root, full).split(sep).join("/"),
         lastModifiedMs: info.mtimeMs,
         size: info.size,
       });
+    }
+  }
+
+  /** Content digest used as the version token of a local object. */
+  function versionOf(data: Uint8Array): string {
+    return createHash("sha256").update(data).digest("hex");
+  }
+
+  async function readVersionedLocal(key: string): Promise<VersionedObject | null> {
+    try {
+      const buffer = await readFile(resolveKey(key));
+      const data = new Uint8Array(buffer);
+      return { data, version: versionOf(data) };
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Acquire the per-key lock file. `open(..., "wx")` is atomic on every
+   * supported platform, so exactly one caller wins.
+   */
+  async function acquireLock(lockPath: string): Promise<FileHandle | null> {
+    try {
+      return await open(lockPath, "wx", 0o600);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "EEXIST") {
+        return null;
+      }
+      throw error;
     }
   }
 
@@ -90,6 +138,10 @@ export function createLocalFileStorage(options: LocalFileStorageOptions): Storag
     async readText(key: string): Promise<string | null> {
       const bytes = await this.read(key);
       return bytes === null ? null : decodeStorageText(bytes);
+    },
+
+    async readVersioned(key: string): Promise<VersionedObject | null> {
+      return readVersionedLocal(key);
     },
 
     async write(key: string, data: Uint8Array | string): Promise<void> {
@@ -134,6 +186,56 @@ export function createLocalFileStorage(options: LocalFileStorageOptions): Storag
       return true;
     },
 
+    async compareAndSwap(
+      key: string,
+      data: Uint8Array | string,
+      expectedVersion: string | null,
+    ): Promise<CompareAndSwapResult> {
+      const target = resolveKey(key);
+      const lockPath = `${target}${LOCK_SUFFIX}`;
+      await mkdir(dirname(target), { recursive: true });
+
+      let handle: FileHandle | null = null;
+      for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
+        handle = await acquireLock(lockPath);
+        if (handle) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
+      }
+      if (!handle) {
+        // The lock stayed busy — another writer owns this key right now.
+        return "conflict";
+      }
+      try {
+        const current = await readVersionedLocal(key);
+        const currentVersion = current?.version ?? null;
+        if (currentVersion !== expectedVersion) {
+          return "conflict";
+        }
+        const bytes = encodeStorageData(data);
+        const temp = `${target}.${process.pid}-${randomBytes(6).toString("hex")}.tmp`;
+        const writer = await open(temp, "wx", 0o600);
+        try {
+          await writer.writeFile(bytes);
+          await writer.sync();
+        } finally {
+          await writer.close();
+        }
+        try {
+          await rename(temp, target);
+        } catch (error) {
+          await rm(temp, { force: true }).catch(() => {});
+          throw error;
+        }
+        syncDirectory(dirname(target));
+        return "written";
+      } finally {
+        await handle.close().catch(() => undefined);
+        await rm(lockPath, { force: true }).catch(() => undefined);
+      }
+    },
+
     async list(prefix: string): Promise<StorageEntry[]> {
       const normalized = prefix === "" ? "" : normalizeStorageKey(prefix);
       const out: StorageEntry[] = [];
@@ -157,6 +259,14 @@ export function createLocalFileStorage(options: LocalFileStorageOptions): Storag
         }
         throw error;
       }
+    },
+
+    /**
+     * The local adapter enforces the compare-and-swap itself (lock file +
+     * version compare), so conditional writes are always available.
+     */
+    async probeConditionalWrites(): Promise<boolean> {
+      return true;
     },
 
     async move(from: string, to: string): Promise<void> {

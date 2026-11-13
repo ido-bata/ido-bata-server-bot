@@ -4,7 +4,21 @@ import type { Client } from "discord.js";
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
 import { cancelActiveSession } from "../timekeeper/service.js";
 
-type ShutdownSignal = "SIGINT" | "SIGTERM";
+/**
+ * Why the process is shutting down.
+ *
+ * `LEASE_LOST` is not an operator signal: the bot lost the storage lease
+ * (ADR-0004), so another instance owns the runtime and this one must stop
+ * immediately. It exits with a non-zero code so the platform restarts it
+ * (and the supervisor notices).
+ */
+type ShutdownSignal = "SIGINT" | "SIGTERM" | "LEASE_LOST";
+
+const SHUTDOWN_EXIT_CODES: Record<ShutdownSignal, number> = {
+  LEASE_LOST: 1,
+  SIGINT: 0,
+  SIGTERM: 0,
+};
 
 export type ShutdownDependencies = {
   /**
@@ -49,6 +63,8 @@ export type ShutdownRunner = {
   /** Run the shutdown sequence manually (e.g. from a test or signal). */
   run: (signal: ShutdownSignal) => Promise<void>;
 };
+
+export type { ShutdownSignal };
 
 /**
  * Wire SIGINT and SIGTERM into a graceful shutdown sequence. The order is:
@@ -143,7 +159,7 @@ export function createShutdownRunner(
     }
 
     logger("Graceful shutdown complete");
-    exit(0);
+    exit(SHUTDOWN_EXIT_CODES[signal]);
   }
 
   return { run };

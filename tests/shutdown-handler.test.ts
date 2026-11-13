@@ -110,6 +110,24 @@ describe("shutdown handler", () => {
     expect(messages.at(-1)).toBe("Graceful shutdown complete");
   });
 
+  it("exits with a failure code when the storage lease was lost", async () => {
+    const exit = vi.fn();
+    const messages: string[] = [];
+    const runner = createShutdownRunner(
+      { destroy: vi.fn(async () => undefined) } as never,
+      { exit, cancelSession: async () => false },
+      (message) => messages.push(message),
+    );
+
+    await runner.run("LEASE_LOST");
+
+    // A lost lease is not a normal shutdown: the exit code must tell the
+    // platform (and the operator) that the bot stopped because another
+    // instance took over.
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(messages[0]).toContain("LEASE_LOST");
+  });
+
   it("also exits cleanly on SIGTERM with no active session", async () => {
     const { cancelSession, destroyClient, exit, messages, runner } = setupRunner();
 

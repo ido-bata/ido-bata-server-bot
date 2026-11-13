@@ -15,7 +15,7 @@ Related: [`docs/architecture.md`](../architecture.md), [`docs/privacy.md`](../pr
 | Persistence | files under `data/` | U3 bucket (S3-compatible), `STORAGE_BACKEND=u3` |
 | App disk | authoritative | cache only — a redeploy may wipe it |
 | Secrets | `.env` on the host | Altare app variables |
-| Single instance | assumed | storage lease (`locks/instance.json`) |
+| Single instance | assumed | storage lease (`locks/instance.json`) in a backend **both hosts share** |
 
 The storage *layout* does not change: `data/consent.json` becomes the
 object `consent.json`, `data/anon-audit/<file>` becomes
@@ -70,6 +70,8 @@ App variables (Settings → Variables):
 | `HEALTH_PORT` | `8080` | must match the app's exposed port |
 | `HEALTH_HOST` | `0.0.0.0` | the health endpoint must be reachable from outside |
 | `STORAGE_BACKEND` | `u3` | selects the object store |
+| `LEASE_STORAGE_BACKEND` | `u3` | the lease backend — must be shared with the old host |
+| `DELETION_LEDGER_KEY` | secret (≥16 bytes) | HMAC key for the deletion ledger; without it a restore of an old backup can resurrect deleted data |
 | `ANON_AUDIT_PUBLIC_KEY` | PEM | only the **public** key; the private key never leaves the custodian's store |
 | `BOT_TUI` | `off` | headless host: the structured logger keeps writing JSON Lines |
 
@@ -101,65 +103,180 @@ keep it until the cutover is signed off.
 
 ## 5. Cutover
 
-1. Stop the old bot (SIGTERM → the shutdown handler releases the storage
-   lease).
-2. Confirm the lease is gone or expired: the new instance refuses to start
-   while a live lease exists (`another bot instance holds the storage
-   lease`).
-3. Deploy the new branch to Altare (push to the branch the app is linked
-   to, or press *Deploy* in the console).
-4. Watch the logs: `storage lease acquired`, `Logged in as …`, and the
-   consent reconciler running on `ClientReady`.
-5. Verify in Discord:
-   - `/privacy status` shows the grants that were migrated (the consent
-     registry is read from U3 now).
-   - a `/anon` post writes an audit record (`anon-audit/` objects appear
-     in the bucket) — the post is refused when the audit write fails.
-   - `/privacy delete` removes the user-keyed records and reports the
-     honest outcome for the audit log.
-6. Rotate `DISCORD_TOKEN` in the Discord Developer Portal and update the
-   Altare variable (the old host's copy is then useless).
+The order matters: **stop the old host → freeze the final data → switch
+the token → start the new host.** Each step removes one way to run two
+instances or to lose a record.
+
+### 5.0 Prepare the old host (before the cutover)
+
+Deploy the migration build to the old host and point its **lease** at the
+shared bucket while its data stays local:
+
+```sh
+# old host
+export STORAGE_BACKEND=local          # data still on the local disk
+export LEASE_STORAGE_BACKEND=u3       # the lease is shared with Altare
+export S3_ENDPOINT=... S3_REGION=... S3_BUCKET=ido-bata-bot
+export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+bun run start
+```
+
+From this moment the old host and the Altare deployment contend for the
+same lease object: the Altare instance refuses to start while the old
+host holds it.
+
+### 5.1 Stop the old bot
+
+```sh
+# SIGTERM → the shutdown handler expires the lease
+```
+
+The lease term is expired (not deleted), so the next instance can take it
+over immediately. If the host crashed, wait for the term to expire
+(60 s) or remove the `locks/instance.json` object by hand.
+
+### 5.2 Freeze the final data
+
+The old bot is stopped, so no further writes happen. Export the final
+state and import it into the bucket:
+
+```sh
+# old host
+bun run storage:migrate -- export --out ./migration-final
+export STORAGE_BACKEND=u3 S3_ENDPOINT=... S3_REGION=... S3_BUCKET=ido-bata-bot \
+       AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+bun run storage:migrate -- import --from ./migration-final
+bun run storage:migrate -- verify --from ./migration-final
+```
+
+`verify` must report zero missing and zero mismatched objects. Keep
+`./migration-final` — it is the rollback material.
+
+### 5.3 Switch the Discord token
+
+Rotate the token in the Discord Developer Portal and update the Altare
+variable. The old host's copy is then useless: even if it comes back to
+life it cannot log in.
+
+### 5.4 Start the new host
+
+```sh
+# Altare: push to the linked branch or press Deploy
+```
+
+Watch the logs: `storage lease acquired` (with the epoch), then
+`Logged in as …`, then the consent reconciler on `ClientReady`. If the
+lease is still held by the old host, the instance refuses to start with
+`another bot instance holds the storage lease` — that is the intended
+behaviour, not a failure to fix.
+
+### 5.5 Verify in Discord
+
+- `/privacy status` shows the grants that were migrated (the consent
+  registry is read from U3 now).
+- a `/anon` post writes an audit record (`anon-audit/` objects appear in
+  the bucket) — the post is refused when the audit write fails.
+- `/privacy delete` removes the user-keyed records, reports the honest
+  outcome for the audit log, and writes the deletion ledger entry.
+- the timekeeper session joins the stage channel (voice egress — see §9).
 
 ## 6. Double-run protection
 
-The bot takes a lease (`locks/instance.json`) in the storage backend
+The bot takes a lease (`locks/instance.json`) in the **lease backend**
 before it connects to Discord:
 
 - a second instance refuses to start (`LeaseConflictError`) — the old host
-  and the Altare deployment can never process the same event twice;
-- the holder renews the lease every 20 s; a lease that cannot be renewed
-  (backend down, taken over) is reported and the instance shuts down;
-- the lease expires 60 s after the holder stops, so a crashed host does
+  and the Altare deployment can never process the same event at once;
+- every lease mutation is a compare-and-swap against the version the
+  holder read, so a takeover cannot be lost in a read-then-write window;
+- releasing *expires* the term instead of deleting the object, so a
+  release can never remove a term another instance just acquired;
+- the holder renews the term every 20 s; a term that cannot be renewed
+  (backend down, taken over) shuts the bot down with exit code 1 — the
+  bot never keeps running unowned;
+- the term expires 60 s after the holder stops, so a crashed host does
   not block the replacement forever.
+
+The lease is only as exclusive as the backend. The bot probes the backend
+at startup (`probeConditionalWrites`); a backend that does not enforce
+conditional writes stops the bot:
+
+```text
+the storage backend does not support conditional writes; the instance lease cannot be exclusive
+```
+
+`LEASE_ALLOW_UNCONDITIONAL=true` overrides that, but only after the
+backend's behaviour was verified by hand (§7.2).
 
 **Never run two instances deliberately.** The lease is a safety net, not
 an orchestrator.
 
 ## 7. Backup and restore
 
-Backup = a copy of the bucket. Altare does not schedule bucket copies, so
-use one of:
+### 7.1 The procedure (the tooling, not a checklist)
 
-- **U3 lifecycle** on a second bucket: not a copy, but a retention rule.
-- **Altare CLI / console**: copy the bucket objects into
-  `ido-bata-bot-backup` on a schedule (cron on any host with the bucket
-  credentials).
-- **Altare app Backups**: copies the *app files*, not the bucket — useful
-  for code, not for data.
-
-Recommended: a daily copy into the backup bucket plus a weekly
-`storage:migrate -- export` into cold storage.
-
-Restore:
+The primary bucket is the source of truth. A backup is a copy of it in a
+second bucket:
 
 ```sh
-STORAGE_BACKEND=u3 … bun run storage:migrate -- import --from ./migration-export --allow-overwrite
-STORAGE_BACKEND=u3 … bun run storage:migrate -- verify --from ./migration-export
+# 1. export the primary bucket
+export S3_BUCKET=ido-bata-bot
+bun run storage:migrate -- export --out ./backup-$(date +%F)
+
+# 2. import that export into the backup bucket
+export S3_BUCKET=ido-bata-bot-backup
+bun run storage:migrate -- import --from ./backup-$(date +%F)
+
+# 3. verify the backup bucket against the export
+bun run storage:migrate -- verify --from ./backup-$(date +%F)
 ```
 
+Step 3 must report zero missing and zero mismatched objects. Schedule
+steps 1–3 with cron on a host that holds the bucket credentials.
+
+### 7.2 Restore drill (run it before you need it)
+
+```sh
+# export the backup bucket
+export S3_BUCKET=ido-bata-bot-backup
+bun run storage:migrate -- export --out ./restore-drill
+
+# import it into an empty bucket and verify
+export S3_BUCKET=ido-bata-bot-restore-test
+bun run storage:migrate -- import --from ./restore-drill
+bun run storage:migrate -- verify --from ./restore-drill
+```
+
+The same drill runs as a regression test
+(`tests/storage-backup-restore.test.ts`), but the *real* bucket must be
+drilled once — the mock only proves the code path, not the backend.
+
+### 7.3 Restoring over a live store
+
+A restore writes the objects of the export into the target bucket. The
+deletion ledger is **merged**, never replaced (§7.4), and the recorded
+erasures are re-applied to the restored objects.
+
+### 7.4 The deletion ledger
+
+`privacy/deletions.json` records that a subject's data was erased. It
+holds an HMAC-SHA256 digest of the subject id, not the id itself.
+
+- `DELETION_LEDGER_KEY` must be configured **before** the first
+  `/privacy delete`, and the key must be kept in the secret manager.
+- Without the key the ledger stays empty: a restore of an old backup can
+  resurrect deleted data. The tool prints a warning in that case.
+- With the key, a restore re-applies every recorded erasure, so the
+  deleted subject does not come back even from an old backup.
+
+### 7.5 State snapshots
+
 State-snapshot bundles (`snapshots/` objects) are AES-256-GCM encrypted;
-restoring them needs `STATE_SNAPSHOT_ENCRYPTION_KEY`
-(`bun run restore:state -- --snapshot <key>`).
+restoring them needs `STATE_SNAPSHOT_ENCRYPTION_KEY`:
+
+```sh
+bun run restore:state -- --snapshot snapshots/20260401-030000.snap.enc
+```
 
 ## 8. Routine operations
 
@@ -171,6 +288,8 @@ restoring them needs `STATE_SNAPSHOT_ENCRYPTION_KEY`
 | Audit-key custodian lookup | `bun run anon:audit:lookup -- --key-file <private.pem> --dir anon-audit --message <id>` |
 | Audit-key custodian delete | `bun run anon:audit:delete -- --key-file <private.pem> --dir anon-audit --user <id>` |
 | Restore a state snapshot | `bun run restore:state -- --snapshot <key>` |
+| Check the deletion ledger | `altr u3 ls` the bucket, or export and read `privacy/deletions.json` |
+| Prove the backend enforces conditions | start the bot once with `STORAGE_BACKEND=u3` and look for the absence of the "does not support conditional writes" error, then run the drill in §7.2 |
 | Redeploy | push to the linked branch, or press *Deploy* — the data is unaffected |
 
 The custodian commands run **offline** with the RSA private key. They
@@ -188,6 +307,11 @@ credentials in the environment.
   goes through the storage port.
 - **Region pinning**: U3 buckets are pinned to a region; the app and the
   bucket should live in the same region to keep the round-trip short.
+- **A mock is not a proof of the backend**: the contract tests run against
+  an in-process S3-compatible mock. The exclusivity of the lease against
+  the *real* bucket must be shown by the drill in §7.2 and by the startup
+  probe — the bot refuses to start when the real backend does not enforce
+  conditional writes.
 - **Always Free limits**: 10 GB storage, 5 buckets, 3 million reads and
   300 000 writes per month for KV (unused by the bot), 4 servers per team.
   The bot's write volume (a grant, an attendance day, an audit record) is

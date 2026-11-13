@@ -20,6 +20,8 @@ export const STORAGE_KEYS = {
   config: "config.json",
   /** Consent registry — the authorization source of truth. */
   consent: "consent.json",
+  /** Ledger of completed privacy deletions (restores re-apply them). */
+  deletionLedger: "privacy/deletions.json",
   /** Per-guild operator configuration. */
   guildsDir: "guilds",
   /** Instance lease that prevents two bots from processing events at once. */

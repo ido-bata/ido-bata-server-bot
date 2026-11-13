@@ -55,7 +55,8 @@ Every persisted artefact of the bot goes through one port,
 `StorageDriver` (`src/lib/storage/types.ts`):
 
 ```text
-read / readText / write / writeExclusive / list / delete / exists / move
+read / readText / readVersioned / write / writeExclusive /
+compareAndSwap / list / delete / exists / move / probeConditionalWrites
 ```
 
 Two adapters implement it:
@@ -75,6 +76,10 @@ runs the same contract against both:
   overwrites — the audit records and the instance lease depend on it.
 - A missing key reads as `null`; **every other failure throws**. Callers
   treat a throw as "storage unavailable" and fail closed.
+- `compareAndSwap` writes only when the stored version still matches the
+  one the caller read; `probeConditionalWrites` reports whether the
+  backend can enforce conditions at all. The instance lease depends on
+  both — a backend without conditional writes stops the bot.
 
 Consumers (all of them): consent registry (`consent.json`), timekeeper
 attendance + session log, `/anon` audit records + custodian operation log,
@@ -88,11 +93,32 @@ locally, `consent.json` in the bucket — so a migration is a straight copy
 
 ### Instance lease
 
-`src/lib/storage/lease.ts` implements a single-instance guard: the bot
-creates `locks/instance.json` (create-if-absent) before it connects to
-Discord, renews it every TTL/3 and releases it on shutdown. A live lease
-held by another instance aborts the startup — the old host and the Altare
-deployment can therefore never process the same event twice.
+`src/lib/storage/lease.ts` implements a single-instance guard:
+
+- the lease object carries a monotonic `epoch` and a per-term `token`;
+- acquisition, renewal and release are **compare-and-swap** writes, so a
+  takeover cannot slip through a read-then-write window;
+- release *expires* the term instead of deleting the object — a delete
+  could remove a term another instance just acquired;
+- the backend is probed at startup; a backend that cannot enforce
+  conditional writes stops the bot (fail closed);
+- a lost lease shuts the bot down with exit code 1 — it never keeps
+  running unowned;
+- the lease backend is configured independently of the data backend
+  (`LEASE_STORAGE_BACKEND`), so the old host and the Altare deployment
+  contend for the *same* lease during a cutover.
+
+A live lease held by another instance aborts the startup — the old host
+and the Altare deployment can therefore never process the same event
+twice.
+
+### Deletion ledger
+
+`src/lib/storage/deletions.ts` records every privacy deletion as an
+HMAC-SHA256 digest of the subject id (`privacy/deletions.json`). The
+ledger is append-only: a restore merges it and re-applies the recorded
+erasures (`src/lib/storage/erasure.ts`), so restoring an old backup cannot
+resurrect data a user asked to forget.
 
 ## Container runtime
 

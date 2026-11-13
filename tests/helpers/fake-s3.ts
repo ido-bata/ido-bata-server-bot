@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -15,6 +16,8 @@ import type { AddressInfo } from "node:net";
  */
 export type FakeS3Object = {
   body: Buffer;
+  /** Content ETag, used by the conditional writes. */
+  etag: string;
   metadata: Record<string, string>;
   lastModified: Date;
 };
@@ -25,6 +28,19 @@ export type FakeS3Server = {
   objects: Map<string, FakeS3Object>;
   close: () => Promise<void>;
 };
+
+export type FakeS3Options = {
+  /**
+   * When false the server ignores `If-None-Match` / `If-Match`, like a
+   * backend that does not implement conditional writes. The lease probe
+   * must detect that and refuse to start.
+   */
+  conformant?: boolean;
+};
+
+function etagOf(body: Buffer): string {
+  return `"${createHash("sha256").update(body).digest("hex")}"`;
+}
 
 function escapeXml(value: string): string {
   return value
@@ -42,8 +58,12 @@ async function readBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-export async function startFakeS3Server(bucket = "test-bucket"): Promise<FakeS3Server> {
+export async function startFakeS3Server(
+  bucket = "test-bucket",
+  options: FakeS3Options = {},
+): Promise<FakeS3Server> {
   const objects = new Map<string, FakeS3Object>();
+  const conformant = options.conformant ?? true;
 
   const server: Server = createServer((request, response) => {
     void handle(request, response).catch(() => {
@@ -57,17 +77,18 @@ export async function startFakeS3Server(bucket = "test-bucket"): Promise<FakeS3S
     const path = decodeURIComponent(url.pathname.replace(/^\//, ""));
     const [bucket, ...rest] = path.split("/");
     const key = rest.join("/");
+    const objectKey = `${bucket}/${key}`;
 
     if (request.method === "GET" && key === "") {
       // ListObjectsV2
       const prefix = url.searchParams.get("prefix") ?? "";
       const matches = [...objects.entries()]
-        .filter(([objectKey]) => objectKey.startsWith(prefix))
+        .filter(([storedKey]) => storedKey.startsWith(`${bucket}/${prefix}`))
         .sort(([left], [right]) => left.localeCompare(right));
       const contents = matches
         .map(
-          ([objectKey, object]) =>
-            `<Contents><Key>${escapeXml(objectKey)}</Key><LastModified>${object.lastModified.toISOString()}</LastModified><ETag>&quot;${object.body.length.toString(16)}&quot;</ETag><Size>${object.body.length}</Size><StorageClass>STANDARD</StorageClass></Contents>`,
+          ([storedKey, object]) =>
+            `<Contents><Key>${escapeXml(storedKey.slice(`${bucket}/`.length))}</Key><LastModified>${object.lastModified.toISOString()}</LastModified><ETag>${escapeXml(object.etag)}</ETag><Size>${object.body.length}</Size><StorageClass>STANDARD</StorageClass></Contents>`,
         )
         .join("");
       response.statusCode = 200;
@@ -78,12 +99,6 @@ export async function startFakeS3Server(bucket = "test-bucket"): Promise<FakeS3S
       return;
     }
 
-    if (bucket !== "test-bucket") {
-      response.statusCode = 404;
-      response.end("<Error><Code>NoSuchBucket</Code></Error>");
-      return;
-    }
-
     if (request.method === "PUT") {
       const copySource = request.headers["x-amz-copy-source"];
       if (typeof copySource === "string") {
@@ -91,30 +106,42 @@ export async function startFakeS3Server(bucket = "test-bucket"): Promise<FakeS3S
         const sourceKey = decodeURIComponent(copySource)
           .replace(/^\//, "")
           .replace(new RegExp(`^${bucket}/`), "");
-        const source = objects.get(sourceKey);
+        const source = objects.get(`${bucket}/${sourceKey}`);
         if (!source) {
           response.statusCode = 404;
           response.end("<Error><Code>NoSuchKey</Code></Error>");
           return;
         }
-        objects.set(key, {
+        objects.set(objectKey, {
           body: source.body,
+          etag: source.etag,
           lastModified: new Date(),
           metadata: { ...source.metadata },
         });
         response.statusCode = 200;
         response.setHeader("Content-Type", "application/xml");
         response.end(
-          `<?xml version="1.0" encoding="UTF-8"?><CopyObjectResult><ETag>&quot;${source.body.length.toString(16)}&quot;</ETag></CopyObjectResult>`,
+          `<?xml version="1.0" encoding="UTF-8"?><CopyObjectResult><ETag>&quot;${source.etag}&quot;</ETag></CopyObjectResult>`,
         );
         return;
       }
       const body = await readBody(request);
       const ifNoneMatch = request.headers["if-none-match"];
-      if (ifNoneMatch === "*" && objects.has(key)) {
-        response.statusCode = 412;
-        response.end("<Error><Code>PreconditionFailed</Code></Error>");
-        return;
+      const ifMatch = request.headers["if-match"];
+      if (conformant) {
+        if (ifNoneMatch === "*" && objects.has(objectKey)) {
+          response.statusCode = 412;
+          response.end("<Error><Code>PreconditionFailed</Code></Error>");
+          return;
+        }
+        if (typeof ifMatch === "string") {
+          const current = objects.get(objectKey);
+          if (!current || current.etag !== ifMatch) {
+            response.statusCode = 412;
+            response.end("<Error><Code>PreconditionFailed</Code></Error>");
+            return;
+          }
+        }
       }
       const metadata: Record<string, string> = {};
       for (const [header, value] of Object.entries(request.headers)) {
@@ -122,22 +149,22 @@ export async function startFakeS3Server(bucket = "test-bucket"): Promise<FakeS3S
           metadata[header.slice("x-amz-meta-".length)] = value;
         }
       }
-      objects.set(key, { body, lastModified: new Date(), metadata });
+      objects.set(objectKey, { body, etag: etagOf(body), lastModified: new Date(), metadata });
       response.statusCode = 200;
-      response.setHeader("ETag", `"${body.length.toString(16)}"`);
+      response.setHeader("ETag", etagOf(body));
       response.end();
       return;
     }
 
     if (request.method === "GET" || request.method === "HEAD") {
-      const object = objects.get(key);
+      const object = objects.get(objectKey);
       if (!object) {
         response.statusCode = 404;
         response.end("<Error><Code>NoSuchKey</Code></Error>");
         return;
       }
       response.statusCode = 200;
-      response.setHeader("ETag", `"${object.body.length.toString(16)}"`);
+      response.setHeader("ETag", object.etag);
       response.setHeader("Last-Modified", object.lastModified.toUTCString());
       for (const [name, value] of Object.entries(object.metadata)) {
         response.setHeader(`x-amz-meta-${name}`, value);
@@ -151,7 +178,7 @@ export async function startFakeS3Server(bucket = "test-bucket"): Promise<FakeS3S
     }
 
     if (request.method === "DELETE") {
-      objects.delete(key);
+      objects.delete(objectKey);
       response.statusCode = 204;
       response.end();
       return;

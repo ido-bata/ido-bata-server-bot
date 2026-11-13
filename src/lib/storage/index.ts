@@ -10,6 +10,13 @@
  *   / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`; the `U3_*` aliases are
  *   accepted for operators who prefer them.
  *
+ * The instance lease uses its own configuration (`LEASE_STORAGE_BACKEND` and
+ * the `LEASE_*` overrides). During a migration cutover the old host must
+ * contend for the *same* lease object as the new deployment even while its
+ * data still lives on the local disk — a lease inside the local `data/`
+ * directory would be invisible to the Altare instance and would not
+ * prevent a double run.
+ *
  * See ADR-0004 for why object storage — not the app's local disk — is the
  * source of truth on Altare.
  */
@@ -92,6 +99,75 @@ export function readStorageConfig(env: NodeJS.ProcessEnv = process.env): Storage
   throw new Error(`unknown STORAGE_BACKEND: ${backend} (expected "local" or "u3")`);
 }
 
+/**
+ * Parse the lease configuration. It defaults to the data configuration, so
+ * a deployment that does not care about the cutover needs no extra
+ * variables.
+ */
+export function readLeaseConfig(env: NodeJS.ProcessEnv = process.env): StorageConfig {
+  const leaseBackend = firstNonEmpty(env.LEASE_STORAGE_BACKEND);
+  if (!leaseBackend) {
+    return readStorageConfig(env);
+  }
+  const backend = leaseBackend.toLowerCase();
+  if (backend === "local") {
+    return {
+      backend: "local",
+      root:
+        firstNonEmpty(env.LEASE_DATA_DIR) ?? firstNonEmpty(env.DATA_DIR) ?? `${process.cwd()}/data`,
+    };
+  }
+  if (backend === "u3") {
+    const bucket = firstNonEmpty(
+      env.LEASE_S3_BUCKET,
+      env.LEASE_U3_BUCKET,
+      env.S3_BUCKET,
+      env.U3_BUCKET,
+    );
+    const accessKeyId = firstNonEmpty(
+      env.LEASE_AWS_ACCESS_KEY_ID,
+      env.LEASE_U3_ACCESS_KEY_ID,
+      env.AWS_ACCESS_KEY_ID,
+      env.U3_ACCESS_KEY_ID,
+    );
+    const secretAccessKey = firstNonEmpty(
+      env.LEASE_AWS_SECRET_ACCESS_KEY,
+      env.LEASE_U3_SECRET_ACCESS_KEY,
+      env.AWS_SECRET_ACCESS_KEY,
+      env.U3_SECRET_ACCESS_KEY,
+    );
+    if (!bucket) {
+      throw new Error("lease backend 'u3' requires LEASE_S3_BUCKET (or S3_BUCKET)");
+    }
+    if (!accessKeyId || !secretAccessKey) {
+      throw new Error(
+        "lease backend 'u3' requires LEASE_AWS_ACCESS_KEY_ID and LEASE_AWS_SECRET_ACCESS_KEY (or the S3_* fallbacks)",
+      );
+    }
+    return {
+      accessKeyId,
+      backend: "u3",
+      bucket,
+      endpoint: firstNonEmpty(
+        env.LEASE_S3_ENDPOINT,
+        env.LEASE_U3_ENDPOINT,
+        env.S3_ENDPOINT,
+        env.U3_ENDPOINT,
+      ),
+      prefix: firstNonEmpty(env.LEASE_S3_PREFIX, env.LEASE_U3_PREFIX, env.S3_PREFIX, env.U3_PREFIX),
+      region: firstNonEmpty(env.LEASE_S3_REGION, env.LEASE_U3_REGION, env.S3_REGION, env.U3_REGION),
+      secretAccessKey,
+      sessionToken: firstNonEmpty(
+        env.LEASE_AWS_SESSION_TOKEN,
+        env.LEASE_U3_SESSION_TOKEN,
+        env.AWS_SESSION_TOKEN,
+        env.U3_SESSION_TOKEN,
+      ),
+    };
+  }
+  throw new Error(`unknown LEASE_STORAGE_BACKEND: ${backend} (expected "local" or "u3")`);
+}
+
 /** Build the storage driver described by `config`. */
 export function createStorageDriverFromConfig(config: StorageConfig): StorageDriver {
   if (config.backend === "local") {
@@ -114,7 +190,17 @@ export function createStorageDriver(env: NodeJS.ProcessEnv = process.env): Stora
   return createStorageDriverFromConfig(readStorageConfig(env));
 }
 
+/**
+ * Build the driver that holds the instance lease. It is configured
+ * independently of the data backend so that two hosts can contend for the
+ * same lease during a cutover.
+ */
+export function createLeaseDriver(env: NodeJS.ProcessEnv = process.env): StorageDriver {
+  return createStorageDriverFromConfig(readLeaseConfig(env));
+}
+
 let activeDriver: StorageDriver | null = null;
+let activeLeaseDriver: StorageDriver | null = null;
 
 /**
  * The process-wide storage driver. Created lazily from the environment so
@@ -130,4 +216,12 @@ export function getStorageDriver(): StorageDriver {
 /** Override the process-wide driver (tests, migration tooling). */
 export function setStorageDriver(driver: StorageDriver | null): void {
   activeDriver = driver;
+}
+
+/** The driver that holds the instance lease. */
+export function getLeaseDriver(): StorageDriver {
+  if (!activeLeaseDriver) {
+    activeLeaseDriver = createLeaseDriver();
+  }
+  return activeLeaseDriver;
 }

@@ -1,4 +1,9 @@
-import type { StorageDriver, StorageEntry } from "../../src/lib/storage/types.js";
+import type {
+  CompareAndSwapResult,
+  StorageDriver,
+  StorageEntry,
+  VersionedObject,
+} from "../../src/lib/storage/types.js";
 
 export type MemoryDriver = StorageDriver & {
   /** Raw object contents, keyed by storage key. */
@@ -28,6 +33,25 @@ export function createMemoryDriver(initial: Record<string, string> = {}): Memory
     async readText(key) {
       const value = files.get(key);
       return value === undefined ? null : value;
+    },
+
+    async readVersioned(key): Promise<VersionedObject | null> {
+      const value = files.get(key);
+      if (value === undefined) {
+        return null;
+      }
+      const data = new TextEncoder().encode(value);
+      return { data, version: `v${data.length}-${value.length}` };
+    },
+
+    async compareAndSwap(key, data, expectedVersion): Promise<CompareAndSwapResult> {
+      const current = files.get(key);
+      const currentVersion = current === undefined ? null : `v${current.length}-${current.length}`;
+      if (currentVersion !== expectedVersion) {
+        return "conflict";
+      }
+      files.set(key, typeof data === "string" ? data : new TextDecoder().decode(data));
+      return "written";
     },
 
     async write(key, data) {
@@ -63,6 +87,10 @@ export function createMemoryDriver(initial: Record<string, string> = {}): Memory
 
     async exists(key) {
       return files.has(key);
+    },
+
+    async probeConditionalWrites() {
+      return true;
     },
 
     async move(from, to) {

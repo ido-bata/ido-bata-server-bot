@@ -76,11 +76,13 @@ import {
   getRootLogger,
   subscribe as subscribeLogger,
 } from "./lib/logger/index.js";
-import { getStorageDriver } from "./lib/storage/index.js";
+import { getLeaseDriver } from "./lib/storage/index.js";
 import {
   acquireInstanceLease,
   type InstanceLease,
   LeaseConflictError,
+  LeaseUnsupportedError,
+  probeConditionalWriteSupport,
 } from "./lib/storage/lease.js";
 import { createRuntimeStatusStore } from "./runtime/status-store.js";
 import { mountTui, resolveTuiMode } from "./tui/render.jsx";
@@ -333,7 +335,7 @@ async function main(): Promise<void> {
   const configStore = registerConfigHotReload({
     filePath: join(process.cwd(), "data", "config.json"),
   });
-  registerShutdownHandler(
+  const shutdownRunner = registerShutdownHandler(
     client,
     {
       onAfterTeardown: async () => {
@@ -610,12 +612,41 @@ async function main(): Promise<void> {
     });
   }
 
-  // Single-instance guard (ADR-0004): the lease lives in the storage
-  // backend, so a second bot — the old host during a migration cutover,
-  // or a duplicated Altare deployment — refuses to start instead of
-  // processing the same events twice.
+  // Single-instance guard (ADR-0004): the lease lives in a storage backend
+  // that both hosts share, so a second bot — the old host during a
+  // migration cutover, or a duplicated Altare deployment — refuses to
+  // start instead of processing the same events twice.
+  const leaseDriver = getLeaseDriver();
+  const conditionalWrites = await probeConditionalWriteSupport(leaseDriver);
+  if (!conditionalWrites && process.env.LEASE_ALLOW_UNCONDITIONAL !== "true") {
+    // The lease's exclusivity depends on conditional writes. Without them
+    // two instances could both believe they own the lease, so the bot
+    // refuses to start (fail closed) instead of pretending to be safe.
+    rootLogger.error(
+      { backend: leaseDriver.kind },
+      "the storage backend does not support conditional writes; the instance lease cannot be exclusive. " +
+        "Set LEASE_ALLOW_UNCONDITIONAL=true only after verifying the backend's behaviour manually.",
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (!conditionalWrites) {
+    rootLogger.warn(
+      { backend: leaseDriver.kind },
+      "conditional writes are unavailable; the lease falls back to read-back verification (LEASE_ALLOW_UNCONDITIONAL=true)",
+    );
+  }
+
   try {
-    lease = await acquireInstanceLease({ driver: getStorageDriver() });
+    lease = await acquireInstanceLease({
+      driver: leaseDriver,
+      // Losing the lease means another instance owns the runtime: stop
+      // instead of processing events unowned.
+      onLost: (error) => {
+        rootLogger.error({ err: error }, "storage lease lost; shutting the bot down");
+        void shutdownRunner.run("LEASE_LOST");
+      },
+    });
   } catch (error) {
     if (error instanceof LeaseConflictError) {
       // Fail closed: a second instance must never process the same
@@ -627,9 +658,17 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
+    if (error instanceof LeaseUnsupportedError) {
+      rootLogger.error(
+        { err: error },
+        "the storage backend cannot hold an exclusive lease; refusing to start",
+      );
+      process.exitCode = 1;
+      return;
+    }
     throw error;
   }
-  rootLogger.info({ holderId: lease.holderId }, "storage lease acquired");
+  rootLogger.info({ epoch: lease.epoch, holderId: lease.holderId }, "storage lease acquired");
 
   await client.login(config.discordToken);
 }

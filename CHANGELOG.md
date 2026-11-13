@@ -33,6 +33,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   inventory, bucket provisioning, app configuration, cutover, backup and
   restore, and the known constraints (voice egress, app-disk cache
   semantics, Always Free limits).
+- **Compare-and-swap in the storage port**: `readVersioned`,
+  `compareAndSwap` and `probeConditionalWrites` give the backends a
+  conditional write, which the instance lease needs to be exclusive.
+- **Deletion ledger**: `privacy/deletions.json` records every privacy
+  deletion as an HMAC-SHA256 digest of the subject id. A restore merges the
+  ledger and re-applies the recorded erasures, so an old backup cannot
+  resurrect data a user asked to forget.
+- **Restore drill**: the backup procedure (export → import → verify) is
+  executable with the migration tooling and rehearsed as a regression test.
 
 ### Changed
 
@@ -42,6 +51,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   state-snapshot bundles, birthday registry, polls, reminders, scheduled
   announcements, per-guild configuration, calendar configuration and cache,
   and hot-reload configuration. The on-disk format is unchanged.
+- **Instance lease hardening** (independent review): every lease mutation
+  is a compare-and-swap, releasing expires the term instead of deleting
+  the object, the backend is probed for conditional-write support (the bot
+  refuses to start without it), a lost lease shuts the bot down with exit
+  code 1, and the lease backend is configured independently
+  (`LEASE_STORAGE_BACKEND`) so the old host and the new deployment contend
+  for the same lease during a cutover.
 
 ## [0.2.0] — 2026-09-21
 

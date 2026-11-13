@@ -6,15 +6,30 @@
  * slash commands, both run the timekeeper session and both write the
  * consent registry — the last writer wins and records get lost.
  *
- * The lease lives in the same storage backend as the data, so it survives a
- * restart or redeploy and still blocks the second instance:
+ * The lease lives in a storage backend, so it survives a restart or a
+ * redeploy and still blocks the second instance. The backend is configured
+ * independently of the data backend (`LEASE_STORAGE_BACKEND`), because the
+ * old host must contend for the *same* lease object as the new one even
+ * while its data still lives on the local disk.
  *
- * - Acquisition uses `writeExclusive`, so only one instance can create it.
- * - A live lease held by a different holder aborts startup (fail closed).
- * - The holder renews the lease every TTL/3; a lease that cannot be
- *   renewed (backend down, lease taken over) is reported through
- *   `onLost` so the caller can shut the bot down instead of running
- *   unowned.
+ * Ownership rules:
+ *
+ * - The lease object carries a monotonically increasing `epoch` and a
+ *   per-term random `token`. Only the holder that wrote the current epoch
+ *   may renew or release it.
+ * - Every mutation is a compare-and-swap against the version of the object
+ *   the caller read (`compareAndSwap`). A lost race reports `conflict`
+ *   instead of overwriting the other holder's term.
+ * - A backend that cannot do conditional writes is reported as
+ *   `unsupported`; the lease then refuses to start (fail closed) instead of
+ *   pretending to be exclusive.
+ * - Releasing *expires* the term instead of deleting the object. A delete
+ *   could remove a lease that another instance acquired in the meantime;
+ *   an expired term can only be taken over through the same
+ *   compare-and-swap, so the race is closed.
+ * - A holder that cannot renew (backend down, term taken over) reports the
+ *   loss through `onLost`; the composition root shuts the bot down instead
+ *   of running unowned.
  */
 
 import { randomBytes } from "node:crypto";
@@ -29,10 +44,14 @@ export const DEFAULT_LEASE_TTL_MS = 60_000;
 export type LeasePayload = {
   /** Identity of the owning process. */
   holderId: string;
-  /** ISO timestamp of the acquisition. */
+  /** Monotonic term counter. A takeover increments it. */
+  epoch: number;
+  /** ISO timestamp of the acquisition of this term. */
   acquiredAt: string;
-  /** ISO timestamp after which the lease may be taken over. */
+  /** ISO timestamp after which the term may be taken over. */
   expiresAt: string;
+  /** Random secret proving ownership of this term. */
+  token: string;
 };
 
 export class LeaseConflictError extends Error {
@@ -49,16 +68,37 @@ export class LeaseConflictError extends Error {
   }
 }
 
+/** The backend cannot provide the exclusivity the lease needs. */
+export class LeaseUnsupportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LeaseUnsupportedError";
+  }
+}
+
+/** The lease was taken over by another instance. */
+export class LeaseLostError extends Error {
+  readonly holderId: string;
+
+  constructor(holderId: string) {
+    super(`the storage lease was taken over by another instance (holder=${holderId})`);
+    this.name = "LeaseLostError";
+    this.holderId = holderId;
+  }
+}
+
 export type InstanceLease = {
   /** Storage key of the lease object. */
   key: string;
   /** Identity of the owning process. */
   holderId: string;
-  /** Expiry of the current lease term, epoch milliseconds. */
+  /** The term this instance owns. */
+  epoch: number;
+  /** Expiry of the current term, epoch milliseconds. */
   expiresAtMs: number;
-  /** Extend the lease. Throws when the lease was taken over. */
+  /** Extend the term. Throws `LeaseLostError` when the term was taken over. */
   renew: () => Promise<void>;
-  /** Release the lease (best effort — safe to call twice). */
+  /** Expire the term (best effort — safe to call twice). */
   release: () => Promise<void>;
 };
 
@@ -80,31 +120,38 @@ export function defaultHolderId(): string {
   return `${hostname()}:${process.pid}:${randomBytes(4).toString("hex")}`;
 }
 
-async function readLease(driver: StorageDriver, key: string): Promise<LeasePayload | null> {
-  const raw = await driver.readText(key);
-  if (raw === null) {
-    return null;
-  }
+function parseLease(raw: string): LeasePayload | null {
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as Partial<LeasePayload>;
-    if (typeof parsed.holderId !== "string" || typeof parsed.expiresAt !== "string") {
-      return null;
-    }
-    return {
-      acquiredAt: typeof parsed.acquiredAt === "string" ? parsed.acquiredAt : "",
-      expiresAt: parsed.expiresAt,
-      holderId: parsed.holderId,
-    };
+    parsed = JSON.parse(raw);
   } catch {
-    // A corrupt lease is treated as "unknown owner". Callers treat it as a
-    // conflict rather than assuming the lease is free.
     return null;
   }
+  if (typeof parsed !== "object" || parsed === null) {
+    return null;
+  }
+  const candidate = parsed as Partial<LeasePayload>;
+  if (
+    typeof candidate.holderId !== "string" ||
+    typeof candidate.expiresAt !== "string" ||
+    typeof candidate.token !== "string" ||
+    typeof candidate.epoch !== "number"
+  ) {
+    return null;
+  }
+  return {
+    acquiredAt: typeof candidate.acquiredAt === "string" ? candidate.acquiredAt : "",
+    epoch: candidate.epoch,
+    expiresAt: candidate.expiresAt,
+    holderId: candidate.holderId,
+    token: candidate.token,
+  };
 }
 
 /**
  * Acquire the instance lease. Throws `LeaseConflictError` when another
- * instance currently holds it.
+ * instance currently holds it, and `LeaseUnsupportedError` when the
+ * backend cannot guarantee exclusivity.
  */
 export async function acquireInstanceLease(options: AcquireLeaseOptions): Promise<InstanceLease> {
   const driver = options.driver;
@@ -113,46 +160,86 @@ export async function acquireInstanceLease(options: AcquireLeaseOptions): Promis
   const ttlMs = options.ttlMs ?? DEFAULT_LEASE_TTL_MS;
   const now = options.now ?? (() => Date.now());
 
-  const buildPayload = (): LeasePayload => ({
+  const buildPayload = (epoch: number): LeasePayload => ({
     acquiredAt: new Date(now()).toISOString(),
+    epoch,
     expiresAt: new Date(now() + ttlMs).toISOString(),
     holderId,
+    token: randomBytes(16).toString("hex"),
   });
 
-  const created = await driver.writeExclusive(key, JSON.stringify(buildPayload()));
-  if (!created) {
-    const current = await readLease(driver, key);
-    const expiry = current ? Date.parse(current.expiresAt) : Number.NaN;
-    const live = current !== null && Number.isFinite(expiry) && expiry > now();
-    if (live && current) {
-      throw new LeaseConflictError(current.holderId, current.expiresAt);
-    }
-    // The previous owner is gone (expired lease or an unreadable lease
-    // object). Remove it and try once more; a losing racer sees the new
-    // lease and fails with a conflict.
-    await driver.delete(key);
-    const retried = await driver.writeExclusive(key, JSON.stringify(buildPayload()));
-    if (!retried) {
-      const winner = await readLease(driver, key);
-      throw new LeaseConflictError(
-        winner?.holderId ?? "unknown",
-        winner?.expiresAt ?? new Date(now()).toISOString(),
-      );
-    }
+  // The exclusivity of the lease depends on conditional writes. Probe the
+  // backend before handing out a term: a backend that ignores the
+  // conditions would let two instances believe they own the lease.
+  const conditionalWrites = await probeConditionalWriteSupport(driver);
+  if (!conditionalWrites) {
+    throw new LeaseUnsupportedError(
+      "the storage backend does not support conditional writes; the instance lease cannot be exclusive",
+    );
+  }
+
+  const current = await driver.readVersioned(key);
+  const currentLease = current ? parseLease(new TextDecoder().decode(current.data)) : null;
+
+  if (currentLease && Date.parse(currentLease.expiresAt) > now()) {
+    throw new LeaseConflictError(currentLease.holderId, currentLease.expiresAt);
+  }
+
+  const epoch = (currentLease?.epoch ?? 0) + 1;
+  const result = await driver.compareAndSwap(
+    key,
+    JSON.stringify(buildPayload(epoch)),
+    current?.version ?? null,
+  );
+  if (result === "unsupported") {
+    throw new LeaseUnsupportedError(
+      `the storage backend cannot perform conditional writes; the instance lease cannot be exclusive (key=${key})`,
+    );
+  }
+  if (result === "conflict") {
+    // Another instance won the race. Report whoever holds it now.
+    const winner = await driver.readVersioned(key);
+    const winnerLease = winner ? parseLease(new TextDecoder().decode(winner.data)) : null;
+    throw new LeaseConflictError(
+      winnerLease?.holderId ?? "unknown",
+      winnerLease?.expiresAt ?? new Date(now()).toISOString(),
+    );
   }
 
   let expiresAtMs = now() + ttlMs;
+  let token = "";
   let released = false;
 
+  const readOwned = async (): Promise<{ lease: LeasePayload; version: string | null } | null> => {
+    const stored = await driver.readVersioned(key);
+    if (!stored) {
+      return null;
+    }
+    const lease = parseLease(new TextDecoder().decode(stored.data));
+    if (!lease || lease.holderId !== holderId || lease.token !== token) {
+      return null;
+    }
+    return { lease, version: stored.version };
+  };
+
   const renew = async (): Promise<void> => {
-    const current = await readLease(driver, key);
-    if (!current || current.holderId !== holderId) {
-      throw new Error(
-        `storage lease was taken over by another instance (holder=${current?.holderId ?? "unknown"})`,
+    const owned = await readOwned();
+    if (!owned) {
+      const stored = await driver.readVersioned(key);
+      const lease = stored ? parseLease(new TextDecoder().decode(stored.data)) : null;
+      throw new LeaseLostError(lease?.holderId ?? "unknown");
+    }
+    const payload = buildPayload(owned.lease.epoch);
+    const swap = await driver.compareAndSwap(key, JSON.stringify(payload), owned.version ?? null);
+    if (swap === "unsupported") {
+      throw new LeaseUnsupportedError(
+        "the storage backend cannot perform conditional writes; the lease cannot be renewed safely",
       );
     }
-    const payload = buildPayload();
-    await driver.write(key, JSON.stringify(payload));
+    if (swap === "conflict") {
+      throw new LeaseLostError("unknown");
+    }
+    token = payload.token;
     expiresAtMs = now() + ttlMs;
   };
 
@@ -179,20 +266,44 @@ export async function acquireInstanceLease(options: AcquireLeaseOptions): Promis
     released = true;
     clearInterval(timer);
     try {
-      const current = await readLease(driver, key);
-      if (current && current.holderId === holderId) {
-        await driver.delete(key);
+      const owned = await readOwned();
+      if (!owned) {
+        // Somebody else owns the term now — never touch it.
+        return;
       }
+      // Expire the term instead of deleting the object: a delete could
+      // remove a lease another instance acquired in the meantime.
+      const expired = {
+        ...owned.lease,
+        expiresAt: new Date(now()).toISOString(),
+      };
+      await driver.compareAndSwap(key, JSON.stringify(expired), owned.version ?? null);
     } catch {
-      // Releasing is best effort: the lease expires on its own.
+      // Releasing is best effort: the term expires on its own.
     }
   };
 
+  // Read back the term we just wrote so the token matches what is stored.
+  const stored = await driver.readVersioned(key);
+  const storedLease = stored ? parseLease(new TextDecoder().decode(stored.data)) : null;
+  token = storedLease?.token ?? "";
+
   return {
+    epoch,
     expiresAtMs,
     holderId,
     key,
     release,
     renew,
   };
+}
+
+/**
+ * Probe whether the backend honours conditional writes.
+ *
+ * The lease's exclusivity depends on it, so the answer decides whether the
+ * bot may start at all. The probe object is removed afterwards.
+ */
+export async function probeConditionalWriteSupport(driver: StorageDriver): Promise<boolean> {
+  return driver.probeConditionalWrites();
 }
