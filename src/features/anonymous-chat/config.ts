@@ -37,6 +37,16 @@ const DEFAULT_MAX_MESSAGE_LENGTH = 1000;
 const DEFAULT_AUDIT_DIR = "data/anon-audit";
 const DEFAULT_AUDIT_RETENTION_DAYS = 90;
 
+/**
+ * Resolve the audit directory from raw env input — trim, and fall
+ * back to the default for missing/blank values. Shared by the writer
+ * config and the privacy consumer so both always inspect the same
+ * directory the writer uses.
+ */
+export function resolveAnonAuditDir(raw: string | undefined): string {
+  return raw?.trim() || DEFAULT_AUDIT_DIR;
+}
+
 export type AnonConfigEnv = {
   ANON_DENY_CHANNEL_IDS?: string;
   ANON_COOLDOWN_SECONDS?: string;
@@ -81,7 +91,7 @@ function resolveAudit(env: AnonConfigEnv): { audit: AnonAuditConfig | null; warn
   return {
     audit: {
       publicKey,
-      dir: env.ANON_AUDIT_DIR?.trim() || DEFAULT_AUDIT_DIR,
+      dir: resolveAnonAuditDir(env.ANON_AUDIT_DIR),
       retentionDays: parsePositiveInt(env.ANON_AUDIT_RETENTION_DAYS, DEFAULT_AUDIT_RETENTION_DAYS),
     },
     // The removed HMAC index key is meaningless now — warn so operators
