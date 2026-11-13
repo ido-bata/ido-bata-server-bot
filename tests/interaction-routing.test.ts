@@ -4,6 +4,7 @@ import type { BotConfig } from "../src/config.js";
 import type { AnonymousChatService } from "../src/features/anonymous-chat/service.js";
 import { birthdayRoleConfig } from "../src/features/birthday-role/config.js";
 import { registerBirthdayRoleHandlers } from "../src/features/birthday-role/service.js";
+import { createInMemoryBirthdayStorage } from "../src/features/birthday-role/storage.js";
 import { bindDiscordCalendarCommands } from "../src/features/ical-calendar/discord.js";
 import type { CalendarService } from "../src/features/ical-calendar/service.js";
 import { registerPollHandlers } from "../src/features/poll/handler.js";
@@ -109,14 +110,21 @@ function createInteraction(client: Client, spec: InteractionSpec, responses: Rec
     editReply: record("editReply"),
     update: record("update"),
     followUp: record("followUp"),
-    deferReply: async () => ({}),
+    deferReply: record("deferReply"),
   };
 }
 
-function contentResponses(responses: RecordedResponse[]): RecordedResponse[] {
+// A "visible" response is anything the user can see: a text content, an
+// embed, or components. `deferReply` is recorded but never counts —
+// it is an acknowledgement, not an answer.
+function visibleResponses(responses: RecordedResponse[]): RecordedResponse[] {
   return responses.filter((entry) => {
-    const content = entry.options.content;
-    return typeof content === "string" && content.length > 0;
+    const { content, embeds, components } = entry.options;
+    return (
+      (typeof content === "string" && content.length > 0) ||
+      (Array.isArray(embeds) && embeds.length > 0) ||
+      (Array.isArray(components) && components.length > 0)
+    );
   });
 }
 
@@ -147,8 +155,14 @@ function registerAllHandlers() {
     consent: { authorize: async () => ({ ok: true }) },
   });
   registerReminder(client);
+  const birthdayConfig = {
+    ...birthdayRoleConfig,
+    guildId: "guild-1",
+    roleId: "role-birthday",
+  };
   registerBirthdayRoleHandlers(client, {
-    config: { ...birthdayRoleConfig, guildId: "guild-1", roleId: "role-birthday" },
+    config: birthdayConfig,
+    deps: { config: birthdayConfig, storage: createInMemoryBirthdayStorage() },
   });
   bindDiscordCalendarCommands(client, {} as CalendarService).bind();
 
@@ -163,9 +177,11 @@ async function dispatch(
   const responses: RecordedResponse[] = [];
   const interaction = createInteraction(client, spec, responses);
 
-  for (const listener of listeners) {
-    await listener(interaction);
-  }
+  // discord.js invokes every listener synchronously without awaiting
+  // them, so handlers run concurrently. Mirror that: start them all
+  // first, then await whatever each returned.
+  const pending = listeners.map((listener) => listener(interaction));
+  await Promise.all(pending.map((result) => Promise.resolve(result)));
 
   // Some listeners (e.g. poll) are fire-and-forget: they return before
   // their async handler finishes. Drain the microtask queue so late
@@ -234,6 +250,12 @@ describe("interaction routing across all registered handlers", () => {
       expectedContent: "Poll を作成しました。",
     },
     {
+      commandName: "/birthday",
+      spec: { commandName: "birthday", subcommand: "remove" },
+      ownerName: "birthday-role",
+      expectedContent: "誕生日は登録されていません。",
+    },
+    {
       commandName: "/help",
       spec: { commandName: "help" },
       ownerName: "slash-commands",
@@ -244,7 +266,7 @@ describe("interaction routing across all registered handlers", () => {
   for (const { commandName, spec, ownerName, expectedContent } of cases) {
     it(`${commandName} is answered exactly once by ${ownerName}`, async () => {
       const responses = await dispatch(listeners, client, spec);
-      const contents = contentResponses(responses);
+      const contents = visibleResponses(responses);
 
       expect(contents).toHaveLength(1);
 
@@ -263,7 +285,8 @@ describe("interaction routing across all registered handlers", () => {
       commandName: "definitely-not-a-command",
     });
 
-    expect(contentResponses(responses)).toHaveLength(0);
+    // Not even an acknowledgement (deferReply) may be recorded.
+    expect(responses).toHaveLength(0);
   });
 
   it("does not answer non-chat-input interactions", async () => {
@@ -272,7 +295,7 @@ describe("interaction routing across all registered handlers", () => {
       isChatInputCommand: false,
     });
 
-    expect(contentResponses(responses)).toHaveLength(0);
+    expect(responses).toHaveLength(0);
   });
 
   it("does not answer button interactions it does not own", async () => {
@@ -283,6 +306,6 @@ describe("interaction routing across all registered handlers", () => {
       customId: "unrelated:component:1",
     });
 
-    expect(contentResponses(responses)).toHaveLength(0);
+    expect(responses).toHaveLength(0);
   });
 });
