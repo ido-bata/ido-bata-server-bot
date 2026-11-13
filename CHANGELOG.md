@@ -11,6 +11,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Fixed** — bug fixes
 - **Security** — vulnerability fixes
 
+## [Unreleased]
+
+### Added
+
+- **Storage port and U3 backend (#121)**: `src/lib/storage/` defines the
+  `StorageDriver` port with two adapters — `LocalFileStorage` (files under
+  `data/`, the previous behaviour) and `U3Storage` (S3-compatible object
+  storage, the source of truth on Altare). `STORAGE_BACKEND=local|u3`
+  selects the backend; the storage layout is identical in both, so a
+  migration is a straight copy.
+- **Instance lease**: the bot takes `locks/instance.json` (create-if-absent)
+  before it connects to Discord and renews it while it runs. A live lease
+  held by another instance aborts the startup, so the old host and the
+  Altare deployment cannot process the same event twice.
+- **Migration tooling**: `bun run storage:migrate -- export|import|verify`
+  moves the persisted state between the local `data/` directory and the
+  configured backend, verifying per-object size + sha256. The source is
+  never deleted.
+- **Operational runbook**: `docs/operations/altare-migration.md` covers the
+  inventory, bucket provisioning, app configuration, cutover, backup and
+  restore, and the known constraints (voice egress, app-disk cache
+  semantics, Always Free limits).
+
+### Changed
+
+- Every persisted artefact now goes through the storage port instead of a
+  direct `node:fs` path: consent registry, timekeeper attendance and
+  session log, `/anon` audit records and the custodian operation log,
+  state-snapshot bundles, birthday registry, polls, reminders, scheduled
+  announcements, per-guild configuration, calendar configuration and cache,
+  and hot-reload configuration. The on-disk format is unchanged.
+
 ## [0.2.0] — 2026-09-21
 
 ### Added

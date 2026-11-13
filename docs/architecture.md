@@ -49,6 +49,51 @@ src/index.ts
 - `src/scripts/stage-audio-smoke.ts` — joins the configured voice channel, plays the first timeline clip, then exits
 - `tests/` — vitest specs that mirror `src/` layout (`config.test.ts`, `timekeeper-timeline.test.ts`, `timekeeper-engagement.test.ts`, etc.)
 
+## Persistence layer (`src/lib/storage/`)
+
+Every persisted artefact of the bot goes through one port,
+`StorageDriver` (`src/lib/storage/types.ts`):
+
+```text
+read / readText / write / writeExclusive / list / delete / exists / move
+```
+
+Two adapters implement it:
+
+| Adapter | Backend | Used when |
+| --- | --- | --- |
+| `LocalFileStorage` | files under `DATA_DIR` (default `<cwd>/data`) | `STORAGE_BACKEND=local` (default) |
+| `U3Storage` | S3-compatible object storage (Altare U3) | `STORAGE_BACKEND=u3` |
+
+Semantics are identical on both sides, and `tests/storage-contract.test.ts`
+runs the same contract against both:
+
+- `write` replaces an object atomically (temp file + `rename(2)` locally,
+  a single `PUT` on object storage) — a reader never sees a half-written
+  document.
+- `writeExclusive` creates only when the key is free and never
+  overwrites — the audit records and the instance lease depend on it.
+- A missing key reads as `null`; **every other failure throws**. Callers
+  treat a throw as "storage unavailable" and fail closed.
+
+Consumers (all of them): consent registry (`consent.json`), timekeeper
+attendance + session log, `/anon` audit records + custodian operation log,
+state-snapshot bundles, birthday registry, polls, reminders, scheduled
+announcements, per-guild configuration, calendar source configuration and
+cache, hot-reload configuration.
+
+Key layout is flat and identical in both backends — `data/consent.json`
+locally, `consent.json` in the bucket — so a migration is a straight copy
+(`bun run storage:migrate`, see `docs/operations/altare-migration.md`).
+
+### Instance lease
+
+`src/lib/storage/lease.ts` implements a single-instance guard: the bot
+creates `locks/instance.json` (create-if-absent) before it connects to
+Discord, renews it every TTL/3 and releases it on shutdown. A live lease
+held by another instance aborts the startup — the old host and the Altare
+deployment can therefore never process the same event twice.
+
 ## Container runtime
 
 The bot ships a multi-stage `Containerfile` and a single-service `compose.yml`. The image targets are kept in `src/features/container/target.ts` so CI and local scripts can resolve them through the same code path.

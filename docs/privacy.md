@@ -29,6 +29,33 @@
    other than what's strictly needed) leaves the bot through the runtime
    TUI, logs, or `/privacy` responses.
 
+## 1.1 Storage backend
+
+Since ADR-0004 every persisted artefact is reached through the storage
+port (`src/lib/storage/`), not through a direct filesystem path:
+
+- `STORAGE_BACKEND=local` — files under `data/` (the single-host
+  deployment).
+- `STORAGE_BACKEND=u3` — S3-compatible object storage (Altare U3), the
+  source of truth on Altare. The storage *layout* is unchanged
+  (`data/consent.json` → `consent.json`), only the medium differs.
+
+The guarantees in this document are **backend independent**:
+
+1. A storage failure is never swallowed. `ConsentService.authorize()`
+   denies (`service-unavailable`), `/anon` refuses the post
+   (`audit_failed`, `auditState: "error"`), a snapshot write aborts, and
+   `/privacy delete` reports the affected consumer as failed instead of
+   claiming success.
+2. Audit records are published with a create-if-absent write, so a record
+   is never partially visible and never replaced.
+3. The consent registry refuses to persist after an unrecognised read —
+   the original bytes are preserved next to the copy, and the write is
+   refused until an operator intervenes.
+4. `/privacy delete` removes the user-keyed records through the same port
+   the feature writes through, so the delete and the write always target
+   the same store.
+
 ## 2. Scope catalogue
 
 The v0.2.0 release ships these four scopes (centralized in
@@ -60,7 +87,7 @@ touch only ephemeral or operational data are listed for completeness.
 | poll                | `data/polls.json`                            | Discord snowflake | `votes: Record<userId, optionIndex>` + creatorId | `activity-history`  |
 | reminder            | `data/reminders.json`                        | Discord snowflake | `{ id, userId, message, fireAt, createdAt }` | `activity-history`  |
 | state-snapshot      | `data/snapshots/<id>.snap.enc`              | bundled          | encrypted AES-256-GCM mirror of all source files | `activity-history` (special: revoke must trigger snapshot expiry via `applyRetentionPlan`) |
-| anonymous-chat      | `data/anon-audit/<UTC-ts>-<rand>.jsonl`   | ciphertext only  | RSA-OAEP-encrypted attempt + posted records carrying `{userId, guildId, channelId, postedAt, attemptId, messageId}`; attempt record written BEFORE the public send, posted record (with real `messageId`) immediately after; bot holds public key only — no decryptable or searchable per-user index; audit is MANDATORY — no unlogged posting mode | `message-history` |
+| anonymous-chat      | `data/anon-audit/<UTC-ts>-<rand>.jsonl` (storage key `anon-audit/<UTC-ts>-<rand>.jsonl`) | ciphertext only  | RSA-OAEP-encrypted attempt + posted records carrying `{userId, guildId, channelId, postedAt, attemptId, messageId}`; attempt record written BEFORE the public send, posted record (with real `messageId`) immediately after; bot holds public key only — no decryptable or searchable per-user index; audit is MANDATORY — no unlogged posting mode | `message-history` |
 
 ### 3.2 Operational persistent (justified, no consent gate)
 
@@ -125,7 +152,7 @@ user id is expired. See
 [`src/features/state-snapshot/retention.ts`](../src/features/state-snapshot/retention.ts)
 and `src/features/privacy/clear.ts` for the wire-up.
 
-**Exception — `data/anon-audit/`**: the anonymous-chat audit log is
+**Exception — the `anon-audit/` storage prefix**: the anonymous-chat audit log is
 consent-gated but deliberately excluded from
 `DEFAULT_SNAPSHOT_SOURCE_PATHS`. It is already RSA-OAEP encrypted at
 rest, self-retaining (record files swept after
