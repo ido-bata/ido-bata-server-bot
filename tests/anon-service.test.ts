@@ -432,14 +432,13 @@ describe("anonymous-chat service — audit mode", () => {
     return makeConfig({
       audit: {
         publicKey: "unused-injected-sink",
-        indexKey: "idx",
         dir: "data/anon-audit",
         retentionDays: 90,
       },
     });
   }
 
-  it("seals before posting and records after a successful send", async () => {
+  it("seals after posting and records the audit line", async () => {
     const { channel, send } = makeChannel({
       permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
     });
@@ -447,8 +446,16 @@ describe("anonymous-chat service — audit mode", () => {
     const { service } = makeDeps({ channel, config: auditConfig(), audit });
     const result = await service.post(INPUT);
     expect(result).toEqual({ ok: true });
+    // Seal happens after send so the ciphertext can carry the public
+    // message id (ADR-0003 §3).
+    expect(send).toHaveBeenCalled();
     expect(audit.seal).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: "user-1", guildId: "guild-1", channelId: "chan-1" }),
+      expect.objectContaining({
+        userId: "user-1",
+        guildId: "guild-1",
+        channelId: "chan-1",
+        messageId: "msg-1",
+      }),
     );
     expect(audit.record).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -457,12 +464,13 @@ describe("anonymous-chat service — audit mode", () => {
         ciphertext: "sealed-ct",
       }),
     );
-    expect(send).toHaveBeenCalled();
   });
 
-  it("rejects the post when sealing fails — send is never called", async () => {
-    const { channel, send } = makeChannel({
+  it("rejects the post when sealing fails — the message is deleted", async () => {
+    const deleteMock = vi.fn(async () => undefined);
+    const { channel } = makeChannel({
       permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+      sendImpl: async () => ({ id: "msg-9", delete: deleteMock }),
     });
     const audit = makeAudit({
       seal: vi.fn(() => {
@@ -470,8 +478,8 @@ describe("anonymous-chat service — audit mode", () => {
       }),
     });
     const { service } = makeDeps({ channel, config: auditConfig(), audit });
-    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "unavailable" });
-    expect(send).not.toHaveBeenCalled();
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "audit_failed" });
+    expect(deleteMock).toHaveBeenCalled();
     expect(audit.record).not.toHaveBeenCalled();
   });
 
@@ -547,12 +555,151 @@ describe("anonymous-chat service — auditState", () => {
       config: makeConfig({
         audit: {
           publicKey: "not-valid-key-material",
-          indexKey: "idx-key-0123456789",
           dir: "data/anon-audit",
           retentionDays: 90,
         },
       }),
     });
     expect(service.auditState).toBe("error");
+  });
+
+  it("refuses ALL posts when audit is configured but broken — no ephemeral fallback", async () => {
+    const { channel, send } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+    });
+    const { service } = makeDeps({
+      channel,
+      config: makeConfig({
+        audit: {
+          publicKey: "not-valid-key-material",
+          dir: "data/anon-audit",
+          retentionDays: 90,
+        },
+      }),
+    });
+    expect(service.auditState).toBe("error");
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "unavailable" });
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("anonymous-chat service — private thread moderator path", () => {
+  function makePrivateThread(botBits: AnonBits, userBits: AnonBits) {
+    const { channel: parent } = makeChannel({
+      permsByMemberId: { "user-1": userBits, "bot-1": botBits },
+    });
+    const { channel, send } = makeChannel({
+      type: ChannelType.PrivateThread,
+      permsByMemberId: {},
+    });
+    channel.parent = parent;
+    channel.parentId = "chan-1";
+    channel.locked = false;
+    return { channel, send };
+  }
+
+  it("allows a non-member user who holds ManageThreads", async () => {
+    const { channel, send } = makePrivateThread(
+      bitsOf(VIEW, SEND_THREAD, MANAGE_THREADS), // bot can moderate
+      bitsOf(VIEW, SEND_THREAD, MANAGE_THREADS), // user can moderate
+    );
+    const { service } = makeDeps({
+      channel,
+      isThreadMember: async () => false, // nobody is a member
+    });
+    expect((await service.post(INPUT)).ok).toBe(true);
+    expect(send).toHaveBeenCalled();
+  });
+
+  it("denies a non-member user without ManageThreads", async () => {
+    const { channel, send } = makePrivateThread(
+      bitsOf(VIEW, SEND_THREAD),
+      bitsOf(VIEW, SEND_THREAD),
+    );
+    const { service } = makeDeps({
+      channel,
+      isThreadMember: async () => false,
+    });
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "denied" });
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("anonymous-chat service — permission freshness", () => {
+  it("re-resolves permissions on every post — a revocation denies the next attempt", async () => {
+    let now = 0;
+    const perms: Record<string, AnonBits | null> = {
+      "user-1": bitsOf(VIEW, SEND),
+      "bot-1": bitsOf(VIEW, SEND),
+    };
+    const { channel, send } = makeChannel({ permsByMemberId: perms });
+    const { service } = makeDeps({ channel, now: () => now });
+
+    expect((await service.post(INPUT)).ok).toBe(true);
+    // Permission revoked between posts; cooldown window passes.
+    perms["user-1"] = bitsOf(VIEW);
+    now += 31_000;
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "denied" });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("anonymous-chat service — error sanitization", () => {
+  it("logs only safe fields when channel.send throws a payload-bearing error", async () => {
+    const leaky = Object.assign(new Error("DiscordAPIError: cannot send user-1 body-secret-body"), {
+      name: "DiscordAPIError",
+      code: 50013,
+      status: 403,
+      rawError: { content: "body-secret-body", author: { id: "user-1" } },
+    });
+    const { channel } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+      sendImpl: async () => {
+        throw leaky;
+      },
+    });
+    const { service, logger } = makeDeps({ channel });
+    const result = await service.post(INPUT);
+    expect(result).toEqual({ ok: false, reason: "post_failed" });
+    expect(logger.warn).toHaveBeenCalled();
+    const logged = JSON.stringify(logger.warn.mock.calls);
+    expect(logged).not.toContain("user-1");
+    expect(logged).not.toContain("body-secret-body");
+    expect(logged).not.toContain("rawError");
+    const fields = logger.warn.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(fields.errName).toBe("DiscordAPIError");
+    expect(fields.errCode).toBe(50013);
+    expect(fields.errStatus).toBe(403);
+  });
+
+  it("still returns audit_failed when the rollback delete also fails", async () => {
+    const { channel } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+      sendImpl: async () => ({
+        id: "msg-x",
+        delete: async () => {
+          throw new Error("delete failed for user-1");
+        },
+      }),
+    });
+    const audit = {
+      seal: () => "ct",
+      record: async () => {
+        throw new Error("disk full");
+      },
+      sweep: async () => undefined,
+    };
+    const { service, logger } = makeDeps({
+      channel,
+      config: makeConfig({
+        audit: { publicKey: "x", dir: "data/anon-audit", retentionDays: 90 },
+      }),
+      audit,
+    });
+    const result = await service.post(INPUT);
+    expect(result).toEqual({ ok: false, reason: "audit_failed" });
+    expect(logger.error).toHaveBeenCalled();
+    const logged = JSON.stringify(logger.error.mock.calls);
+    expect(logged).not.toContain("user-1");
   });
 });

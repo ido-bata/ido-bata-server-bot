@@ -2,23 +2,29 @@
  * `/anon` posting service (ADR-0003).
  *
  * Pipeline per invocation:
- *   validate → deny-list → cooldown → channel/guild/member resolution →
- *   effective permissions (user + bot) → thread state → consent →
- *   seal audit payload → post → append audit (rollback-delete on
- *   failure).
+ *   validate → audit-health gate → cooldown → deny-list →
+ *   channel/guild/member resolution → effective permissions (user +
+ *   bot) → thread state → consent → post → seal+append audit
+ *   (rollback-delete on failure).
  *
  * Anonymity rules enforced here:
- *   - No user id, message body, or interaction object is ever logged.
- *   - Audit mode seals the author mapping BEFORE posting; a sealing
- *     failure rejects the post (fail closed, no plaintext fallback).
- *   - An audit-append failure after a successful post deletes the
- *     message — an anonymous post must never exist unaccounted for.
+ *   - No user id, message body, or interaction object is ever logged;
+ *     failures are logged as safe structured fields only
+ *     (`errors.ts`) — never `error.message`/raw Discord payloads.
+ *   - Audit mode seals the author mapping and appends it AFTER the
+ *     public post; a sealing/append failure deletes the message — an
+ *     anonymous post must never exist unaccounted for.
+ *   - When audit is CONFIGURED but broken (invalid key, sink init
+ *     failure), `/anon` refuses to post entirely — it never falls
+ *     back to unlogged anonymous posting. Only the explicit
+ *     "no ANON_AUDIT_PUBLIC_KEY" configuration yields ephemeral mode.
  */
 
 import { PermissionFlagsBits } from "discord.js";
 import type { AnonAuditSink } from "./audit-store.js";
 import { createAnonAuditSink } from "./audit-store.js";
 import type { AnonymousChatConfig } from "./config.js";
+import { safeErrorFields } from "./errors.js";
 import type { AnonChannelLike, AnonGuildLike, AnonMemberLike } from "./permissions.js";
 import {
   canPostWith,
@@ -80,9 +86,9 @@ export type AnonymousChatService = {
   post: (input: AnonPostInput) => Promise<AnonPostResult>;
   /**
    * Audit persistence state: `active` = records are written,
-   * `disabled` = ephemeral mode (no keys or explicit opt-out),
+   * `disabled` = explicit ephemeral mode (no key configured),
    * `error` = audit was configured but the sink failed to initialize —
-   * `/anon` degrades to ephemeral and status must not claim audit.
+   * `/anon` refuses to post and status must not claim audit is on.
    */
   auditState: "disabled" | "active" | "error";
 };
@@ -101,9 +107,6 @@ async function isThreadMemberSafe(
   userId: string,
   deps: AnonymousChatServiceDeps,
 ): Promise<boolean> {
-  if (!isPrivateThread(channel)) {
-    return true;
-  }
   if (!deps.isThreadMember) {
     // Cannot verify membership → fail closed.
     return false;
@@ -119,9 +122,10 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
   const { config, logger } = deps;
   const cooldown = new AnonCooldown(config.cooldownMs, deps.now);
 
-  // Build the audit sink once. An invalid key disables audit loudly —
-  // never falls back to plaintext. `auditState` exposes the outcome so
-  // status reporting cannot claim audit is on when it is not.
+  // Build the audit sink once. A configured-but-broken audit is NOT
+  // ephemeral mode: `auditState: "error"` makes every post fail closed
+  // so an operator misconfiguration can never produce unlogged
+  // anonymous posts (ADR-0003 §3).
   let audit = deps.audit;
   let auditState: AnonymousChatService["auditState"];
   if (audit === undefined && config.audit) {
@@ -130,20 +134,20 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       // Best-effort retention sweep at startup; failures are logged, not
       // fatal — the next append sweeps again.
       void audit.sweep().catch((error: unknown) => {
-        logger?.warn({ err: error }, "anonymous-chat: audit retention sweep failed");
+        logger?.warn(safeErrorFields(error), "anonymous-chat: audit retention sweep failed");
       });
       auditState = "active";
     } catch (error) {
       logger?.error(
-        { err: error },
-        "anonymous-chat: failed to initialize audit sink; audit persistence disabled",
+        safeErrorFields(error),
+        "anonymous-chat: failed to initialize audit sink; /anon disabled",
       );
       audit = null;
       auditState = "error";
     }
   } else if (audit) {
     void audit.sweep().catch((error: unknown) => {
-      logger?.warn({ err: error }, "anonymous-chat: audit retention sweep failed");
+      logger?.warn(safeErrorFields(error), "anonymous-chat: audit retention sweep failed");
     });
     auditState = "active";
   } else {
@@ -163,7 +167,7 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
         fetchChannel: deps.fetchChannel,
       });
     } catch (error) {
-      logger?.warn({ err: error }, "anonymous-chat: permission resolution failed");
+      logger?.warn(safeErrorFields(error), "anonymous-chat: permission resolution failed");
       return null;
     }
   }
@@ -174,6 +178,12 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       const text = input.message.trim();
       if (text.length === 0 || text.length > config.maxMessageLength) {
         return { ok: false, reason: "invalid_message" };
+      }
+      // Configured-but-broken audit refuses ALL posts — never degrade
+      // to unlogged anonymity. Checked before the cooldown so a broken
+      // deployment does not burn users' cooldown windows.
+      if (auditState === "error") {
+        return { ok: false, reason: "unavailable" };
       }
       // Cooldown is consumed on every attempt that passes message
       // validation — including attempts later denied — to bound
@@ -191,20 +201,18 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       try {
         channel = await deps.fetchChannel(input.channelId);
       } catch (error) {
-        logger?.warn({ err: error }, "anonymous-chat: channel fetch failed");
+        logger?.warn(safeErrorFields(error), "anonymous-chat: channel fetch failed");
         return { ok: false, reason: "denied" };
       }
       if (!channel || channel.guildId !== input.guildId || !isSupportedChannel(channel)) {
         return { ok: false, reason: "denied" };
       }
 
-      if (isThreadChannel(channel)) {
+      const isThread = isThreadChannel(channel);
+      if (isThread) {
         // `locked` is `boolean | null` on discord.js ThreadChannel; an
         // unknown/null state must fail closed for a posting decision.
         if (channel.locked !== false) {
-          return { ok: false, reason: "denied" };
-        }
-        if (!(await isThreadMemberSafe(channel, input.userId, deps))) {
           return { ok: false, reason: "denied" };
         }
       }
@@ -213,7 +221,7 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       try {
         guild = await deps.fetchGuild(input.guildId);
       } catch (error) {
-        logger?.warn({ err: error }, "anonymous-chat: guild fetch failed");
+        logger?.warn(safeErrorFields(error), "anonymous-chat: guild fetch failed");
         return { ok: false, reason: "denied" };
       }
       if (!guild) {
@@ -224,7 +232,7 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       try {
         member = await deps.fetchMember(guild, input.userId);
       } catch (error) {
-        logger?.warn({ err: error }, "anonymous-chat: member fetch failed");
+        logger?.warn(safeErrorFields(error), "anonymous-chat: member fetch failed");
         return { ok: false, reason: "denied" };
       }
       if (!member) {
@@ -236,11 +244,24 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
         return { ok: false, reason: "denied" };
       }
 
+      // Private threads: the invoking member can post only if it is a
+      // thread member or holds ManageThreads (which also covers
+      // Administrator/guild owner — resolveEffectivePermissions returns
+      // all bits for them). Checked AFTER permission resolution so the
+      // moderator path uses the same fresh bits as the send check.
+      if (
+        isPrivateThread(channel) &&
+        !userPermissions.has(PermissionFlagsBits.ManageThreads) &&
+        !(await isThreadMemberSafe(channel, input.userId, deps))
+      ) {
+        return { ok: false, reason: "denied" };
+      }
+
       let botMember: AnonMemberLike | null;
       try {
         botMember = await deps.fetchBotMember(guild);
       } catch (error) {
-        logger?.warn({ err: error }, "anonymous-chat: bot member fetch failed");
+        logger?.warn(safeErrorFields(error), "anonymous-chat: bot member fetch failed");
         return { ok: false, reason: "denied" };
       }
       if (!botMember) {
@@ -253,19 +274,17 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       }
 
       // Private threads: the bot can post only if it is a thread member
-      // or holds ManageThreads (which also covers Administrator/owner —
-      // resolveEffectivePermissions returns all bits for them). Without
-      // this preflight the send would fail with a generic API error
-      // instead of a clean permission denial.
-      if (isPrivateThread(channel) && !botPermissions.has(PermissionFlagsBits.ManageThreads)) {
-        const botIsMember = await isThreadMemberSafe(channel, botMember.id, deps);
-        if (!botIsMember) {
-          return { ok: false, reason: "bot_permission_denied" };
-        }
+      // or holds ManageThreads. Without this preflight the send would
+      // fail with a generic API error instead of a clean denial.
+      if (
+        isPrivateThread(channel) &&
+        !botPermissions.has(PermissionFlagsBits.ManageThreads) &&
+        !(await isThreadMemberSafe(channel, botMember.id, deps))
+      ) {
+        return { ok: false, reason: "bot_permission_denied" };
       }
 
-      // ---- audit pre-flight (fail closed before any public post) ----
-      let sealedPayload: string | null = null;
+      // ---- consent pre-flight (fail closed before any public post) ----
       if (audit) {
         let consentOk = true;
         if (deps.authorizeAudit) {
@@ -279,18 +298,6 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
           logger?.warn({}, "anonymous-chat: audit consent denied");
           return { ok: false, reason: "unavailable" };
         }
-        try {
-          sealedPayload = audit.seal({
-            userId: input.userId,
-            guildId: input.guildId,
-            channelId: input.channelId,
-            postedAt: new Date(deps.now?.() ?? Date.now()).toISOString(),
-          });
-        } catch (error) {
-          // Never fall back to plaintext or to an unlogged post.
-          logger?.error({ err: error }, "anonymous-chat: audit seal failed; post rejected");
-          return { ok: false, reason: "unavailable" };
-        }
       }
 
       // ---- public post ----
@@ -301,31 +308,43 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
           allowedMentions: { parse: [] },
         });
       } catch (error) {
-        logger?.warn({ err: error }, "anonymous-chat: channel send failed");
+        logger?.warn(safeErrorFields(error), "anonymous-chat: channel send failed");
         return { ok: false, reason: "post_failed" };
       }
 
-      // ---- audit append (rollback on failure) ----
-      if (audit && sealedPayload) {
+      // ---- audit seal + append (rollback on failure) ----
+      // Sealing happens AFTER the send so the ciphertext can carry the
+      // public message id — the only moment it exists. A seal or
+      // append failure still deletes the message: an anonymous post
+      // must never exist without its audit record when audit is on.
+      if (audit) {
         try {
+          const postedAt = new Date(deps.now?.() ?? Date.now()).toISOString();
+          const ciphertext = audit.seal({
+            userId: input.userId,
+            guildId: input.guildId,
+            channelId: input.channelId,
+            messageId: sent.id,
+            postedAt,
+          });
           await audit.record({
             userId: input.userId,
             guildId: input.guildId,
             channelId: input.channelId,
             messageId: sent.id,
-            postedAt: new Date(deps.now?.() ?? Date.now()).toISOString(),
-            ciphertext: sealedPayload,
+            postedAt,
+            ciphertext,
           });
         } catch (error) {
           logger?.error(
-            { err: error },
-            "anonymous-chat: audit append failed; deleting posted message",
+            safeErrorFields(error),
+            "anonymous-chat: audit seal/append failed; deleting posted message",
           );
           try {
             await sent.delete();
           } catch (deleteError) {
             logger?.error(
-              { err: deleteError },
+              safeErrorFields(deleteError),
               "anonymous-chat: rollback delete failed; unlogged anonymous post may remain",
             );
           }

@@ -16,6 +16,7 @@
     "smoke:stage": "tsx src/scripts/stage-audio-smoke.ts",
     "deploy:commands": "tsx src/scripts/deploy-commands.ts",
     "restore:state": "tsx src/scripts/restore-snapshot.ts",
+    "anon:audit:delete": "tsx src/scripts/anon-audit-delete.ts",
     "start": "tsx src/index.ts",
     "test": "vitest run",
     "type-check": "tsc --project tsconfig.json --noEmit"

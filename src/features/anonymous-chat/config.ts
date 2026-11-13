@@ -2,17 +2,19 @@
  * Runtime configuration for the anonymous-chat (`/anon`) feature.
  *
  * All values come from env vars read once at boot in `src/index.ts`.
- * The audit block is `null` unless BOTH `ANON_AUDIT_PUBLIC_KEY` and
- * `ANON_AUDIT_INDEX_KEY` are supplied — a public key without the index
- * key would persist records that `/privacy delete` cannot target, so
- * the pair is all-or-nothing (ADR-0003 §3).
+ *
+ * Audit modes (ADR-0003 §3):
+ *   - `ANON_AUDIT_PUBLIC_KEY` unset → `audit: null` — explicit
+ *     ephemeral mode; `/anon` stores nothing.
+ *   - `ANON_AUDIT_PUBLIC_KEY` set → audit configured. If the key
+ *     material is invalid the service reports `auditState: "error"`
+ *     and refuses to post — a configured audit must never silently
+ *     degrade to unlogged anonymous posts.
  */
 
 export type AnonAuditConfig = {
   /** PEM (`-----BEGIN PUBLIC KEY-----`) or base64/base64url SPKI DER. */
   publicKey: string;
-  /** Random bot-held HMAC key for the per-user lookup index. */
-  indexKey: string;
   /** Directory holding daily `YYYY-MM-DD.jsonl` audit files. */
   dir: string;
   /** Daily audit files older than this many days are swept. */
@@ -34,13 +36,13 @@ const DEFAULT_COOLDOWN_SECONDS = 30;
 const DEFAULT_MAX_MESSAGE_LENGTH = 1000;
 const DEFAULT_AUDIT_DIR = "data/anon-audit";
 const DEFAULT_AUDIT_RETENTION_DAYS = 90;
-const MIN_INDEX_KEY_LENGTH = 16;
 
 export type AnonConfigEnv = {
   ANON_DENY_CHANNEL_IDS?: string;
   ANON_COOLDOWN_SECONDS?: string;
   ANON_MAX_MESSAGE_LENGTH?: string;
   ANON_AUDIT_PUBLIC_KEY?: string;
+  /** Deprecated: the HMAC lookup index was removed (ADR-0003 §3). */
   ANON_AUDIT_INDEX_KEY?: string;
   ANON_AUDIT_DIR?: string;
   ANON_AUDIT_RETENTION_DAYS?: string;
@@ -71,36 +73,22 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
 
 function resolveAudit(env: AnonConfigEnv): { audit: AnonAuditConfig | null; warning?: string } {
   const publicKey = env.ANON_AUDIT_PUBLIC_KEY?.trim() ?? "";
-  const indexKey = env.ANON_AUDIT_INDEX_KEY?.trim() ?? "";
 
-  if (!publicKey && !indexKey) {
+  if (!publicKey) {
     return { audit: null };
-  }
-  if (!publicKey || !indexKey) {
-    // All-or-nothing: storing records without a working delete index
-    // would violate the privacy contract, so we degrade to ephemeral
-    // mode and surface the misconfiguration loudly instead of throwing
-    // (which would take the whole bot down for an optional feature).
-    return {
-      audit: null,
-      warning:
-        "anonymous-chat: ANON_AUDIT_PUBLIC_KEY and ANON_AUDIT_INDEX_KEY must both be set; audit persistence disabled",
-    };
-  }
-  if (indexKey.length < MIN_INDEX_KEY_LENGTH) {
-    return {
-      audit: null,
-      warning: `anonymous-chat: ANON_AUDIT_INDEX_KEY must be at least ${MIN_INDEX_KEY_LENGTH} characters; audit persistence disabled`,
-    };
   }
 
   return {
     audit: {
       publicKey,
-      indexKey,
       dir: env.ANON_AUDIT_DIR?.trim() || DEFAULT_AUDIT_DIR,
       retentionDays: parsePositiveInt(env.ANON_AUDIT_RETENTION_DAYS, DEFAULT_AUDIT_RETENTION_DAYS),
     },
+    // The removed HMAC index key is meaningless now — warn so operators
+    // do not believe it still protects anything.
+    warning: env.ANON_AUDIT_INDEX_KEY
+      ? "anonymous-chat: ANON_AUDIT_INDEX_KEY is no longer used and can be removed"
+      : undefined,
   };
 }
 

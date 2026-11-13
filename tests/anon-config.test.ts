@@ -23,31 +23,30 @@ describe("readAnonymousChatConfig", () => {
     expect(config.maxMessageLength).toBe(500);
   });
 
-  it("enables audit only when both key vars are present", () => {
-    const { config } = readAnonymousChatConfig({
+  it("enables audit when the public key is configured", () => {
+    const { config, warning } = readAnonymousChatConfig({
       ANON_AUDIT_PUBLIC_KEY: "pub",
-      ANON_AUDIT_INDEX_KEY: "a-long-enough-index-key",
     });
     expect(config.audit).not.toBeNull();
     expect(config.audit?.publicKey).toBe("pub");
     expect(config.audit?.dir).toBe("data/anon-audit");
     expect(config.audit?.retentionDays).toBe(90);
+    expect(warning).toBeUndefined();
   });
 
-  it("degrades to ephemeral mode with a warning when only one key var is set", () => {
+  it("warns that the removed index key is ignored", () => {
     const { config, warning } = readAnonymousChatConfig({
       ANON_AUDIT_PUBLIC_KEY: "pub",
+      ANON_AUDIT_INDEX_KEY: "legacy-key",
     });
-    expect(config.audit).toBeNull();
+    expect(config.audit).not.toBeNull();
     expect(warning).toContain("ANON_AUDIT_INDEX_KEY");
   });
 
-  it("rejects a too-short index key", () => {
-    const { config, warning } = readAnonymousChatConfig({
-      ANON_AUDIT_PUBLIC_KEY: "pub",
-      ANON_AUDIT_INDEX_KEY: "short",
+  it("ignores a stray index key when audit is not configured", () => {
+    const { config } = readAnonymousChatConfig({
+      ANON_AUDIT_INDEX_KEY: "legacy-key",
     });
     expect(config.audit).toBeNull();
-    expect(warning).toContain("at least 16");
   });
 });

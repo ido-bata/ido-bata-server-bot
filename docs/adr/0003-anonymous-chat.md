@@ -58,6 +58,12 @@ than the platform allows.
   chars (`ANON_MAX_MESSAGE_LENGTH`). Repost uses
   `allowedMentions: { parse: [] }` so `@everyone`/`@user`/`@role` in the
   body cannot ping anyone.
+- The command `deferReply({ ephemeral: true })`s immediately — the
+  permission pipeline performs several REST lookups and Discord
+  requires acknowledgement within ~3 s — then delivers the outcome via
+  `editReply`. A successful public post is never retried: if
+  `editReply` fails after `post()` returned ok, the anonymous message
+  is already live and the command stops.
 - All user-facing replies are ephemeral and generic; failures never
   echo the body or identify which check failed beyond coarse categories
   (cooldown vs. denied vs. unavailable). Bot-side permission gaps also
@@ -82,10 +88,11 @@ overwrite), with these rules:
   overwrite application). `locked !== false` → deny — discord.js types
   `locked` as `boolean | null`, and an unknown state fails closed.
   Private threads additionally require thread membership for the
-  invoking user (`thread.members.fetch`); fetch failure → deny. The
-  bot member gets the same preflight: in a private thread it must be
-  a thread member or hold `ManageThreads`, otherwise the post is
-  denied before send. Archived (unlocked) threads are allowed —
+  invoking user (`thread.members.fetch`) OR `ManageThreads` — the same
+  moderator path Discord grants for normal posting; fetch failure →
+  deny. The bot member gets the same preflight: in a private thread it
+  must be a thread member or hold `ManageThreads`, otherwise the post
+  is denied before send. Archived (unlocked) threads are allowed —
   Discord permits posting, which unarchives.
 - The bot member's effective permissions on the same channel must also
   include the send bit; otherwise the user gets a generic denial.
@@ -101,7 +108,7 @@ overwrite), with these rules:
   each attempt that passes message validation — including attempts
   later denied — to bound permission-probing and API abuse.
 
-### 3. Audit mapping: opt-in, public-key-only, fail closed
+### 3. Audit mapping: opt-in, public-key-only, ciphertext-only, fail closed
 
 - When `ANON_AUDIT_PUBLIC_KEY` is **not** set, `/anon` stores nothing.
   The feature is then ephemeral-only (in-memory cooldown). This is the
@@ -110,42 +117,56 @@ overwrite), with these rules:
   ("保存する場合").
 - When set, every successful post appends one record to
   `data/anon-audit/YYYY-MM-DD.jsonl` (UTC day files):
-  `{ v, idx, gid, cid, mid, ct }` where `ct` is RSA-OAEP-SHA256
-  ciphertext (base64) of `{ userId, guildId, channelId, postedAt }`,
-  `idx` is `HMAC-SHA256(ANON_AUDIT_INDEX_KEY, userId)` for `/privacy
-  delete` lookup, and `gid`/`cid`/`mid` are plaintext operational
-  metadata (guild, channel, public message id — needed for support
-  correlation and never sensitive). The message body is never stored
-  (it lives in the public message). The ciphertext cannot contain
-  `messageId` because the public message id only exists after send.
-- `ANON_AUDIT_INDEX_KEY` is a random bot-held secret used **only** for
-  the HMAC lookup; it cannot decrypt. Both env vars are required
-  together — public key without index key disables audit with an error
-  log (never silently stores undeletable records).
+  `{ v, gid, cid, mid, ct }` where `gid`/`cid`/`mid` are plaintext
+  operational metadata (guild, channel, public message id) and `ct`
+  is RSA-OAEP-SHA256 ciphertext (base64) of the full author mapping
+  `{ userId, guildId, channelId, messageId, postedAt }`. The message
+  body is never stored (it lives in the public message). Sealing
+  happens after `channel.send` so the ciphertext can carry the public
+  message id — the only moment it exists.
+- **No bot-computable per-user index — by design.** An earlier
+  revision stored `idx = HMAC(indexKey, userId)` for `/privacy
+  delete` lookup. That was rejected: any deterministic tag over a
+  Discord user id is dictionary-attackable because guild rosters are
+  public — a host admin holding the index key could re-identify every
+  author WITHOUT the private key, voiding the entire point of
+  public-key encryption. Records therefore carry no `idx`/lookup
+  field at all; the bot host cannot re-identify authors from stored
+  data.
+- Consequence for deletion: the bot cannot selectively remove one
+  user's audit records (it cannot even prove which records are
+  theirs). `/privacy delete`'s `anonymous-chat-audit` consumer
+  reports this honestly — `ok:false` with custodian instructions
+  whenever audit files exist — instead of claiming a deletion it
+  cannot perform. Actual selective deletion is an OFFLINE custodian
+  operation: `bun run anon:audit:delete -- --key-file <private.pem>
+  --dir <audit-dir> --user <id>` (`src/scripts/anon-audit-delete.ts`
+  → `audit-delete.ts`) decrypts every `ct`, removes matches, and
+  rewrites files atomically. It inspects ALL records before touching
+  ANY file and aborts on corrupt/undecryptable lines — an
+  uninspectable record is never assumed safe to keep or drop.
 - The private key is never accepted from env — private-key PEM
   material is explicitly rejected — never written to disk, never
-  logged. Only public-key material enters the process.
-- Audit files/dirs are created `0600`/`0700`; appends, retention
-  sweeps, and `/privacy delete` rewrites are serialized through a
-  per-directory lock so a delete rewrite cannot drop a concurrent
-  append.
-- Ordering per post: validate → cooldown → deny-list → resolve →
-  consent → seal → `channel.send` → append audit. If encryption
-  fails, the post is rejected **before** sending (fail closed, no
-  plaintext fallback). If the audit append fails after a successful
-  send, the bot attempts to delete the just-posted message and reports
-  failure — an anonymous post must never exist without its audit
-  record when audit is on.
-- If audit keys are configured but the sink fails to initialize
-  (e.g. malformed public key), the service runs in ephemeral mode and
-  reports `auditState: "error"` in the status store — status never
-  claims audit is active when it is not.
-- Retention: daily files older than `ANON_AUDIT_RETENTION_DAYS`
-  (default 90) are swept on service start and before each append.
-- `/privacy delete`: the `anonymous-chat-audit` consumer recomputes the
-  user's `idx` and removes matching lines (atomic rewrite per file).
-  Missing index key with existing files → reported as failure, never
-  silent success.
+  logged. Only public-key material enters the process. The removed
+  `ANON_AUDIT_INDEX_KEY` env var is ignored with a warning.
+- Audit files/dirs are created `0600`/`0700`; appends and retention
+  sweeps are serialized through an in-process promise chain AND a
+  cross-process mkdir-based directory lock (`withAnonAuditFileLock`),
+  so a second bot process or the offline deletion script cannot race
+  an append against a rewrite.
+- Ordering per post: validate → audit-health → cooldown → deny-list →
+  resolve → consent → `channel.send` → seal → append audit. If
+  sealing or the audit append fails after a successful send, the bot
+  deletes the just-posted message and reports `audit_failed` — an
+  anonymous post must never exist without its audit record when
+  audit is on. If the rollback delete ALSO fails, the result is still
+  `audit_failed` (never `ok`) and the failure is logged.
+- **Configured-but-broken audit refuses ALL posts.** `ANON_AUDIT_PUBLIC_KEY`
+  set but the sink fails to initialize (invalid key material) →
+  `auditState: "error"`, every `/anon` call returns unavailable, and
+  the status store reports the error. Only the explicit "key unset"
+  configuration yields ephemeral mode — a configured audit must
+  never silently degrade to unlogged anonymous posting.
 - Consent: when the consent subsystem is deployed, audit writes
   require an active `message-history` grant (fail closed on
   `service-unavailable`). When consent is not deployed at all, the gate
@@ -157,13 +178,17 @@ overwrite), with these rules:
 
 ### 4. Anonymity across observability sinks
 
-- The `/anon` execute path catches all errors and replies generically;
-  it never throws into the unguarded `InteractionCreate` dispatcher
-  (which would forward stacks — potentially containing ids — to the
-  error channel).
+- The `/anon` execute path defers ephemerally inside the 3-second
+  acknowledgement window, catches all errors, and delivers only
+  generic ephemeral edits; it never throws into the unguarded
+  `InteractionCreate` dispatcher (which would forward stacks —
+  potentially containing ids — to the error channel). A successful
+  post is never retried on reply failure.
 - No log call in the feature passes `user`, `userId`, `member`,
-  `interaction`, or message content. Discord API errors are logged as
-  `{ err }` only (Discord error bodies do not echo request content).
+  `interaction`, message content, `error.message`, `error.stack`, or
+  `error.rawError`. All failures are logged via `safeErrorFields`,
+  which emits only `errName`/`errCode`/`errStatus` — Discord error
+  codes and HTTP statuses are enum values, never user data.
 - TUI/status-store meta carries counts/state only. Metrics are not
   wired with per-user labels.
 
@@ -188,6 +213,13 @@ overwrite), with these rules:
 - **Store the mapping encrypted with a symmetric key in env.** Rejected:
   the bot host would hold the decryption key, violating the Issue's
   "secret key must not reach the bot" requirement.
+- **HMAC-SHA256 lookup index for `/privacy delete`.** Rejected: any
+  deterministic per-user tag computable by the bot is
+  dictionary-attackable over the public guild roster — the host admin
+  could re-identify authors using only the index key, without the
+  private key. Ciphertext-only records + offline custodian deletion
+  preserve the guarantee; the cost is that bot-side `/privacy delete`
+  reports an honest failure requiring the custodian.
 - **Use `interaction.memberPermissions` directly.** Rejected as sole
   check: it is computed for the interaction channel but we re-derive
   permissions anyway for the bot member and thread parent/membership

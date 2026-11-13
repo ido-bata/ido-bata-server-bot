@@ -48,6 +48,13 @@ export const anonCommand: SlashCommandDefinition = {
   // InteractionCreate dispatcher has no error boundary and a throw
   // would forward the stack (potentially containing the user id) to
   // the error channel (ADR-0003 §4).
+  //
+  // Discord requires an interaction acknowledgement within ~3 s; the
+  // permission pipeline performs several REST lookups, so we
+  // `deferReply({ ephemeral: true })` immediately and deliver the
+  // outcome via `editReply`. A successful public post is never
+  // retried — if `editReply` fails after `post()` returned ok, the
+  // anonymous message is already live and we simply stop.
   execute: (async ({ interaction }: { interaction: never; commandName: string }, deps: unknown) => {
     const typedInteraction = interaction as unknown as {
       inGuild: () => boolean;
@@ -55,24 +62,48 @@ export const anonCommand: SlashCommandDefinition = {
       channelId: string | null;
       user: { id: string };
       options: { getString: (name: string, required?: boolean) => string | null };
-      reply: (options: { content: string; ephemeral?: boolean }) => Promise<unknown>;
+      deferReply: (options: { ephemeral?: boolean }) => Promise<unknown>;
+      editReply: (options: { content: string }) => Promise<unknown>;
+      reply?: (options: { content: string; ephemeral?: boolean }) => Promise<unknown>;
     };
-    const reply = (content: string) => typedInteraction.reply({ content, ephemeral: true });
+
+    // Acknowledge within the 3-second window before doing any work.
+    try {
+      await typedInteraction.deferReply({ ephemeral: true });
+    } catch {
+      // The interaction is likely already acknowledged or expired —
+      // one last generic `reply` attempt, fully isolated so a sync
+      // throw can never escape into the dispatcher.
+      await Promise.resolve()
+        .then(() => typedInteraction.reply?.({ content: REPLY_UNAVAILABLE, ephemeral: true }))
+        .catch(() => undefined);
+      return;
+    }
+
+    const edit = async (content: string) => {
+      try {
+        await typedInteraction.editReply({ content });
+      } catch {
+        // Response delivery failed. If the post already succeeded the
+        // anonymous message is live — never retry `post()` (that would
+        // double-post and double-spend the cooldown). Swallow.
+      }
+    };
 
     try {
       const service = (deps as AnonCommandDeps | undefined)?.service;
       if (!service) {
-        await reply(REPLY_UNAVAILABLE);
+        await edit(REPLY_UNAVAILABLE);
         return;
       }
       if (!typedInteraction.inGuild() || !typedInteraction.guildId || !typedInteraction.channelId) {
-        await reply(REPLY_DENIED);
+        await edit(REPLY_DENIED);
         return;
       }
 
       const message = typedInteraction.options.getString("message", true);
       if (message === null) {
-        await reply(REPLY_UNAVAILABLE);
+        await edit(REPLY_UNAVAILABLE);
         return;
       }
 
@@ -83,17 +114,9 @@ export const anonCommand: SlashCommandDefinition = {
         message,
       });
 
-      if (result.ok) {
-        await reply(REPLY_SUCCESS);
-        return;
-      }
-      await reply(replyFor(result.reason, result.retryAfterMs));
+      await edit(result.ok ? REPLY_SUCCESS : replyFor(result.reason, result.retryAfterMs));
     } catch {
-      // Last-resort guard: reply generically, never propagate — not
-      // even if `reply` itself throws synchronously.
-      await Promise.resolve()
-        .then(() => reply(REPLY_UNAVAILABLE))
-        .catch(() => undefined);
+      await edit(REPLY_UNAVAILABLE);
     }
   }) as SlashCommandDefinition["execute"],
 };

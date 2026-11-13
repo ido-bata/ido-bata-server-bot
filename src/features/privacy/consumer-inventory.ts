@@ -77,7 +77,7 @@ export const CONSUMERS: readonly ConsumerEntry[] = [
     scope: "message-history",
     dataFile: "data/anon-audit/",
     rationale:
-      "RSA-OAEP-encrypted author↔message mapping (public key only on bot); 90-day retention, excluded from state snapshots",
+      "RSA-OAEP ciphertext-only author↔message mapping (public key only on bot, no searchable index); selective deletion is offline-custodian-only and reported honestly by the adapter; 90-day retention, excluded from state snapshots",
   },
 
   // Operational (5)

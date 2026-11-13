@@ -4,10 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { computeAnonIndex } from "../src/features/anonymous-chat/audit-crypto.js";
 import {
   createAnonAuditSink,
-  deleteAnonAuditRecords,
+  hasAnonAuditRecords,
 } from "../src/features/anonymous-chat/audit-store.js";
 import type { AnonAuditConfig } from "../src/features/anonymous-chat/config.js";
 
@@ -30,7 +29,6 @@ afterEach(() => cleanup());
 function auditConfig(overrides: Partial<AnonAuditConfig> = {}): AnonAuditConfig {
   return {
     publicKey,
-    indexKey: "test-index-key-0123456789",
     dir,
     retentionDays: 90,
     ...overrides,
@@ -48,7 +46,8 @@ describe("createAnonAuditSink", () => {
       userId: "u1",
       guildId: "g1",
       channelId: "c1",
-      postedAt: "t",
+      messageId: "m1",
+      postedAt: "2026-11-13T00:00:00.000Z",
     });
     await sink.record({
       userId: "u1",
@@ -59,7 +58,7 @@ describe("createAnonAuditSink", () => {
       ciphertext: ct,
     });
 
-    const files = readdirSync(dir);
+    const files = readdirSync(dir).filter((name) => name.endsWith(".jsonl"));
     expect(files).toHaveLength(1);
     expect(files[0]).toMatch(/^\d{4}-\d{2}-\d{2}\.jsonl$/);
 
@@ -69,7 +68,10 @@ describe("createAnonAuditSink", () => {
     expect(record.gid).toBe("g1");
     expect(record.cid).toBe("c1");
     expect(record.mid).toBe("m1");
-    expect(record.idx).toBe(computeAnonIndex("test-index-key-0123456789", "u1"));
+    // No searchable per-user index may exist — it would be
+    // dictionary-attackable over the public guild roster (ADR-0003 §3).
+    expect(record).not.toHaveProperty("idx");
+    expect(record).not.toHaveProperty("uidx");
     // The stored line must not contain the raw user id or plaintext body.
     expect(line).not.toContain('"u1"');
     expect(typeof record.ct).toBe("string");
@@ -83,7 +85,6 @@ describe("createAnonAuditSink", () => {
     writeFileSync(join(dir, recentName), '{"v":1}\n');
 
     const sink = createAnonAuditSink(auditConfig({ retentionDays: 30 }));
-    sink.seal({ userId: "u", guildId: "g", channelId: "c", postedAt: "t" });
     await sink.record({
       userId: "u1",
       guildId: "g",
@@ -97,109 +98,54 @@ describe("createAnonAuditSink", () => {
     expect(remaining).not.toContain(oldName);
     expect(remaining).toContain(recentName);
   });
-});
 
-describe("deleteAnonAuditRecords", () => {
-  async function seedRecords(): Promise<void> {
+  it("serializes concurrent appends and sweeps without losing lines", async () => {
     const sink = createAnonAuditSink(auditConfig());
-    for (const userId of ["u1", "u2", "u1"]) {
-      await sink.record({
-        userId,
-        guildId: "g",
-        channelId: "c",
-        messageId: `m-${userId}`,
-        postedAt: "t",
-        ciphertext: "ct",
-      });
-    }
-  }
-
-  it("removes only the target user's records", async () => {
-    await seedRecords();
-    const result = await deleteAnonAuditRecords({
-      dir,
-      indexKey: "test-index-key-0123456789",
-      userId: "u1",
-    });
-    expect(result).toEqual({ ok: true, removed: 2 });
-
-    const remaining = readFileSync(join(dir, dayFileName(new Date())), "utf8");
-    const idx2 = computeAnonIndex("test-index-key-0123456789", "u2");
-    expect(remaining).toContain(idx2);
-    expect(remaining).not.toContain(computeAnonIndex("test-index-key-0123456789", "u1"));
-  });
-
-  it("returns ok with zero removals when the directory does not exist", async () => {
-    const result = await deleteAnonAuditRecords({
-      dir: join(dir, "missing"),
-      indexKey: "k",
-      userId: "u1",
-    });
-    expect(result).toEqual({ ok: true, removed: 0 });
-  });
-
-  it("fails closed when files exist but the index key is missing", async () => {
-    await seedRecords();
-    const result = await deleteAnonAuditRecords({
-      dir,
-      indexKey: undefined,
-      userId: "u1",
-    });
-    expect(result.ok).toBe(false);
-  });
-
-  it("serializes concurrent record and delete so no audit line is lost", async () => {
-    const sink = createAnonAuditSink(auditConfig());
-    const idxKey = "test-index-key-0123456789";
-
-    // Interleave many appends for u1 with deletes for u2 — every u2
-    // record must survive and no append may be dropped by a rewrite.
-    const ops: Promise<unknown>[] = [];
-    for (let i = 0; i < 10; i += 1) {
-      ops.push(
+    await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
         sink.record({
-          userId: i % 2 === 0 ? "u1" : "u2",
+          userId: `u${i % 3}`,
           guildId: "g",
           channelId: "c",
           messageId: `m-${i}`,
           postedAt: "t",
-          ciphertext: "ct",
+          ciphertext: `ct-${i}`,
         }),
-      );
-      if (i % 3 === 0) {
-        ops.push(deleteAnonAuditRecords({ dir, indexKey: idxKey, userId: "u2" }));
-      }
-    }
-    await Promise.all(ops);
-
-    // Final state: delete u2 once more, then count remaining lines —
-    // must equal the number of u1 records (5 of the 10).
-    await deleteAnonAuditRecords({ dir, indexKey: idxKey, userId: "u2" });
+      ),
+    );
     const file = join(dir, dayFileName(new Date()));
     const lines = readFileSync(file, "utf8")
       .split("\n")
       .filter((line) => line.trim() !== "");
-    expect(lines).toHaveLength(5);
-    for (const line of lines) {
-      expect(line).toContain(computeAnonIndex(idxKey, "u1"));
-    }
+    expect(lines).toHaveLength(20);
+  });
+});
+
+describe("hasAnonAuditRecords", () => {
+  it("returns false for a missing directory", async () => {
+    expect(await hasAnonAuditRecords(join(dir, "missing"))).toBe(false);
   });
 
-  it("keeps corrupt lines instead of silently dropping them", async () => {
-    mkdirSync(dir, { recursive: true });
-    const name = dayFileName(new Date());
-    writeFileSync(
-      join(dir, name),
-      `${JSON.stringify({ v: 1, idx: computeAnonIndex("test-index-key-0123456789", "u1") })}\nnot-json\n`,
-    );
-    const result = await deleteAnonAuditRecords({
-      dir,
-      indexKey: "test-index-key-0123456789",
+  it("returns false for an empty directory", async () => {
+    expect(await hasAnonAuditRecords(dir)).toBe(false);
+  });
+
+  it("returns true when a non-empty daily file exists", async () => {
+    const sink = createAnonAuditSink(auditConfig());
+    await sink.record({
       userId: "u1",
+      guildId: "g",
+      channelId: "c",
+      messageId: "m",
+      postedAt: "t",
+      ciphertext: "ct",
     });
-    expect(result.ok).toBe(true);
-    const remaining = readFileSync(join(dir, name), "utf8");
-    expect(remaining).toContain("not-json");
-    expect(remaining).not.toContain('"idx"');
+    expect(await hasAnonAuditRecords(dir)).toBe(true);
+  });
+
+  it("ignores non-daily files and empty daily files", async () => {
+    writeFileSync(join(dir, "notes.txt"), "hello");
+    writeFileSync(join(dir, dayFileName(new Date())), "");
+    expect(await hasAnonAuditRecords(dir)).toBe(false);
   });
 });
