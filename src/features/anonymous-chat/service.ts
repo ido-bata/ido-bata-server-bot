@@ -2,18 +2,20 @@
  * `/anon` posting service (ADR-0003).
  *
  * Pipeline per invocation:
- *   validate → audit-health gate → cooldown → deny-list →
+ *   audit-health gate → validate → cooldown → deny-list →
  *   channel/guild/member resolution → effective permissions (user +
- *   bot) → thread state → consent → post → seal+append audit
- *   (rollback-delete on failure).
+ *   bot) → thread state → consent → seal+append audit → post.
  *
  * Anonymity rules enforced here:
  *   - No user id, message body, or interaction object is ever logged;
  *     failures are logged as safe structured fields only
  *     (`errors.ts`) — never `error.message`/raw Discord payloads.
- *   - Audit mode seals the author mapping and appends it AFTER the
- *     public post; a sealing/append failure deletes the message — an
- *     anonymous post must never exist unaccounted for.
+ *   - Audit mode seals the author mapping and appends it BEFORE the
+ *     public post, so no public anonymous message can exist without a
+ *     durable audit record. A failed send leaves only an orphan
+ *     record (over-recording — the safe direction, swept by
+ *     retention); a seal/append failure rejects the post before any
+ *     public side effect.
  *   - When audit is CONFIGURED but broken (invalid key, sink init
  *     failure), `/anon` refuses to post entirely — it never falls
  *     back to unlogged anonymous posting. Only the explicit
@@ -175,15 +177,16 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
   return {
     auditState,
     async post(input) {
+      // Configured-but-broken audit refuses ALL posts — never degrade
+      // to unlogged anonymity. Checked before message validation so a
+      // broken deployment reports `unavailable` for every input and
+      // does not burn users' cooldown windows.
+      if (auditState === "error") {
+        return { ok: false, reason: "unavailable" };
+      }
       const text = input.message.trim();
       if (text.length === 0 || text.length > config.maxMessageLength) {
         return { ok: false, reason: "invalid_message" };
-      }
-      // Configured-but-broken audit refuses ALL posts — never degrade
-      // to unlogged anonymity. Checked before the cooldown so a broken
-      // deployment does not burn users' cooldown windows.
-      if (auditState === "error") {
-        return { ok: false, reason: "unavailable" };
       }
       // Cooldown is consumed on every attempt that passes message
       // validation — including attempts later denied — to bound
@@ -300,23 +303,16 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
         }
       }
 
-      // ---- public post ----
-      let sent: { id: string; delete: () => Promise<unknown> };
-      try {
-        sent = await channel.send({
-          content: text,
-          allowedMentions: { parse: [] },
-        });
-      } catch (error) {
-        logger?.warn(safeErrorFields(error), "anonymous-chat: channel send failed");
-        return { ok: false, reason: "post_failed" };
-      }
-
-      // ---- audit seal + append (rollback on failure) ----
-      // Sealing happens AFTER the send so the ciphertext can carry the
-      // public message id — the only moment it exists. A seal or
-      // append failure still deletes the message: an anonymous post
-      // must never exist without its audit record when audit is on.
+      // ---- audit seal + append BEFORE the public post ----
+      // The audit record must be durable before any public side effect:
+      // Discord assigns the message id only after send, so the sealed
+      // mapping carries {userId, guildId, channelId, postedAt} and the
+      // custodian correlates by channel + time. A seal or append
+      // failure rejects the post BEFORE sending — there is no window in
+      // which a public anonymous message exists without its audit
+      // record (a crash between append and send leaves only an orphan
+      // record, which is the safe direction; a send whose response is
+      // lost is still covered because the record already exists).
       if (audit) {
         try {
           const postedAt = new Date(deps.now?.() ?? Date.now()).toISOString();
@@ -324,32 +320,34 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
             userId: input.userId,
             guildId: input.guildId,
             channelId: input.channelId,
-            messageId: sent.id,
             postedAt,
           });
           await audit.record({
             userId: input.userId,
             guildId: input.guildId,
             channelId: input.channelId,
-            messageId: sent.id,
             postedAt,
             ciphertext,
           });
         } catch (error) {
-          logger?.error(
-            safeErrorFields(error),
-            "anonymous-chat: audit seal/append failed; deleting posted message",
-          );
-          try {
-            await sent.delete();
-          } catch (deleteError) {
-            logger?.error(
-              safeErrorFields(deleteError),
-              "anonymous-chat: rollback delete failed; unlogged anonymous post may remain",
-            );
-          }
+          // Never fall back to an unlogged post.
+          logger?.error(safeErrorFields(error), "anonymous-chat: audit seal/append failed");
           return { ok: false, reason: "audit_failed" };
         }
+      }
+
+      // ---- public post ----
+      // If this throws, the audit record remains as an orphan — a
+      // record for a message that was never posted. That is the safe
+      // direction (over-recording) and is swept by retention.
+      try {
+        await channel.send({
+          content: text,
+          allowedMentions: { parse: [] },
+        });
+      } catch (error) {
+        logger?.warn(safeErrorFields(error), "anonymous-chat: channel send failed");
+        return { ok: false, reason: "post_failed" };
       }
 
       return { ok: true };

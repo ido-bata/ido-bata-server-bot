@@ -60,6 +60,9 @@ export async function deleteAnonAuditUserRecords(options: {
       const plans: { name: string; kept: string[] }[] = [];
       let scanned = 0;
       let removed = 0;
+      // `privateDecrypt` is synchronous; yield periodically so the
+      // file-lock heartbeat can keep the lock fresh on large histories.
+      let sinceYield = 0;
       for (const name of names) {
         const raw = await readFile(join(dir, name), "utf8");
         const kept: string[] = [];
@@ -68,6 +71,11 @@ export async function deleteAnonAuditUserRecords(options: {
             continue;
           }
           scanned += 1;
+          sinceYield += 1;
+          if (sinceYield >= 64) {
+            sinceYield = 0;
+            await new Promise((resolve) => setImmediate(resolve));
+          }
           let record: AuditRecord;
           try {
             const parsed: unknown = JSON.parse(line);

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createAnonAuditSink,
   hasAnonAuditRecords,
+  withAnonAuditFileLock,
 } from "../src/features/anonymous-chat/audit-store.js";
 import type { AnonAuditConfig } from "../src/features/anonymous-chat/config.js";
 
@@ -46,14 +47,12 @@ describe("createAnonAuditSink", () => {
       userId: "u1",
       guildId: "g1",
       channelId: "c1",
-      messageId: "m1",
       postedAt: "2026-11-13T00:00:00.000Z",
     });
     await sink.record({
       userId: "u1",
       guildId: "g1",
       channelId: "c1",
-      messageId: "m1",
       postedAt: "2026-11-13T00:00:00.000Z",
       ciphertext: ct,
     });
@@ -67,7 +66,9 @@ describe("createAnonAuditSink", () => {
     expect(record.v).toBe(1);
     expect(record.gid).toBe("g1");
     expect(record.cid).toBe("c1");
-    expect(record.mid).toBe("m1");
+    // No plaintext message id: Discord assigns it only after send and
+    // the audit record must exist before the send (ADR-0003 §3).
+    expect(record).not.toHaveProperty("mid");
     // No searchable per-user index may exist — it would be
     // dictionary-attackable over the public guild roster (ADR-0003 §3).
     expect(record).not.toHaveProperty("idx");
@@ -89,7 +90,6 @@ describe("createAnonAuditSink", () => {
       userId: "u1",
       guildId: "g",
       channelId: "c",
-      messageId: "m",
       postedAt: "t",
       ciphertext: "ct",
     });
@@ -107,7 +107,6 @@ describe("createAnonAuditSink", () => {
           userId: `u${i % 3}`,
           guildId: "g",
           channelId: "c",
-          messageId: `m-${i}`,
           postedAt: "t",
           ciphertext: `ct-${i}`,
         }),
@@ -136,7 +135,6 @@ describe("hasAnonAuditRecords", () => {
       userId: "u1",
       guildId: "g",
       channelId: "c",
-      messageId: "m",
       postedAt: "t",
       ciphertext: "ct",
     });
@@ -147,5 +145,58 @@ describe("hasAnonAuditRecords", () => {
     writeFileSync(join(dir, "notes.txt"), "hello");
     writeFileSync(join(dir, dayFileName(new Date())), "");
     expect(await hasAnonAuditRecords(dir)).toBe(false);
+  });
+});
+
+describe("withAnonAuditFileLock", () => {
+  it("creates a missing audit directory before locking (fresh deployment)", async () => {
+    const fresh = join(dir, "nested", "anon-audit");
+    const result = await withAnonAuditFileLock(fresh, async () => "ok");
+    expect(result).toBe("ok");
+    // Lock released — the directory remains but the lock dir is gone.
+    expect(readdirSync(fresh)).toHaveLength(0);
+  });
+
+  it("breaks a stale lock whose heartbeat is old", async () => {
+    const lockDir = join(dir, ".anon-audit.lock");
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(
+      join(lockDir, "owner"),
+      JSON.stringify({ token: "dead", pid: 1, at: Date.now() - 120_000 }),
+    );
+    const result = await withAnonAuditFileLock(dir, async () => "acquired");
+    expect(result).toBe("acquired");
+    expect(readdirSync(dir)).not.toContain(".anon-audit.lock");
+  });
+
+  it("waits on a live lock and times out rather than breaking it", async () => {
+    const lockDir = join(dir, ".anon-audit.lock");
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(
+      join(lockDir, "owner"),
+      JSON.stringify({ token: "live", pid: process.pid, at: Date.now() }),
+    );
+    // A live holder's heartbeat is fresh — the waiter must not evict
+    // it; it times out instead (LOCK_TIMEOUT_MS = 10s, retry 50ms).
+    await expect(withAnonAuditFileLock(dir, async () => "never")).rejects.toThrow(/timed out/);
+    // The live lock is untouched.
+    expect(readdirSync(dir)).toContain(".anon-audit.lock");
+  }, 15_000);
+
+  it("serializes two concurrent critical sections", async () => {
+    const order: string[] = [];
+    await Promise.all([
+      withAnonAuditFileLock(dir, async () => {
+        order.push("a-start");
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        order.push("a-end");
+      }),
+      withAnonAuditFileLock(dir, async () => {
+        order.push("b-start");
+        order.push("b-end");
+      }),
+    ]);
+    // b cannot start until a finishes.
+    expect(order.indexOf("b-start")).toBeGreaterThan(order.indexOf("a-end"));
   });
 });

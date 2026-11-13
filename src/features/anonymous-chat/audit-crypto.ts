@@ -17,7 +17,6 @@ export type AnonAuditPlaintext = {
   userId: string;
   guildId: string;
   channelId: string;
-  messageId: string;
   postedAt: string;
 };
 

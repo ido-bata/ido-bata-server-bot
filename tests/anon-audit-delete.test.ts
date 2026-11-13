@@ -29,18 +29,16 @@ function auditConfig(): AnonAuditConfig {
 
 async function seed(userIds: string[]): Promise<void> {
   const sink = createAnonAuditSink(auditConfig());
-  for (const [i, userId] of userIds.entries()) {
+  for (const userId of userIds) {
     await sink.record({
       userId,
       guildId: "g",
       channelId: "c",
-      messageId: `m-${i}`,
       postedAt: "t",
       ciphertext: sink.seal({
         userId,
         guildId: "g",
         channelId: "c",
-        messageId: `m-${i}`,
         postedAt: "t",
       }),
     });
@@ -62,10 +60,11 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     expect(result).toEqual({ ok: true, scanned: 3, removed: 2 });
 
     const file = join(dir, dailyFiles()[0]!);
-    const remaining = readFileSync(file, "utf8");
-    expect(remaining).not.toContain('"mid":"m-0"');
-    expect(remaining).not.toContain('"mid":"m-2"');
-    expect(remaining).toContain('"mid":"m-1"');
+    const remaining = readFileSync(file, "utf8")
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    // Records carry no plaintext discriminator — assert by count.
+    expect(remaining).toHaveLength(1);
   });
 
   it("deletes the whole file when every record belongs to the user", async () => {
@@ -126,13 +125,11 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
       userId: "uX",
       guildId: "g",
       channelId: "c",
-      messageId: "m-x",
       postedAt: "t",
       ciphertext: foreign.seal({
         userId: "uX",
         guildId: "g",
         channelId: "c",
-        messageId: "m-x",
         postedAt: "t",
       }),
     });

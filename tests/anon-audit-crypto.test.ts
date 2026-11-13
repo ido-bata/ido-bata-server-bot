@@ -31,7 +31,6 @@ describe("anon audit crypto", () => {
         userId: "u1",
         guildId: "g1",
         channelId: "c1",
-        messageId: "m1",
         postedAt: "t",
       }),
     );
@@ -40,7 +39,6 @@ describe("anon audit crypto", () => {
       userId: "u1",
       guildId: "g1",
       channelId: "c1",
-      messageId: "m1",
       postedAt: "t",
     });
   });

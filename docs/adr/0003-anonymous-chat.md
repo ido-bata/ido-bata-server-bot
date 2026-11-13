@@ -115,15 +115,19 @@ overwrite), with these rules:
   default and the privacy-maximal mode; it is a documented mode, not a
   silent scope reduction — the Issue makes persistence conditional
   ("保存する場合").
-- When set, every successful post appends one record to
-  `data/anon-audit/YYYY-MM-DD.jsonl` (UTC day files):
-  `{ v, gid, cid, mid, ct }` where `gid`/`cid`/`mid` are plaintext
-  operational metadata (guild, channel, public message id) and `ct`
-  is RSA-OAEP-SHA256 ciphertext (base64) of the full author mapping
-  `{ userId, guildId, channelId, messageId, postedAt }`. The message
-  body is never stored (it lives in the public message). Sealing
-  happens after `channel.send` so the ciphertext can carry the public
-  message id — the only moment it exists.
+- When set, every successful post attempt appends one record to
+  `data/anon-audit/YYYY-MM-DD.jsonl` (UTC day files) BEFORE the
+  public send: `{ v, gid, cid, ct }` where `gid`/`cid` are plaintext
+  operational metadata (guild, channel) and `ct` is RSA-OAEP-SHA256
+  ciphertext (base64) of the author mapping
+  `{ userId, guildId, channelId, postedAt }`. The message body is
+  never stored (it lives in the public message). There is no
+  plaintext `mid`: Discord assigns the message id only after send,
+  and the audit record must be durable before the send — the
+  custodian correlates records to messages via the decrypted
+  `channelId` + `postedAt`. Records may exist for send attempts that
+  ultimately failed (orphan records): that is deliberate
+over-recording — the safe direction — and retention sweeps them.
 - **No bot-computable per-user index — by design.** An earlier
   revision stored `idx = HMAC(indexKey, userId)` for `/privacy
   delete` lookup. That was rejected: any deterministic tag over a
@@ -149,18 +153,28 @@ overwrite), with these rules:
   material is explicitly rejected — never written to disk, never
   logged. Only public-key material enters the process. The removed
   `ANON_AUDIT_INDEX_KEY` env var is ignored with a warning.
-- Audit files/dirs are created `0600`/`0700`; appends and retention
-  sweeps are serialized through an in-process promise chain AND a
-  cross-process mkdir-based directory lock (`withAnonAuditFileLock`),
-  so a second bot process or the offline deletion script cannot race
-  an append against a rewrite.
-- Ordering per post: validate → audit-health → cooldown → deny-list →
-  resolve → consent → `channel.send` → seal → append audit. If
-  sealing or the audit append fails after a successful send, the bot
-  deletes the just-posted message and reports `audit_failed` — an
-  anonymous post must never exist without its audit record when
-  audit is on. If the rollback delete ALSO fails, the result is still
-  `audit_failed` (never `ok`) and the failure is logged.
+- Audit files/dirs are created `0600`/`0700`; the audit directory is
+  created eagerly at sink construction so a fresh deployment or bad
+  permissions surfaces as `auditState: "error"` at startup. Appends,
+  retention sweeps, and custodian rewrites are serialized through an
+  in-process promise chain AND a cross-process mkdir-based directory
+  lock (`withAnonAuditFileLock`). The file lock is ownership-aware:
+  the holder publishes a unique token in `<lock>/owner` and
+  heartbeats it; a waiter breaks a lock only when its heartbeat is
+  stale (>30 s), so a live-but-slow holder (e.g. the custodian
+  decrypting a large history) is never evicted, and release is
+  token-checked so a holder cannot delete a successor's lock after a
+  stale-break race.
+- Ordering per post: audit-health → validate → cooldown → deny-list →
+  resolve → consent → seal → append audit → `channel.send`. Because
+  the audit record is durable BEFORE the public send, no public
+  anonymous message can exist without its audit record — including
+  the crash window and the "send accepted but response lost" case.
+  A seal or append failure rejects the post before any public side
+  effect (`audit_failed`); a failed send leaves only an orphan
+  record. This replaces the earlier send-then-record design whose
+  rollback-delete could not cover process termination or a failed
+  rollback.
 - **Configured-but-broken audit refuses ALL posts.** `ANON_AUDIT_PUBLIC_KEY`
   set but the sink fails to initialize (invalid key material) →
   `auditState: "error"`, every `/anon` call returns unavailable, and

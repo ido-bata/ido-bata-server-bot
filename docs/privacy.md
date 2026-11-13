@@ -60,7 +60,7 @@ touch only ephemeral or operational data are listed for completeness.
 | poll                | `data/polls.json`                            | Discord snowflake | `votes: Record<userId, optionIndex>` + creatorId | `activity-history`  |
 | reminder            | `data/reminders.json`                        | Discord snowflake | `{ id, userId, message, fireAt, createdAt }` | `activity-history`  |
 | state-snapshot      | `data/snapshots/<id>.snap.enc`              | bundled          | encrypted AES-256-GCM mirror of all source files | `activity-history` (special: revoke must trigger snapshot expiry via `applyRetentionPlan`) |
-| anonymous-chat      | `data/anon-audit/YYYY-MM-DD.jsonl`          | ciphertext only  | RSA-OAEP-encrypted `{userId, guildId, channelId, messageId, postedAt}` + public `gid`/`cid`/`mid` metadata; bot holds public key only — no decryptable or searchable per-user index | `message-history` |
+| anonymous-chat      | `data/anon-audit/YYYY-MM-DD.jsonl`          | ciphertext only  | RSA-OAEP-encrypted `{userId, guildId, channelId, postedAt}` + public `gid`/`cid` metadata; record written BEFORE the public send so no anonymous message exists without an audit record; bot holds public key only — no decryptable or searchable per-user index | `message-history` |
 
 ### 3.2 Operational persistent (justified, no consent gate)
 

@@ -438,7 +438,7 @@ describe("anonymous-chat service — audit mode", () => {
     });
   }
 
-  it("seals after posting and records the audit line", async () => {
+  it("seals and records BEFORE posting — no public post without a durable record", async () => {
     const { channel, send } = makeChannel({
       permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
     });
@@ -446,31 +446,36 @@ describe("anonymous-chat service — audit mode", () => {
     const { service } = makeDeps({ channel, config: auditConfig(), audit });
     const result = await service.post(INPUT);
     expect(result).toEqual({ ok: true });
-    // Seal happens after send so the ciphertext can carry the public
-    // message id (ADR-0003 §3).
-    expect(send).toHaveBeenCalled();
     expect(audit.seal).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: "user-1",
         guildId: "guild-1",
         channelId: "chan-1",
-        messageId: "msg-1",
       }),
     );
+    // The sealed mapping must not carry a message id — Discord assigns
+    // it only after send, and the record must exist before the send.
+    const sealed = (audit.seal as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(sealed).not.toHaveProperty("messageId");
     expect(audit.record).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: "user-1",
-        messageId: "msg-1",
         ciphertext: "sealed-ct",
       }),
     );
+    expect(send).toHaveBeenCalled();
+    // Ordering: record completes before channel.send is invoked.
+    const recordOrder = (audit.record as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
+    const sendOrder = send.mock.invocationCallOrder[0]!;
+    expect(recordOrder).toBeLessThan(sendOrder);
   });
 
-  it("rejects the post when sealing fails — the message is deleted", async () => {
-    const deleteMock = vi.fn(async () => undefined);
-    const { channel } = makeChannel({
+  it("rejects the post when sealing fails — send is never called", async () => {
+    const { channel, send } = makeChannel({
       permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
-      sendImpl: async () => ({ id: "msg-9", delete: deleteMock }),
     });
     const audit = makeAudit({
       seal: vi.fn(() => {
@@ -479,15 +484,13 @@ describe("anonymous-chat service — audit mode", () => {
     });
     const { service } = makeDeps({ channel, config: auditConfig(), audit });
     expect(await service.post(INPUT)).toEqual({ ok: false, reason: "audit_failed" });
-    expect(deleteMock).toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
     expect(audit.record).not.toHaveBeenCalled();
   });
 
-  it("deletes the posted message when the audit append fails", async () => {
-    const deleteMock = vi.fn(async () => undefined);
-    const { channel } = makeChannel({
+  it("rejects the post when the audit append fails — send is never called", async () => {
+    const { channel, send } = makeChannel({
       permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
-      sendImpl: async () => ({ id: "msg-9", delete: deleteMock }),
     });
     const audit = makeAudit({
       record: vi.fn(async () => {
@@ -496,7 +499,23 @@ describe("anonymous-chat service — audit mode", () => {
     });
     const { service } = makeDeps({ channel, config: auditConfig(), audit });
     expect(await service.post(INPUT)).toEqual({ ok: false, reason: "audit_failed" });
-    expect(deleteMock).toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("leaves an orphan audit record when the send fails after append", async () => {
+    const { channel, send } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+      sendImpl: async () => {
+        throw new Error("DiscordAPIError: 50013");
+      },
+    });
+    const audit = makeAudit();
+    const { service } = makeDeps({ channel, config: auditConfig(), audit });
+    // Over-recording is the safe direction: the record exists even
+    // though no message was posted (ADR-0003 §3).
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "post_failed" });
+    expect(audit.record).toHaveBeenCalled();
+    expect(send).toHaveBeenCalled();
   });
 
   it("denies audit writes when consent authorization fails", async () => {
@@ -670,36 +689,5 @@ describe("anonymous-chat service — error sanitization", () => {
     expect(fields.errName).toBe("DiscordAPIError");
     expect(fields.errCode).toBe(50013);
     expect(fields.errStatus).toBe(403);
-  });
-
-  it("still returns audit_failed when the rollback delete also fails", async () => {
-    const { channel } = makeChannel({
-      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
-      sendImpl: async () => ({
-        id: "msg-x",
-        delete: async () => {
-          throw new Error("delete failed for user-1");
-        },
-      }),
-    });
-    const audit = {
-      seal: () => "ct",
-      record: async () => {
-        throw new Error("disk full");
-      },
-      sweep: async () => undefined,
-    };
-    const { service, logger } = makeDeps({
-      channel,
-      config: makeConfig({
-        audit: { publicKey: "x", dir: "data/anon-audit", retentionDays: 90 },
-      }),
-      audit,
-    });
-    const result = await service.post(INPUT);
-    expect(result).toEqual({ ok: false, reason: "audit_failed" });
-    expect(logger.error).toHaveBeenCalled();
-    const logged = JSON.stringify(logger.error.mock.calls);
-    expect(logged).not.toContain("user-1");
   });
 });
