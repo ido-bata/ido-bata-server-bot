@@ -16,6 +16,7 @@
     "smoke:stage": "tsx src/scripts/stage-audio-smoke.ts",
     "deploy:commands": "tsx src/scripts/deploy-commands.ts",
     "restore:state": "tsx src/scripts/restore-snapshot.ts",
+    "storage:migrate": "tsx src/scripts/storage-migrate.ts",
     "anon:audit:delete": "tsx src/scripts/anon-audit-delete.ts",
     "start": "tsx src/index.ts",
     "test": "vitest run",
@@ -43,6 +44,7 @@
     "vitest": "^4.1.11"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1168.0",
     "@discordjs/voice": "^0.19.2",
     "discord.js": "^14.27.0",
     "dotenv": "^17.4.2",
