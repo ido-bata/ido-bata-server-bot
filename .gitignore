@@ -34,8 +34,9 @@ data/reminders.json
 # Subject identifiers and revocation timestamps must never be committed.
 data/consent.json
 
-# Anonymous-chat audit log — encrypted author↔message mappings plus
-# HMAC lookup indexes. Runtime state only; never committed (ADR-0003).
+# Anonymous-chat audit log — RSA-OAEP-encrypted author mappings,
+# one immutable file per record. Runtime state only; never committed
+# (ADR-0003).
 data/anon-audit/
 
 # Local persisted state for the iCal calendar feature

@@ -155,9 +155,7 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
       // would silently overwrite an existing record), and readers
       // (privacy detection, custodian deletion) only ever see
       // complete records — never a partial or empty file at a
-      // record name. Temp files are removed on any failure; a
-      // leftover temp is still harmless (the sweep removes stale
-      // `.tmp` orphans).
+      // record name.
       let lastError: unknown;
       for (let attempt = 0; attempt < 3; attempt++) {
         const finalName = recordFileName(new Date());
@@ -165,9 +163,21 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
         const finalPath = join(dir, finalName);
         try {
           await writeFile(tempPath, line, { encoding: "utf8", mode: 0o600, flag: "wx" });
+        } catch (error) {
+          // EEXIST means another attempt owns that temp name — never
+          // remove a file we did not create. Any other writeFile
+          // failure means `wx` did not create the file for someone
+          // else (POSIX returns EEXIST for existing names), so a
+          // partial file at tempPath can only be ours.
+          if (isNodeError(error) && error.code === "EEXIST") {
+            lastError = error;
+            continue;
+          }
+          await rm(tempPath, { force: true }).catch(() => {});
+          throw error;
+        }
+        try {
           await link(tempPath, finalPath);
-          await unlink(tempPath).catch(() => {});
-          return;
         } catch (error) {
           await rm(tempPath, { force: true }).catch(() => {});
           if (isNodeError(error) && error.code === "EEXIST") {
@@ -175,6 +185,20 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
             continue;
           }
           throw error;
+        }
+        try {
+          await unlink(tempPath);
+          return;
+        } catch {
+          // The temp name is a second hard link to the published
+          // ciphertext. Leaving it would let a custodian delete the
+          // record file while this alias keeps the data readable, so
+          // withdraw the publish and fail rather than report success
+          // with a surviving alias. `record()` throwing maps to
+          // `audit_failed` — no public post is sent.
+          await rm(finalPath, { force: true }).catch(() => {});
+          await rm(tempPath, { force: true }).catch(() => {});
+          throw new Error("anon-audit temp unlink failed");
         }
       }
       throw lastError;
@@ -203,6 +227,11 @@ export async function hasAnonAuditRecords(dir: string): Promise<boolean> {
     throw error;
   }
   for (const name of entries) {
+    // A `.tmp` file may be an unpublished partial record or a hard-link
+    // alias to published ciphertext — either way records may exist.
+    if (name.endsWith(".tmp")) {
+      return true;
+    }
     if (!FILE_NAME_PATTERN.test(name)) {
       continue;
     }

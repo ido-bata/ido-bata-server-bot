@@ -106,7 +106,11 @@ export async function deleteAnonAuditUserRecords(options: {
   };
 
   try {
-    const names = (await readdir(dir)).filter((name) => FILE_NAME_PATTERN.test(name));
+    const entries = await readdir(dir);
+    const names = entries.filter((name) => FILE_NAME_PATTERN.test(name));
+    // Hidden temp files may be hard-link aliases to published
+    // ciphertext — a record file deletion must not leave one behind.
+    const tempNames = entries.filter((name) => name.endsWith(".tmp"));
 
     // Phase 1: inspect EVERY record before modifying ANY file.
     const plans: Plan[] = [];
@@ -199,6 +203,14 @@ export async function deleteAnonAuditUserRecords(options: {
     }
 
     // Phase 2: modify only after every record inspected cleanly.
+    // Drop temp files first: they can be hard-link aliases to the
+    // ciphertext about to be deleted, so a completed run must not
+    // leave any behind. An in-flight bot write loses its temp and
+    // its publish then fails — the post is refused, never sent
+    // unaudited (fail closed).
+    for (const tempName of tempNames) {
+      await rm(join(dir, tempName), { force: true });
+    }
     for (const plan of plans) {
       const path = join(dir, plan.name);
       if (plan.kind === "remove-file") {

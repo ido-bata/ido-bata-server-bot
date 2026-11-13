@@ -372,8 +372,8 @@ async function main(): Promise<void> {
     });
   }
   // `/anon` anonymous chat. The service is always constructed; audit
-  // persistence only activates when ANON_AUDIT_PUBLIC_KEY +
-  // ANON_AUDIT_INDEX_KEY are both configured (ADR-0003). Audit writes
+  // persistence only activates when ANON_AUDIT_PUBLIC_KEY is
+  // configured (ADR-0003). Audit writes
   // are consent-gated on `message-history` when the consent subsystem
   // is deployed.
   const { config: anonConfig, warning: anonConfigWarning } = readAnonymousChatConfig(process.env);

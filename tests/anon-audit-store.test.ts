@@ -187,4 +187,9 @@ describe("hasAnonAuditRecords", () => {
     writeFileSync(join(dir, "2026-11-13.jsonl"), '{"v":1,"ct":"x"}\n');
     expect(await hasAnonAuditRecords(dir)).toBe(true);
   });
+
+  it("treats temp files as possible records (fail closed)", async () => {
+    writeFileSync(join(dir, ".2026-11-13T00-00-00-000Z-aaaabbbb.tmp"), "partial");
+    expect(await hasAnonAuditRecords(dir)).toBe(true);
+  });
 });

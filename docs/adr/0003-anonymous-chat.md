@@ -140,8 +140,9 @@ overwrite), with these rules:
   daily files from earlier revisions are still detected, swept, and
   handled by the custodian (kept-lines rewrite — safe because no
   current writer targets those names). Custodian deletion removes
-  whole per-record files, so a concurrent append can never be
-  dropped. This replaces an earlier daily-JSONL + mkdir-lock design
+  whole per-record files AND any `.tmp` files, so a hard-link alias
+  left by a failed temp unlink can never survive a completed run —
+  a concurrent append can never be dropped. This replaces an earlier daily-JSONL + mkdir-lock design
   whose stale-breaking and read-modify-write paths could not be
   made race-free.
 - **No bot-computable per-user index — by design.** An earlier

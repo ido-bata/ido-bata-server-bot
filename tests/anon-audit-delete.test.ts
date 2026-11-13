@@ -129,6 +129,21 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     expect(recordFiles()).toHaveLength(2);
   });
 
+  it("removes temp files so no hard-link alias survives deletion", async () => {
+    await seed(["u1"]);
+    // Simulate a leftover publish temp — it may alias the ciphertext.
+    writeFileSync(join(dir, ".2026-11-13T12-00-00-000Z-aaaabbbb.tmp"), "partial");
+
+    const result = await deleteAnonAuditUserRecords({
+      dir,
+      privateKey,
+      userId: "u1",
+    });
+    expect(result.ok).toBe(true);
+    expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toHaveLength(0);
+    expect(recordFiles()).toHaveLength(0);
+  });
+
   it("fails closed on an empty record file and modifies nothing", async () => {
     await seed(["u1", "u2"]);
     // An empty file may be an interrupted write hiding the target —

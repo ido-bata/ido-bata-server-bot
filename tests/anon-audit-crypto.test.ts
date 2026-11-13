@@ -34,7 +34,11 @@ describe("anon audit crypto", () => {
         postedAt: "t",
       }),
     );
-    expect(ct).not.toContain("u1");
+    // The ciphertext is base64 — it can never contain the JSON
+    // plaintext fragment (quotes/braces are outside the base64
+    // alphabet), and the private-key round trip below proves the
+    // payload survived encryption intact.
+    expect(ct).not.toContain('"userId"');
     expect(JSON.parse(open(ct))).toEqual({
       userId: "u1",
       guildId: "g1",
