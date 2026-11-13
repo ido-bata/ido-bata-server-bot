@@ -161,6 +161,13 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
         const finalName = recordFileName(new Date());
         const tempPath = join(dir, `.${finalName}-${randomBytes(4).toString("hex")}.tmp`);
         const finalPath = join(dir, finalName);
+        // Ownership tracking: a temp is removed on failure ONLY when
+        // this attempt created it (open wx succeeded); a published
+        // final is withdrawn when a post-publish step fails, so
+        // record() never reports success with a half-published or
+        // alias-carrying record.
+        let tempOwned = false;
+        let finalPublished = false;
         try {
           // Crash durability (ADR-0003 §3): the record must be on
           // stable storage BEFORE it becomes visible under its final
@@ -170,6 +177,7 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
           // crash. Any failure aborts the publish and fails closed —
           // the post is refused rather than sent unaudited.
           const handle = await open(tempPath, "wx", 0o600);
+          tempOwned = true;
           try {
             await handle.writeFile(line);
             await handle.sync();
@@ -179,6 +187,7 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
           await link(tempPath, finalPath);
           try {
             await unlink(tempPath);
+            tempOwned = false; // the temp name is gone; final is the only name
           } catch {
             // The temp name is a second hard link to the published
             // ciphertext. Leaving it would let a custodian delete the
@@ -190,6 +199,7 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
             await rm(tempPath, { force: true }).catch(() => {});
             throw new Error("anon-audit temp unlink failed");
           }
+          finalPublished = true;
           const dirHandle = await open(dir, "r");
           try {
             await dirHandle.sync();
@@ -198,16 +208,22 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
           }
           return;
         } catch (error) {
+          if (tempOwned) {
+            await rm(tempPath, { force: true }).catch(() => {});
+          }
+          if (finalPublished) {
+            // Directory durability could not be confirmed — withdraw
+            // the published record rather than leave an unconfirmed
+            // audit entry behind a failed post.
+            await rm(finalPath, { force: true }).catch(() => {});
+          }
           // EEXIST means another attempt owns that temp name (open wx)
           // or the final name (link) — never remove a file we did not
-          // create. Any other failure means `wx` did not create the
-          // file for someone else (POSIX returns EEXIST for existing
-          // names), so a partial file at tempPath can only be ours.
+          // create; our own temp was already cleaned up above.
           if (isNodeError(error) && error.code === "EEXIST") {
             lastError = error;
             continue;
           }
-          await rm(tempPath, { force: true }).catch(() => {});
           throw error;
         }
       }

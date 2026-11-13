@@ -194,9 +194,10 @@ overwrite), with these rules:
      `bun run anon:audit:delete -- --key-file <private.pem> --dir
      <audit-dir> --user <id>` against a copy of (or direct access to)
      the audit directory. The script inspects every record before
-     modifying anything and aborts on any anomaly — ops must treat a
-     non-`ok` result as "deletion NOT performed" and investigate,
-     never retry blindly.
+     modifying anything: inspection anomalies abort the run with NO
+     modifications, while an operational failure during the delete
+     phase itself can leave partial progress — safe to rerun after
+     fixing the cause since inspection is deterministic.
   3. **Consent revocation**: revoking `message-history` stops FUTURE
      audit writes immediately (the consent gate fails closed). It
      does NOT retroactively delete records already written — those
