@@ -32,7 +32,9 @@ describe("readAnonymousChatConfig", () => {
     expect(config.audit).not.toBeNull();
     expect(config.audit?.publicKey).toBe("pub");
     expect(config.audit?.keyId).toBe("v1");
-    expect(config.audit?.dir).toBe("data/anon-audit");
+    // Storage key prefix (ADR-0004): the local backend resolves it to
+    // `data/anon-audit`, object storage to `anon-audit/` in the bucket.
+    expect(config.audit?.dir).toBe("anon-audit");
     expect(config.audit?.retentionDays).toBe(90);
     expect(warning).toBeUndefined();
   });

@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 
 import { z } from "zod";
 
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
+import { createLocalFileStorage } from "../../lib/storage/local.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
 
 const logger = childFor(getRootLogger(), "poll");
 
@@ -83,8 +84,9 @@ export function createPollState(): PollStateFile {
 }
 
 export type PollStore = {
-  load: () => PollStateFile;
-  save: (state: PollStateFile) => void;
+  load: () => Promise<PollStateFile>;
+  save: (state: PollStateFile) => Promise<void>;
+  /** Storage key of the poll state. */
   path: string;
 };
 
@@ -94,15 +96,10 @@ export type PollStore = {
  * intentionally narrow so that future migration to SQLite (issue #25) is just
  * a translator away from this representation.
  */
-export function createFilePollStore(filePath: string): PollStore {
-  function load(): PollStateFile {
-    if (!existsSync(filePath)) {
-      return createPollState();
-    }
-
-    const raw = readFileSync(filePath, "utf8");
-
-    if (raw.trim().length === 0) {
+export function createPollStore(options: { driver: StorageDriver; key: string }): PollStore {
+  async function load(): Promise<PollStateFile> {
+    const raw = await options.driver.readText(options.key);
+    if (raw === null || raw.trim().length === 0) {
       return createPollState();
     }
 
@@ -111,20 +108,30 @@ export function createFilePollStore(filePath: string): PollStore {
 
     if (!result.success) {
       // Corrupt state should not bring the bot down. Log and start fresh; a
-      // future migration tool can recover from the original file.
-      logger.warn({ filePath, reason: result.error.message }, "discarding unparseable state file");
+      // future migration tool can recover from the original object.
+      logger.warn(
+        { key: options.key, reason: result.error.message },
+        "discarding unparseable state file",
+      );
       return createPollState();
     }
 
     return result.data;
   }
 
-  function save(state: PollStateFile): void {
-    mkdirSync(dirname(filePath), { recursive: true });
-    writeFileSync(filePath, JSON.stringify(state, null, 2), "utf8");
+  async function save(state: PollStateFile): Promise<void> {
+    await options.driver.write(options.key, `${JSON.stringify(state, null, 2)}\n`);
   }
 
-  return { load, save, path: filePath };
+  return { load, save, path: options.key };
+}
+
+/** Poll state pinned to one file on the local filesystem (tests, operators). */
+export function createFilePollStore(filePath: string): PollStore {
+  return createPollStore({
+    driver: createLocalFileStorage({ root: dirname(filePath) }),
+    key: basename(filePath),
+  });
 }
 
 export function findPollByMessageId(state: PollStateFile, messageId: string): Poll | undefined {

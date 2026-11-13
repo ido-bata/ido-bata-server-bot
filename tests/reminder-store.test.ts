@@ -16,17 +16,17 @@ function makeLoadOptions(): { options: LoadOptions; cleanup: () => void } {
 }
 
 describe("reminder store", () => {
-  it("returns an empty list when the file does not exist", () => {
+  it("returns an empty list when the file does not exist", async () => {
     const { options, cleanup } = makeLoadOptions();
     try {
-      const result = loadReminders(options);
+      const result = await loadReminders(options);
       expect(result.reminders).toEqual([]);
     } finally {
       cleanup();
     }
   });
 
-  it("round-trips reminders through save -> load", () => {
+  it("round-trips reminders through save -> load", async () => {
     const { options, cleanup } = makeLoadOptions();
     try {
       const reminders = [
@@ -38,23 +38,23 @@ describe("reminder store", () => {
           createdAt: "2030-01-01T11:50:00+09:00",
         },
       ];
-      saveReminders(reminders, options);
-      const loaded = loadReminders(options);
+      await saveReminders(reminders, options);
+      const loaded = await loadReminders(options);
       expect(loaded.reminders).toEqual(reminders);
     } finally {
       cleanup();
     }
   });
 
-  it("treats malformed JSON as empty without throwing", () => {
+  it("treats malformed JSON as empty without throwing", async () => {
     const { options, cleanup } = makeLoadOptions();
     const filePath = options.filePath as string;
     try {
       // Pre-write a corrupted file.
-      saveReminders([], { filePath });
+      await saveReminders([], { filePath });
       // Now overwrite with garbage using the underlying path.
       writeFileSync(filePath, "{not valid json", "utf8");
-      const loaded = loadReminders(options);
+      const loaded = await loadReminders(options);
       expect(loaded.reminders).toEqual([]);
     } finally {
       cleanup();

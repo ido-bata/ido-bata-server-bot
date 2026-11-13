@@ -11,6 +11,8 @@ import type {
 import { lookupAnonAuditRecords } from "../src/features/anonymous-chat/audit-lookup.js";
 import { createAnonAuditSink } from "../src/features/anonymous-chat/audit-store.js";
 import type { AnonAuditConfig } from "../src/features/anonymous-chat/config.js";
+import { createLocalFileStorage } from "../src/lib/storage/local.js";
+import type { StorageDriver } from "../src/lib/storage/types.js";
 
 const { publicKey, privateKey } = generateKeyPairSync("rsa", {
   modulusLength: 2048,
@@ -19,21 +21,23 @@ const { publicKey, privateKey } = generateKeyPairSync("rsa", {
 });
 
 let dir: string;
+let driver: StorageDriver;
 let cleanup: () => void;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "anon-audit-lookup-"));
+  driver = createLocalFileStorage({ root: dir });
   cleanup = () => rmSync(dir, { recursive: true, force: true });
 });
 
 afterEach(() => cleanup());
 
 function auditConfig(): AnonAuditConfig {
-  return { publicKey, keyId: "v1", dir, retentionDays: 90 };
+  return { publicKey, keyId: "v1", dir: "", retentionDays: 90 };
 }
 
 async function seedPost(userId: string, messageId: string, attemptId = "a".repeat(32)) {
-  const sink = createAnonAuditSink(auditConfig());
+  const sink = createAnonAuditSink(auditConfig(), { driver });
   await sink.record({
     kind: "attempt",
     guildId: "g",
@@ -69,7 +73,8 @@ describe("lookupAnonAuditRecords", () => {
   it("maps a real messageId to its author", async () => {
     await seedPost("user-1", "msg-123");
     const result = await lookupAnonAuditRecords({
-      dir,
+      dir: "",
+      driver,
       privateKeys: [privateKey],
       filter: { messageId: "msg-123" },
     });
@@ -86,7 +91,8 @@ describe("lookupAnonAuditRecords", () => {
   it("filters by userId across both record kinds", async () => {
     await seedPost("user-1", "msg-1");
     const result = await lookupAnonAuditRecords({
-      dir,
+      dir: "",
+      driver,
       privateKeys: [privateKey],
       filter: { userId: "user-1" },
     });
@@ -99,7 +105,8 @@ describe("lookupAnonAuditRecords", () => {
   it("filters by attemptId", async () => {
     await seedPost("user-1", "msg-1", "b".repeat(32));
     const result = await lookupAnonAuditRecords({
-      dir,
+      dir: "",
+      driver,
       privateKeys: [privateKey],
       filter: { attemptId: "b".repeat(32) },
     });
@@ -111,7 +118,7 @@ describe("lookupAnonAuditRecords", () => {
   it("reports attempt records lacking a posted link", async () => {
     await seedPost("user-1", "msg-1");
     // Orphan attempt: send failed or crash before posted record.
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     await sink.record({
       kind: "attempt",
       guildId: "g",
@@ -127,7 +134,8 @@ describe("lookupAnonAuditRecords", () => {
       }),
     });
     const result = await lookupAnonAuditRecords({
-      dir,
+      dir: "",
+      driver,
       privateKeys: [privateKey],
       filter: { unmatchedAttempts: true },
     });
@@ -144,7 +152,7 @@ describe("lookupAnonAuditRecords", () => {
   });
 
   it("fails closed on a posted record missing messageId", async () => {
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     await sink.record({
       kind: "posted",
       guildId: "g",
@@ -160,7 +168,8 @@ describe("lookupAnonAuditRecords", () => {
       } as unknown as AnonAuditPostedPlaintext),
     });
     const result = await lookupAnonAuditRecords({
-      dir,
+      dir: "",
+      driver,
       privateKeys: [privateKey],
       filter: { userId: "user-bad" },
     });
@@ -168,7 +177,7 @@ describe("lookupAnonAuditRecords", () => {
   });
 
   it("fails closed on an unsupported record version", async () => {
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     await sink.record({
       kind: "attempt",
       guildId: "g",
@@ -184,7 +193,8 @@ describe("lookupAnonAuditRecords", () => {
       } as unknown as AnonAuditAttemptPlaintext),
     });
     const result = await lookupAnonAuditRecords({
-      dir,
+      dir: "",
+      driver,
       privateKeys: [privateKey],
       filter: { userId: "user-v3" },
     });
@@ -192,7 +202,7 @@ describe("lookupAnonAuditRecords", () => {
   });
 
   it("still resolves legacy v1 records without v2 markers", async () => {
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     await sink.record({
       kind: "attempt",
       guildId: "g",
@@ -205,7 +215,8 @@ describe("lookupAnonAuditRecords", () => {
       } as unknown as AnonAuditAttemptPlaintext),
     });
     const result = await lookupAnonAuditRecords({
-      dir,
+      dir: "",
+      driver,
       privateKeys: [privateKey],
       filter: { userId: "user-legacy" },
     });
@@ -222,7 +233,10 @@ describe("lookupAnonAuditRecords", () => {
       privateKeyEncoding: { format: "pem", type: "pkcs8" },
     });
     // Record sealed under `other`'s public key.
-    const foreignSink = createAnonAuditSink({ ...auditConfig(), publicKey: other.publicKey });
+    const foreignSink = createAnonAuditSink(
+      { ...auditConfig(), publicKey: other.publicKey },
+      { driver },
+    );
     await foreignSink.record({
       kind: "posted",
       guildId: "g",
@@ -239,7 +253,8 @@ describe("lookupAnonAuditRecords", () => {
       }),
     });
     const result = await lookupAnonAuditRecords({
-      dir,
+      dir: "",
+      driver,
       privateKeys: [privateKey, other.privateKey],
       filter: { messageId: "msg-old" },
     });
@@ -254,7 +269,10 @@ describe("lookupAnonAuditRecords", () => {
       publicKeyEncoding: { format: "pem", type: "spki" },
       privateKeyEncoding: { format: "pem", type: "pkcs8" },
     });
-    const foreignSink = createAnonAuditSink({ ...auditConfig(), publicKey: other.publicKey });
+    const foreignSink = createAnonAuditSink(
+      { ...auditConfig(), publicKey: other.publicKey },
+      { driver },
+    );
     await foreignSink.record({
       kind: "attempt",
       guildId: "g",
@@ -270,7 +288,8 @@ describe("lookupAnonAuditRecords", () => {
       }),
     });
     const result = await lookupAnonAuditRecords({
-      dir,
+      dir: "",
+      driver,
       privateKeys: [privateKey],
       filter: { userId: "user-x" },
     });
@@ -284,7 +303,8 @@ describe("lookupAnonAuditRecords", () => {
     const file = join(dir, readdirSync(dir).find((n) => n.endsWith(".jsonl"))!);
     writeFileSync(file, "not-json\n");
     const result = await lookupAnonAuditRecords({
-      dir,
+      dir: "",
+      driver,
       privateKeys: [privateKey],
       filter: { userId: "user-1" },
     });

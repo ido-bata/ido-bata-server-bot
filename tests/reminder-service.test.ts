@@ -128,13 +128,13 @@ describe("reminder queue", () => {
       fireAt: new Date(now.getTime() + 60_000),
     });
     expect(result.ok).toBe(true);
-    const persisted = loadReminders(options);
+    const persisted = await loadReminders(options);
     expect(persisted.reminders).toHaveLength(1);
     expect(persisted.reminders[0]?.message).toBe("remember");
   });
 
   it("loads existing reminders on construction (reload-on-boot pattern)", async () => {
-    saveReminders(
+    await saveReminders(
       [
         {
           id: "preloaded",
@@ -152,6 +152,8 @@ describe("reminder queue", () => {
       loadOptions: options,
       now: () => now,
     });
+    // The store is read asynchronously — the first tick awaits the load.
+    await queue.tick();
     expect(queue.list().map((r) => r.id)).toEqual(["preloaded"]);
   });
 
@@ -164,7 +166,7 @@ describe("reminder queue", () => {
     }));
     // Seed the store with a reminder whose fire is already in the past so the
     // very next tick dispatches it.
-    saveReminders(
+    await saveReminders(
       [
         {
           id: "due-1",
@@ -187,7 +189,7 @@ describe("reminder queue", () => {
     await queue.tick();
 
     expect(openDm).toHaveBeenCalledWith("u1");
-    const persisted = loadReminders(options);
+    const persisted = await loadReminders(options);
     expect(persisted.reminders).toEqual([]);
   });
 
@@ -198,7 +200,7 @@ describe("reminder queue", () => {
     // up. We bypass `queue.add` here because the production validator
     // refuses past fire times — store-level seeding simulates the
     // reload-after-restart path.
-    saveReminders(
+    await saveReminders(
       [
         {
           id: "due-1",
@@ -219,7 +221,7 @@ describe("reminder queue", () => {
     });
 
     await queue.tick();
-    const persisted = loadReminders(options);
+    const persisted = await loadReminders(options);
     expect(persisted.reminders).toHaveLength(1);
   });
 

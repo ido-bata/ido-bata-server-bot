@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,7 +21,6 @@ import {
   buildSnapshotId,
   createSnapshot,
   type EncryptedSnapshot,
-  ensureSnapshotDir,
   listSnapshots,
   loadEncryptedSnapshot,
   readSnapshotMetadata,
@@ -33,6 +32,8 @@ import {
   createGitHubApiUploader,
   createNoopUploader,
 } from "../src/features/state-snapshot/uploaders.js";
+import { createLocalFileStorage } from "../src/lib/storage/local.js";
+import type { StorageDriver } from "../src/lib/storage/types.js";
 
 function makeKeyHex(): string {
   return randomBytes(32).toString("hex");
@@ -91,39 +92,29 @@ describe("state-snapshot scheduler", () => {
 
 describe("state-snapshot create + restore", () => {
   let workDir: string;
-  let snapshotDir: string;
-  let sourceDir: string;
+  let driver: StorageDriver;
   let sourcePath: string;
   let missingPath: string;
-  let previousCwd: string;
   const hexKey = makeKeyHex();
 
   beforeEach(() => {
     workDir = createTempDir("state-snap-");
-    snapshotDir = join(workDir, "snapshots");
-    sourceDir = join(workDir, "sources");
-    mkdirSync(sourceDir, { recursive: true });
-    // Use relative source paths so `restoreSnapshot` can join them
-    // under the caller-supplied `outputDir`. Absolute paths would
-    // produce a doubled `outputDir\\absolute` path (invalid on Windows,
-    // silently misrouted on POSIX via `mkdir {recursive: true}`).
-    previousCwd = process.cwd();
-    process.chdir(workDir);
-    sourcePath = join("sources", "bot.db");
-    missingPath = join("sources", "missing.json");
-    writeFileSync(sourcePath, Buffer.from("select 1;"));
+    driver = createLocalFileStorage({ root: workDir });
+    // Storage keys are relative to the storage root, so `restoreSnapshot`
+    // can join them under the caller-supplied `outputDir`.
+    sourcePath = "sources/bot.db";
+    missingPath = "sources/missing.json";
+    mkdirSync(join(workDir, "sources"), { recursive: true });
+    writeFileSync(join(workDir, sourcePath), Buffer.from("select 1;"));
   });
 
   afterEach(() => {
-    // Restore cwd so the next test sees a stable working directory
-    // (and so Windows can rmSync the temp dir).
-    process.chdir(previousCwd);
     rmSync(workDir, { recursive: true, force: true });
   });
 
   it("writes a file with the expected extension and round-trips data", async () => {
     const metadata = await createSnapshot(
-      { snapshotDir, sourcePaths: [sourcePath] },
+      { driver, snapshotPrefix: "snapshots", sourceKeys: [sourcePath] },
       hexKey,
       new Date("2026-04-01T03:00:00+09:00"),
     );
@@ -132,39 +123,51 @@ describe("state-snapshot create + restore", () => {
     expect(metadata.files[0]).toMatchObject({ missing: false, path: sourcePath });
 
     const restoreDir = join(workDir, "restore");
-    const result = await restoreSnapshot(metadata.path, hexKey, { outputDir: restoreDir });
+    const result = await restoreSnapshot(metadata.path, hexKey, {
+      driver,
+      outputDir: restoreDir,
+    });
     expect(result.files).toHaveLength(1);
     expect(result.manifest.createdAt).toBe("2026-03-31T18:00:00.000Z");
   });
 
   it("marks missing sources as `missing` but still writes a valid snapshot", async () => {
     const metadata = await createSnapshot(
-      { snapshotDir, sourcePaths: [sourcePath, missingPath] },
+      { driver, snapshotPrefix: "snapshots", sourceKeys: [sourcePath, missingPath] },
       hexKey,
       new Date("2026-04-01T03:00:00+09:00"),
     );
 
-    const restored = readSnapshotMetadata(metadata.path, hexKey);
+    const restored = await readSnapshotMetadata(metadata.path, hexKey, driver);
     expect(restored.files.map((file) => file.path)).toEqual([sourcePath, missingPath]);
     expect(restored.files[0]?.missing).toBe(false);
     expect(restored.files[1]?.missing).toBe(true);
   });
 
   it("fails to restore with the wrong key", async () => {
-    const metadata = await createSnapshot({ snapshotDir, sourcePaths: [sourcePath] }, hexKey);
+    const metadata = await createSnapshot(
+      { driver, snapshotPrefix: "snapshots", sourceKeys: [sourcePath] },
+      hexKey,
+    );
     await expect(
-      restoreSnapshot(metadata.path, makeKeyHex(), { outputDir: join(workDir, "restore") }),
+      restoreSnapshot(metadata.path, makeKeyHex(), {
+        driver,
+        outputDir: join(workDir, "restore"),
+      }),
     ).rejects.toThrow();
   });
 
   it("refuses to restore a tampered snapshot", async () => {
-    const metadata = await createSnapshot({ snapshotDir, sourcePaths: [sourcePath] }, hexKey);
-    const buffer = readFileSync(metadata.path);
+    const metadata = await createSnapshot(
+      { driver, snapshotPrefix: "snapshots", sourceKeys: [sourcePath] },
+      hexKey,
+    );
+    const buffer = Buffer.from((await driver.read(metadata.path)) ?? new Uint8Array());
     buffer[64] = buffer[64]! ^ 0xff;
-    writeFileSync(metadata.path, buffer);
+    await driver.write(metadata.path, buffer);
 
     await expect(
-      restoreSnapshot(metadata.path, hexKey, { outputDir: join(workDir, "restore") }),
+      restoreSnapshot(metadata.path, hexKey, { driver, outputDir: join(workDir, "restore") }),
     ).rejects.toThrow();
   });
 
@@ -175,64 +178,60 @@ describe("state-snapshot create + restore", () => {
 
   it("lists snapshots newest-first", async () => {
     await createSnapshot(
-      { snapshotDir, sourcePaths: [sourcePath] },
+      { driver, snapshotPrefix: "snapshots", sourceKeys: [sourcePath] },
       hexKey,
       new Date("2026-04-01T03:00:00+09:00"),
     );
     await createSnapshot(
-      { snapshotDir, sourcePaths: [sourcePath] },
+      { driver, snapshotPrefix: "snapshots", sourceKeys: [sourcePath] },
       hexKey,
       new Date("2026-04-02T03:00:00+09:00"),
     );
-    const all = listSnapshots(snapshotDir, hexKey);
+    const all = await listSnapshots("snapshots", hexKey, driver);
     expect(all).toHaveLength(2);
     expect(all[0]?.createdAt > all[1]?.createdAt).toBe(true);
   });
 
-  it("creates the snapshot directory on demand", async () => {
-    const nestedDir = join(workDir, "nested", "deep");
-    expect(() => ensureSnapshotDir(nestedDir)).not.toThrow();
+  it("creates the snapshot prefix on demand", async () => {
     const metadata = await createSnapshot(
-      { snapshotDir: nestedDir, sourcePaths: [sourcePath] },
+      { driver, snapshotPrefix: "nested/deep", sourceKeys: [sourcePath] },
       hexKey,
     );
-    expect(metadata.path.startsWith(nestedDir)).toBe(true);
+    expect(metadata.path.startsWith("nested/deep/")).toBe(true);
   });
 });
 
 describe("state-snapshot retention", () => {
-  function makeMetadata(id: string, createdAt: string, baseDir: string) {
+  function makeMetadata(id: string, createdAt: string) {
     return {
       createdAt,
       files: [] as SnapshotFileEntry[],
       id,
-      path: join(baseDir, `${id}.snap.enc`),
+      path: `${id}.snap.enc`,
     };
   }
 
   it("classifies snapshots by age relative to a reference date", () => {
     const referenceDate = new Date("2026-04-30T00:00:00Z");
-    const baseDir = "/tmp/snapshots";
-    expect(
-      classifySnapshot(makeMetadata("d", "2026-04-29T00:00:00Z", baseDir), referenceDate).bucket,
-    ).toBe("daily");
-    expect(
-      classifySnapshot(makeMetadata("w", "2026-04-20T00:00:00Z", baseDir), referenceDate).bucket,
-    ).toBe("weekly");
-    expect(
-      classifySnapshot(makeMetadata("m", "2026-03-15T00:00:00Z", baseDir), referenceDate).bucket,
-    ).toBe("monthly");
+    expect(classifySnapshot(makeMetadata("d", "2026-04-29T00:00:00Z"), referenceDate).bucket).toBe(
+      "daily",
+    );
+    expect(classifySnapshot(makeMetadata("w", "2026-04-20T00:00:00Z"), referenceDate).bucket).toBe(
+      "weekly",
+    );
+    expect(classifySnapshot(makeMetadata("m", "2026-03-15T00:00:00Z"), referenceDate).bucket).toBe(
+      "monthly",
+    );
   });
 
   it("keeps the configured number of dailies and evicts the rest", () => {
     const referenceDate = new Date("2026-04-30T00:00:00Z");
-    const baseDir = "/tmp/snapshots";
     const snapshots = [
-      makeMetadata("d1", "2026-04-28T00:00:00Z", baseDir),
-      makeMetadata("d2", "2026-04-27T00:00:00Z", baseDir),
-      makeMetadata("d3", "2026-04-26T00:00:00Z", baseDir),
-      makeMetadata("d4", "2026-04-25T00:00:00Z", baseDir),
-      makeMetadata("d5", "2026-04-24T00:00:00Z", baseDir),
+      makeMetadata("d1", "2026-04-28T00:00:00Z"),
+      makeMetadata("d2", "2026-04-27T00:00:00Z"),
+      makeMetadata("d3", "2026-04-26T00:00:00Z"),
+      makeMetadata("d4", "2026-04-25T00:00:00Z"),
+      makeMetadata("d5", "2026-04-24T00:00:00Z"),
     ];
 
     const plan = planRetention(
@@ -247,16 +246,15 @@ describe("state-snapshot retention", () => {
 
   it("keeps one representative per ISO week in the weekly tier", () => {
     const referenceDate = new Date("2026-04-30T00:00:00Z");
-    const baseDir = "/tmp/snapshots";
     // Five consecutive days in the weekly band (7-30 days old). Without
     // generational selection all five would be candidates, but only one
     // snapshot per ISO week should survive.
     const snapshots = [
-      makeMetadata("w-mon", "2026-04-20T00:00:00Z", baseDir), // ISO week 2026-W17
-      makeMetadata("w-tue", "2026-04-21T00:00:00Z", baseDir),
-      makeMetadata("w-wed", "2026-04-22T00:00:00Z", baseDir),
-      makeMetadata("w-thu", "2026-04-23T00:00:00Z", baseDir),
-      makeMetadata("w-sat", "2026-04-11T00:00:00Z", baseDir), // ISO week 2026-W15
+      makeMetadata("w-mon", "2026-04-20T00:00:00Z"), // ISO week 2026-W17
+      makeMetadata("w-tue", "2026-04-21T00:00:00Z"),
+      makeMetadata("w-wed", "2026-04-22T00:00:00Z"),
+      makeMetadata("w-thu", "2026-04-23T00:00:00Z"),
+      makeMetadata("w-sat", "2026-04-11T00:00:00Z"), // ISO week 2026-W15
     ];
 
     const plan = planRetention(
@@ -272,22 +270,21 @@ describe("state-snapshot retention", () => {
 
   it("keeps one representative per calendar month in the monthly tier", () => {
     const referenceDate = new Date("2026-04-30T00:00:00Z");
-    const baseDir = "/tmp/snapshots";
     // 13 days across 13 different months in the monthly band (>= 30 days).
     const snapshots = [
-      makeMetadata("m-25-04", "2025-04-15T00:00:00Z", baseDir),
-      makeMetadata("m-25-05", "2025-05-15T00:00:00Z", baseDir),
-      makeMetadata("m-25-06", "2025-06-15T00:00:00Z", baseDir),
-      makeMetadata("m-25-07", "2025-07-15T00:00:00Z", baseDir),
-      makeMetadata("m-25-08", "2025-08-15T00:00:00Z", baseDir),
-      makeMetadata("m-25-09", "2025-09-15T00:00:00Z", baseDir),
-      makeMetadata("m-25-10", "2025-10-15T00:00:00Z", baseDir),
-      makeMetadata("m-25-11", "2025-11-15T00:00:00Z", baseDir),
-      makeMetadata("m-25-12", "2025-12-15T00:00:00Z", baseDir),
-      makeMetadata("m-26-01", "2026-01-15T00:00:00Z", baseDir),
-      makeMetadata("m-26-02", "2026-02-15T00:00:00Z", baseDir),
-      makeMetadata("m-26-03", "2026-03-15T00:00:00Z", baseDir),
-      makeMetadata("m-25-04b", "2025-04-20T00:00:00Z", baseDir), // same month as m-25-04
+      makeMetadata("m-25-04", "2025-04-15T00:00:00Z"),
+      makeMetadata("m-25-05", "2025-05-15T00:00:00Z"),
+      makeMetadata("m-25-06", "2025-06-15T00:00:00Z"),
+      makeMetadata("m-25-07", "2025-07-15T00:00:00Z"),
+      makeMetadata("m-25-08", "2025-08-15T00:00:00Z"),
+      makeMetadata("m-25-09", "2025-09-15T00:00:00Z"),
+      makeMetadata("m-25-10", "2025-10-15T00:00:00Z"),
+      makeMetadata("m-25-11", "2025-11-15T00:00:00Z"),
+      makeMetadata("m-25-12", "2025-12-15T00:00:00Z"),
+      makeMetadata("m-26-01", "2026-01-15T00:00:00Z"),
+      makeMetadata("m-26-02", "2026-02-15T00:00:00Z"),
+      makeMetadata("m-26-03", "2026-03-15T00:00:00Z"),
+      makeMetadata("m-25-04b", "2025-04-20T00:00:00Z"), // same month as m-25-04
     ];
 
     const plan = planRetention(
@@ -326,15 +323,15 @@ describe("state-snapshot retention", () => {
     expect(isoWeekKeyOfDate(new Date("2025-12-31T00:00:00Z"))).toBe("2026-W01");
   });
 
-  it("deletes snapshot files when applying the plan", async () => {
+  it("deletes snapshot objects when applying the plan", async () => {
     const workDir = createTempDir("retention-");
+    const driver = createLocalFileStorage({ root: workDir });
     const referenceDate = new Date("2026-04-30T00:00:00Z");
 
     const snapshots = ["d1", "d2", "d3", "d4"].map((id, index) => {
-      const filePath = join(workDir, `${id}.snap.enc`);
-      writeFileSync(filePath, "x");
+      writeFileSync(join(workDir, `${id}.snap.enc`), "x");
       const createdAt = new Date(referenceDate.getTime() - (index + 1) * 86_400_000).toISOString();
-      return makeMetadata(id, createdAt, workDir);
+      return makeMetadata(id, createdAt);
     });
 
     const plan = planRetention(
@@ -345,12 +342,12 @@ describe("state-snapshot retention", () => {
 
     expect(plan.delete.map((entry) => entry.id).sort()).toEqual(["d3", "d4"]);
 
-    await applyRetentionPlan(plan);
+    await applyRetentionPlan(plan, { driver });
     for (const deleted of plan.delete) {
-      expect(existsSync(deleted.path)).toBe(false);
+      expect(await driver.exists(deleted.path)).toBe(false);
     }
     for (const kept of plan.keep) {
-      expect(existsSync(kept.path)).toBe(true);
+      expect(await driver.exists(kept.path)).toBe(true);
     }
 
     rmSync(workDir, { recursive: true, force: true });
@@ -358,11 +355,12 @@ describe("state-snapshot retention", () => {
 
   it("respects dry-run mode for retention application", async () => {
     const workDir = createTempDir("retention-dry-");
+    const driver = createLocalFileStorage({ root: workDir });
     const referenceDate = new Date("2026-04-30T00:00:00Z");
-    const filePath = join(workDir, "d1.snap.enc");
-    writeFileSync(filePath, "x");
+    const filePath = "d1.snap.enc";
+    writeFileSync(join(workDir, filePath), "x");
     const snapshots = [
-      makeMetadata("d1", new Date(referenceDate.getTime() - 5 * 86_400_000).toISOString(), workDir),
+      makeMetadata("d1", new Date(referenceDate.getTime() - 5 * 86_400_000).toISOString()),
     ];
 
     const plan = planRetention(
@@ -371,8 +369,8 @@ describe("state-snapshot retention", () => {
       referenceDate,
     );
 
-    await applyRetentionPlan(plan, { dryRun: true });
-    expect(existsSync(filePath)).toBe(true);
+    await applyRetentionPlan(plan, { driver, dryRun: true });
+    expect(await driver.exists(filePath)).toBe(true);
 
     rmSync(workDir, { recursive: true, force: true });
   });
@@ -490,7 +488,9 @@ describe("state-snapshot uploaders", () => {
       token: "ghp_test",
     });
 
-    await uploader.upload(loadEncryptedSnapshot(snapshotPath));
+    await uploader.upload(
+      await loadEncryptedSnapshot("demo.snap.enc", createLocalFileStorage({ root: workDir })),
+    );
 
     const expected = [
       { method: "GET", path: "/repos/o/r/git/ref/heads/main" },
@@ -520,7 +520,11 @@ describe("state-snapshot uploaders", () => {
       token: "ghp_test",
     });
 
-    await expect(uploader.upload(loadEncryptedSnapshot(snapshotPath))).rejects.toThrow(/401|boom/);
+    await expect(
+      uploader.upload(
+        await loadEncryptedSnapshot("demo.snap.enc", createLocalFileStorage({ root: workDir })),
+      ),
+    ).rejects.toThrow(/401|boom/);
 
     rmSync(workDir, { recursive: true, force: true });
   });
@@ -528,37 +532,41 @@ describe("state-snapshot uploaders", () => {
 
 describe("state-snapshot encrypted loader", () => {
   let workDir: string;
+  let driver: StorageDriver;
 
   beforeEach(() => {
     workDir = createTempDir("snap-loader-");
+    driver = createLocalFileStorage({ root: workDir });
   });
 
   afterEach(() => {
     rmSync(workDir, { recursive: true, force: true });
   });
 
-  it("rejects a missing file", () => {
-    expect(() => loadEncryptedSnapshot(join(workDir, "missing.snap.enc"))).toThrow();
+  it("rejects a missing object", async () => {
+    await expect(loadEncryptedSnapshot("missing.snap.enc", driver)).rejects.toThrow();
   });
 
-  it("rejects a file that is too small to be an encrypted container", () => {
-    const tooSmall = join(workDir, "tiny.snap.enc");
-    writeFileSync(tooSmall, Buffer.from([1, 2, 3]));
-    expect(() => loadEncryptedSnapshot(tooSmall)).toThrow(/too small/);
+  it("rejects an object that is too small to be an encrypted container", async () => {
+    await driver.write("tiny.snap.enc", Buffer.from([1, 2, 3]));
+    await expect(loadEncryptedSnapshot("tiny.snap.enc", driver)).rejects.toThrow(/too small/);
   });
 
-  it("rejects a file whose bytes start with the unencrypted manifest prefix", () => {
-    const unencrypted = join(workDir, "plaintext.snap.enc");
-    writeFileSync(unencrypted, Buffer.concat([Buffer.from("SNAP1\n"), Buffer.alloc(64, 0xab)]));
-    expect(() => loadEncryptedSnapshot(unencrypted)).toThrow(/unencrypted manifest/);
+  it("rejects an object whose bytes start with the unencrypted manifest prefix", async () => {
+    await driver.write(
+      "plaintext.snap.enc",
+      Buffer.concat([Buffer.from("SNAP1\n"), Buffer.alloc(64, 0xab)]),
+    );
+    await expect(loadEncryptedSnapshot("plaintext.snap.enc", driver)).rejects.toThrow(
+      /unencrypted manifest/,
+    );
   });
 
-  it("accepts a file that looks like a valid encrypted container", () => {
-    const encrypted = join(workDir, "ok.snap.enc");
-    writeFileSync(encrypted, randomBytes(60));
-    const result = loadEncryptedSnapshot(encrypted);
+  it("accepts an object that looks like a valid encrypted container", async () => {
+    await driver.write("ok.snap.enc", randomBytes(60));
+    const result = await loadEncryptedSnapshot("ok.snap.enc", driver);
     expect(result.bytes.length).toBe(60);
     expect(result.meta.id).toBe("ok");
-    expect(result.meta.path).toBe(encrypted);
+    expect(result.meta.path).toBe("ok.snap.enc");
   });
 });

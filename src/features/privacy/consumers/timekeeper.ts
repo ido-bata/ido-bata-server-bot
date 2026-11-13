@@ -7,25 +7,41 @@
  * can report a partial failure to `/privacy delete` instead of declaring
  * success on a corrupted store.
  */
-import { join } from "node:path";
+import { basename, dirname } from "node:path";
 import { z } from "zod";
-
-import { mutateJsonFile } from "../../../lib/storage/atomic-json.js";
+import { getStorageDriver } from "../../../lib/storage/index.js";
+import { mutateJsonObject } from "../../../lib/storage/json.js";
+import { STORAGE_KEYS } from "../../../lib/storage/keys.js";
+import { createLocalFileStorage } from "../../../lib/storage/local.js";
+import type { StorageDriver } from "../../../lib/storage/types.js";
 import type { DeleteResult } from "../types.js";
 
 export type TimekeeperDeleteOptions = {
+  /**
+   * Legacy filesystem path. Kept for operators and tests that pin the
+   * store to one file; the store is then served by a local filesystem
+   * driver rooted at its directory.
+   */
   filePath?: string;
+  /** Storage backend holding the store. */
+  driver?: StorageDriver;
+  /** Storage key of the store. Defaults to the canonical key. */
+  key?: string;
 };
-
-const DEFAULT_RELATIVE_PATH = "data/timekeeper-history.json";
 
 const historySchema = z.record(z.string(), z.array(z.string()));
 
-function resolveFilePath(options: TimekeeperDeleteOptions): string {
+function resolveStore(options: TimekeeperDeleteOptions): { driver: StorageDriver; key: string } {
   if (options.filePath) {
-    return options.filePath;
+    return {
+      driver: createLocalFileStorage({ root: dirname(options.filePath) }),
+      key: basename(options.filePath),
+    };
   }
-  return join(process.cwd(), DEFAULT_RELATIVE_PATH);
+  return {
+    driver: options.driver ?? getStorageDriver(),
+    key: options.key ?? STORAGE_KEYS.timekeeperHistory,
+  };
 }
 
 export function deleteUserData(
@@ -36,9 +52,10 @@ export function deleteUserData(
 }
 
 async function runDelete(userId: string, options: TimekeeperDeleteOptions): Promise<DeleteResult> {
-  const filePath = resolveFilePath(options);
-  const outcome = await mutateJsonFile({
-    filePath,
+  const { driver, key } = resolveStore(options);
+  const outcome = await mutateJsonObject({
+    driver,
+    key,
     mutate: (current) => {
       if (!(userId in current)) {
         // Returning the same reference signals "no change" — the

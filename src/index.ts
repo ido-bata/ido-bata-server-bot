@@ -76,6 +76,12 @@ import {
   getRootLogger,
   subscribe as subscribeLogger,
 } from "./lib/logger/index.js";
+import { getStorageDriver } from "./lib/storage/index.js";
+import {
+  acquireInstanceLease,
+  type InstanceLease,
+  LeaseConflictError,
+} from "./lib/storage/lease.js";
 import { createRuntimeStatusStore } from "./runtime/status-store.js";
 import { mountTui, resolveTuiMode } from "./tui/render.jsx";
 
@@ -96,6 +102,11 @@ async function main(): Promise<void> {
 
   // Runtime status store. The TUI is a read-only consumer of this store;
   // feature handlers / event listeners below write into it.
+  // The storage lease is acquired before the bot connects; the shutdown
+  // hook releases it. Declared here so the hook can run even when the
+  // acquisition failed.
+  let lease: InstanceLease | null = null;
+
   const statusStore = createRuntimeStatusStore();
   statusStore.setEventsCap(config.logRingSize);
   statusStore.set({
@@ -328,6 +339,7 @@ async function main(): Promise<void> {
       onAfterTeardown: async () => {
         clearInterval(metricsTimer);
         configStore.stop();
+        await lease?.release();
         if (tuiInstance) {
           // Drain pending renders before the process exits so the
           // operator sees the final state instead of a truncated frame.
@@ -535,7 +547,7 @@ async function main(): Promise<void> {
     },
   });
 
-  const icalService = registerIcalCalendar(client, {
+  const icalService = await registerIcalCalendar(client, {
     onReady: (service) => {
       service.startScheduler();
       void service.fetchAndCacheAll().catch((error: unknown) => {
@@ -597,6 +609,27 @@ async function main(): Promise<void> {
       },
     });
   }
+
+  // Single-instance guard (ADR-0004): the lease lives in the storage
+  // backend, so a second bot — the old host during a migration cutover,
+  // or a duplicated Altare deployment — refuses to start instead of
+  // processing the same events twice.
+  try {
+    lease = await acquireInstanceLease({ driver: getStorageDriver() });
+  } catch (error) {
+    if (error instanceof LeaseConflictError) {
+      // Fail closed: a second instance must never process the same
+      // events as the running one.
+      rootLogger.error(
+        { err: error, holderId: error.holderId, expiresAt: error.expiresAt },
+        "another bot instance holds the storage lease; refusing to start",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    throw error;
+  }
+  rootLogger.info({ holderId: lease.holderId }, "storage lease acquired");
 
   await client.login(config.discordToken);
 }

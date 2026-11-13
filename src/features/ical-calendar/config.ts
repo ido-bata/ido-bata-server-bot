@@ -1,7 +1,8 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { z } from "zod";
+
+import { getStorageDriver } from "../../lib/storage/index.js";
+import { STORAGE_KEYS } from "../../lib/storage/keys.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
 
 export type CalendarSource = {
   id: string;
@@ -11,8 +12,10 @@ export type CalendarSource = {
 
 export type IcalCalendarConfig = {
   announcementChannelId: string | null;
-  cachePath: string;
-  dataPath: string;
+  /** Storage key of the calendar cache. */
+  cacheKey: string;
+  /** Storage key of the calendar source configuration. */
+  dataKey: string;
   fetchIntervalMs: number;
   lookAheadDays: number;
   rateLimitMs: number;
@@ -40,14 +43,12 @@ const persistedSchema = z.object({
 
 type PersistedShape = z.infer<typeof persistedSchema>;
 
-function resolveDataPath(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  return join(here, "..", "..", "..", "data", "calendars.json");
-}
-
-function readPersisted(path: string): PersistedShape {
+async function readPersisted(driver: StorageDriver, key: string): Promise<PersistedShape> {
   try {
-    const raw = readFileSync(path, "utf8");
+    const raw = await driver.readText(key);
+    if (raw === null) {
+      return {};
+    }
     const json: unknown = JSON.parse(raw);
     return persistedSchema.parse(json);
   } catch {
@@ -55,14 +56,22 @@ function readPersisted(path: string): PersistedShape {
   }
 }
 
-export function readConfig(path?: string): IcalCalendarConfig {
-  const dataPath = path ?? resolveDataPath();
-  const persisted = readPersisted(dataPath);
+/**
+ * Read the calendar configuration from the storage backend (ADR-0004):
+ * the local `data/calendars.json` file on a single host, the
+ * `calendars.json` object in the bucket on Altare.
+ */
+export async function readConfig(
+  options: { driver?: StorageDriver; key?: string } = {},
+): Promise<IcalCalendarConfig> {
+  const driver = options.driver ?? getStorageDriver();
+  const dataKey = options.key ?? "calendars.json";
+  const persisted = await readPersisted(driver, dataKey);
 
   return {
     announcementChannelId: persisted.announcementChannelId ?? DEFAULT_ANNOUNCEMENT_CHANNEL_ID,
-    cachePath: join(dirname(dataPath), "calendar-cache.json"),
-    dataPath,
+    cacheKey: STORAGE_KEYS.calendarCache,
+    dataKey,
     fetchIntervalMs: DEFAULT_FETCH_INTERVAL_MS,
     lookAheadDays: persisted.lookAheadDays ?? DEFAULT_LOOK_AHEAD_DAYS,
     rateLimitMs: DEFAULT_RATE_LIMIT_MS,

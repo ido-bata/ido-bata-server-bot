@@ -77,7 +77,7 @@ describe("poll consent gate", () => {
     });
     const interaction = makeInteraction();
     await handler.handleInteraction(interaction);
-    expect(handler.loadState().polls).toHaveLength(1);
+    expect((await handler.loadState()).polls).toHaveLength(1);
   });
 
   it("refuses vote persistence when authorize denies", async () => {
@@ -92,7 +92,7 @@ describe("poll consent gate", () => {
       generateId: () => FIXED_ID,
     });
     await permitHandler.handleInteraction(makeInteraction());
-    expect(permitHandler.loadState().polls).toHaveLength(1);
+    expect((await permitHandler.loadState()).polls).toHaveLength(1);
 
     // Now switch the handler to deny-mode and try to vote. The store file
     // is shared because both handlers use the same `storePath`.
@@ -100,7 +100,7 @@ describe("poll consent gate", () => {
       store: createFilePollStore(storePath),
       consent: { authorize: async () => ({ ok: false }) },
     });
-    const before = denyHandler.loadState().polls[0]?.votes ?? {};
+    const before = (await denyHandler.loadState()).polls[0]?.votes ?? {};
     const voteInteraction = makeInteraction({
       commandName: "poll",
       isButton: () => true,
@@ -119,7 +119,7 @@ describe("poll consent gate", () => {
 
     await denyHandler.handleInteraction(voteInteraction);
 
-    const after = denyHandler.loadState().polls[0]?.votes ?? {};
+    const after = (await denyHandler.loadState()).polls[0]?.votes ?? {};
     expect(after).toEqual(before);
     expect(voteInteraction.__replies[0]?.content).toContain("activity-history");
   });

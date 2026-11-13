@@ -137,8 +137,8 @@ function registerAllHandlers() {
   } satisfies AnonymousChatService;
 
   const pollStore: PollStore = {
-    load: () => createPollState(),
-    save: () => undefined,
+    load: async () => createPollState(),
+    save: async () => undefined,
     path: "memory://polls.json",
   };
 

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createGuildRegistry } from "../src/features/multi-guild/registry.js";
-import { createFileConfigStore } from "../src/features/multi-guild/store.js";
+import { createConfigStore } from "../src/features/multi-guild/store.js";
 import { createReactionRoleListener } from "../src/features/reaction-roles/handler.js";
-import { createMemoryFs } from "./multi-guild/memory-fs.js";
+import { createMemoryDriver } from "./multi-guild/memory-driver.js";
 
 function makeStore() {
-  return createFileConfigStore({ dataRoot: "data", fs: createMemoryFs() });
+  return createConfigStore({ driver: createMemoryDriver() });
 }
 
 function silentLogger() {

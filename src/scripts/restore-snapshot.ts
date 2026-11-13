@@ -1,26 +1,33 @@
 import "dotenv/config";
 
-import { readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 
 import { restoreSnapshot } from "../features/state-snapshot/snapshot.js";
 import { childFor, createRootLogger, getRootLogger } from "../lib/logger/index.js";
+import { getStorageDriver } from "../lib/storage/index.js";
 
 type CliOptions = {
   outputDir: string;
   snapshot: string;
 };
 
+const SNAPSHOT_PREFIX = "snapshots";
+
 function printUsage(): void {
   console.log(
     [
-      "Usage: tsx src/scripts/restore-snapshot.ts --snapshot <path-to-snap.enc> [--output <dir>]",
+      "Usage: tsx src/scripts/restore-snapshot.ts --snapshot <snapshot-key> [--output <dir>]",
+      "",
+      "The snapshot is read from the configured storage backend",
+      "(STORAGE_BACKEND=local reads <data>/<key>, STORAGE_BACKEND=u3 reads the bucket).",
+      "Pass a full key (e.g. snapshots/20260401-030000.snap.enc) or a bare id —",
+      "the newest snapshot is used when the id does not resolve to an object.",
       "",
       "Environment:",
       "  STATE_SNAPSHOT_ENCRYPTION_KEY   hex-encoded 32-byte AES-256 key",
       "",
       "Examples:",
-      "  tsx src/scripts/restore-snapshot.ts --snapshot data/snapshots/20260401-030000.snap.enc --output data/restore",
+      "  tsx src/scripts/restore-snapshot.ts --snapshot 20260401-030000 --output data/restore",
     ].join("\n"),
   );
 }
@@ -34,7 +41,7 @@ function parseArgs(argv: string[]): CliOptions {
     if (arg === "--snapshot" || arg === "-s") {
       const next = argv[index + 1];
       if (!next) {
-        throw new Error("--snapshot requires a path");
+        throw new Error("--snapshot requires a key");
       }
       snapshot = next;
       index += 1;
@@ -54,39 +61,29 @@ function parseArgs(argv: string[]): CliOptions {
   }
 
   if (!snapshot) {
-    throw new Error("--snapshot <path-to-snap.enc> is required");
+    throw new Error("--snapshot <snapshot-key> is required");
   }
 
   return { outputDir, snapshot };
 }
 
-function resolveSnapshotPath(snapshotArg: string): string {
-  const candidates: string[] = [];
-  if (snapshotArg.includes("/") || snapshotArg.includes("\\")) {
-    candidates.push(resolve(snapshotArg));
-  } else {
-    const snapshotDir = resolve("data/snapshots");
-    for (const name of readdirSync(snapshotDir)) {
-      if (!name.endsWith(".snap.enc")) {
-        continue;
-      }
-      const fullPath = join(snapshotDir, name);
-      if (!statSync(fullPath).isFile()) {
-        continue;
-      }
-      candidates.push(fullPath);
-    }
+/**
+ * Resolve the snapshot object key. A key that contains a separator is used
+ * as-is; a bare id falls back to the newest snapshot in the prefix (the
+ * ids sort lexicographically in creation order).
+ */
+async function resolveSnapshotKey(snapshotArg: string): Promise<string> {
+  const driver = getStorageDriver();
+  if (snapshotArg.includes("/")) {
+    return snapshotArg;
   }
+  const entries = await driver.list(`${SNAPSHOT_PREFIX}/`);
+  const candidates = entries
+    .map((entry) => entry.key)
+    .filter((key) => key.endsWith(".snap.enc"))
+    .filter((key) => key.includes(snapshotArg));
   if (candidates.length === 0) {
     throw new Error(`No snapshots found for selector: ${snapshotArg}`);
-  }
-  if (candidates.length === 1) {
-    return candidates[0]!;
-  }
-  // If snapshot arg matches a full path, prefer it; otherwise pick the latest
-  // snapshot by file name (lexicographic order approximates creation time).
-  if (candidates.includes(resolve(snapshotArg))) {
-    return resolve(snapshotArg);
   }
   return candidates.sort().reverse()[0]!;
 }
@@ -103,10 +100,11 @@ async function main(): Promise<void> {
     );
   }
 
-  const snapshotPath = resolveSnapshotPath(options.snapshot);
-  logger.info({ snapshotPath }, "restoring snapshot");
-  const result = await restoreSnapshot(snapshotPath, encryptionKey, {
-    outputDir: options.outputDir,
+  const snapshotKey = await resolveSnapshotKey(options.snapshot);
+  logger.info({ snapshotKey }, "restoring snapshot");
+  const result = await restoreSnapshot(snapshotKey, encryptionKey, {
+    driver: getStorageDriver(),
+    outputDir: resolve(options.outputDir),
   });
   logger.info(
     {
