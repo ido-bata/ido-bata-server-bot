@@ -53,9 +53,9 @@ describe("safeErrorFields", () => {
     }
     // Discord numeric-string codes are not whitelisted — only numeric
     // codes in enum range are accepted.
-    expect(
-      safeErrorFields(Object.assign(new Error("x"), { code: "10003" })),
-    ).not.toHaveProperty("errCode");
+    expect(safeErrorFields(Object.assign(new Error("x"), { code: "10003" }))).not.toHaveProperty(
+      "errCode",
+    );
   });
 
   it("drops numeric codes outside enum range", () => {
