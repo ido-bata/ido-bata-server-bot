@@ -397,7 +397,7 @@ async function main(): Promise<void> {
       ...statusStore.snapshot.features,
       "anonymous-chat": {
         state: "enabled",
-        meta: { audit: anonConfig.audit !== null },
+        meta: { audit: anonService.auditState },
       },
     },
   });

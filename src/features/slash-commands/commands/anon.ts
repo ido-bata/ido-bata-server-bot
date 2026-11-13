@@ -10,8 +10,6 @@ export type AnonCommandDeps = {
 const REPLY_SUCCESS = "匿名メッセージを投稿しました。";
 const REPLY_DENIED = "この場所には匿名投稿できません。";
 const REPLY_COOLDOWN = "連続して投稿することはできません。しばらく待ってから再度お試しください。";
-const REPLY_BOT_PERMISSION =
-  "ボットにこのチャンネルへの投稿権限がないため、匿名投稿できません。管理者に確認してください。";
 const REPLY_UNAVAILABLE = "現在匿名投稿を利用できません。時間をおいて再度お試しください。";
 
 function replyFor(reason: string, retryAfterMs?: number): string {
@@ -20,12 +18,13 @@ function replyFor(reason: string, retryAfterMs?: number): string {
       return retryAfterMs && retryAfterMs > 0
         ? `${REPLY_COOLDOWN}（あと約${Math.ceil(retryAfterMs / 1000)}秒）`
         : REPLY_COOLDOWN;
-    case "bot_permission_denied":
-      return REPLY_BOT_PERMISSION;
     case "invalid_message":
     case "denied":
       return REPLY_DENIED;
     default:
+      // `bot_permission_denied`, `unavailable`, `post_failed`,
+      // `audit_failed` all map to the generic reply — no bot-config or
+      // channel-state detail leaks to the caller (ADR-0003 §1/§2).
       return REPLY_UNAVAILABLE;
   }
 }
@@ -90,8 +89,11 @@ export const anonCommand: SlashCommandDefinition = {
       }
       await reply(replyFor(result.reason, result.retryAfterMs));
     } catch {
-      // Last-resort guard: reply generically, never propagate.
-      await reply(REPLY_UNAVAILABLE).catch(() => undefined);
+      // Last-resort guard: reply generically, never propagate — not
+      // even if `reply` itself throws synchronously.
+      await Promise.resolve()
+        .then(() => reply(REPLY_UNAVAILABLE))
+        .catch(() => undefined);
     }
   }) as SlashCommandDefinition["execute"],
 };

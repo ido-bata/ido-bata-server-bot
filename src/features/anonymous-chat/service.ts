@@ -78,6 +78,13 @@ export type AnonymousChatServiceDeps = {
 
 export type AnonymousChatService = {
   post: (input: AnonPostInput) => Promise<AnonPostResult>;
+  /**
+   * Audit persistence state: `active` = records are written,
+   * `disabled` = ephemeral mode (no keys or explicit opt-out),
+   * `error` = audit was configured but the sink failed to initialize —
+   * `/anon` degrades to ephemeral and status must not claim audit.
+   */
+  auditState: "disabled" | "active" | "error";
 };
 
 function isSupportedChannel(channel: AnonChannelLike): boolean {
@@ -113,10 +120,10 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
   const cooldown = new AnonCooldown(config.cooldownMs, deps.now);
 
   // Build the audit sink once. An invalid key disables audit loudly —
-  // never falls back to plaintext or to posting without the mapping
-  // the operator asked for... except that audit-off is the documented
-  // ephemeral mode, so disabling here matches "key not deployed".
+  // never falls back to plaintext. `auditState` exposes the outcome so
+  // status reporting cannot claim audit is on when it is not.
   let audit = deps.audit;
+  let auditState: AnonymousChatService["auditState"];
   if (audit === undefined && config.audit) {
     try {
       audit = createAnonAuditSink(config.audit);
@@ -125,17 +132,22 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       void audit.sweep().catch((error: unknown) => {
         logger?.warn({ err: error }, "anonymous-chat: audit retention sweep failed");
       });
+      auditState = "active";
     } catch (error) {
       logger?.error(
         { err: error },
         "anonymous-chat: failed to initialize audit sink; audit persistence disabled",
       );
       audit = null;
+      auditState = "error";
     }
   } else if (audit) {
     void audit.sweep().catch((error: unknown) => {
       logger?.warn({ err: error }, "anonymous-chat: audit retention sweep failed");
     });
+    auditState = "active";
+  } else {
+    auditState = "disabled";
   }
 
   async function resolveMemberPermissions(
@@ -157,18 +169,22 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
   }
 
   return {
+    auditState,
     async post(input) {
       const text = input.message.trim();
       if (text.length === 0 || text.length > config.maxMessageLength) {
         return { ok: false, reason: "invalid_message" };
       }
-      if (config.denyChannelIds.has(input.channelId)) {
-        return { ok: false, reason: "denied" };
-      }
-
+      // Cooldown is consumed on every attempt that passes message
+      // validation — including attempts later denied — to bound
+      // permission probing and API abuse (ADR-0003 §2).
       const retryAfterMs = cooldown.hit(input.userId);
       if (retryAfterMs > 0) {
         return { ok: false, reason: "cooldown", retryAfterMs };
+      }
+
+      if (config.denyChannelIds.has(input.channelId)) {
+        return { ok: false, reason: "denied" };
       }
 
       let channel: AnonChannelLike | null;
@@ -183,7 +199,9 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       }
 
       if (isThreadChannel(channel)) {
-        if (channel.locked === true) {
+        // `locked` is `boolean | null` on discord.js ThreadChannel; an
+        // unknown/null state must fail closed for a posting decision.
+        if (channel.locked !== false) {
           return { ok: false, reason: "denied" };
         }
         if (!(await isThreadMemberSafe(channel, input.userId, deps))) {
@@ -230,12 +248,20 @@ export function createAnonymousChatService(deps: AnonymousChatServiceDeps): Anon
       }
       const botPermissions = await resolveMemberPermissions(channel, botMember, guild);
       const sendBit = requiredSendBit(channel);
-      if (
-        !botPermissions ||
-        !botPermissions.has(PermissionFlagsBits.ViewChannel) ||
-        !botPermissions.has(sendBit)
-      ) {
+      if (!botPermissions?.has(PermissionFlagsBits.ViewChannel) || !botPermissions.has(sendBit)) {
         return { ok: false, reason: "bot_permission_denied" };
+      }
+
+      // Private threads: the bot can post only if it is a thread member
+      // or holds ManageThreads (which also covers Administrator/owner —
+      // resolveEffectivePermissions returns all bits for them). Without
+      // this preflight the send would fail with a generic API error
+      // instead of a clean permission denial.
+      if (isPrivateThread(channel) && !botPermissions.has(PermissionFlagsBits.ManageThreads)) {
+        const botIsMember = await isThreadMemberSafe(channel, botMember.id, deps);
+        if (!botIsMember) {
+          return { ok: false, reason: "bot_permission_denied" };
+        }
       }
 
       // ---- audit pre-flight (fail closed before any public post) ----

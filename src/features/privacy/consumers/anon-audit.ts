@@ -20,13 +20,16 @@ export type AnonAuditDeleteOptions = {
   indexKey?: string;
 };
 
-const DEFAULT_DIR = join(process.cwd(), "data", "anon-audit");
+const DEFAULT_DIR_NAME = "data/anon-audit";
 
 export async function deleteUserData(
   userId: string,
   options: AnonAuditDeleteOptions = {},
 ): Promise<DeleteResult> {
-  const dir = options.dir ?? process.env.ANON_AUDIT_DIR ?? DEFAULT_DIR;
+  // Resolve the default dir at call time (not module load) so the path
+  // tracks the writer's `data/anon-audit` default regardless of cwd at
+  // import time.
+  const dir = options.dir ?? process.env.ANON_AUDIT_DIR ?? join(process.cwd(), DEFAULT_DIR_NAME);
   const indexKey = options.indexKey ?? process.env.ANON_AUDIT_INDEX_KEY;
 
   const result = await deleteAnonAuditRecords({ dir, indexKey, userId });

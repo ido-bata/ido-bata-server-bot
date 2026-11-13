@@ -52,6 +52,26 @@ function fileNameFor(date: Date): string {
   return `${utcDay(date)}.jsonl`;
 }
 
+/**
+ * Per-directory promise-chain mutex. `record`/`sweep`/`deleteAnonAuditRecords`
+ * must be serialized: a delete rewrite (`rename` over the file) racing an
+ * append would silently drop the appended audit line.
+ */
+const dirLocks = new Map<string, Promise<unknown>>();
+
+function withDirLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  const prev = dirLocks.get(dir) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  dirLocks.set(
+    dir,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
+}
+
 async function sweepExpired(dir: string, retentionDays: number, nowMs: number): Promise<void> {
   let entries: string[];
   try {
@@ -87,23 +107,26 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
 
   return {
     seal: (plaintext) => sealFn(JSON.stringify(plaintext)),
-    async record(input) {
-      await mkdir(dir, { recursive: true });
-      await sweepExpired(dir, config.retentionDays, Date.now());
+    record: (input) =>
+      withDirLock(dir, async () => {
+        await mkdir(dir, { recursive: true, mode: 0o700 });
+        await sweepExpired(dir, config.retentionDays, Date.now());
 
-      const idx = computeAnonIndex(config.indexKey, input.userId);
-      const line =
-        JSON.stringify({
+        const idx = computeAnonIndex(config.indexKey, input.userId);
+        const line = `${JSON.stringify({
           v: 1,
           idx,
           gid: input.guildId,
           cid: input.channelId,
           mid: input.messageId,
           ct: input.ciphertext,
-        }) + "\n";
-      await appendFile(join(dir, fileNameFor(new Date())), line, "utf8");
-    },
-    sweep: () => sweepExpired(dir, config.retentionDays, Date.now()),
+        })}\n`;
+        await appendFile(join(dir, fileNameFor(new Date())), line, {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+      }),
+    sweep: () => withDirLock(dir, () => sweepExpired(dir, config.retentionDays, Date.now())),
   };
 }
 
@@ -118,6 +141,15 @@ export type AnonAuditDeleteResult = { ok: true; removed: number } | { ok: false;
  * happened (privacy invariant: partial failure = failure).
  */
 export async function deleteAnonAuditRecords(options: {
+  dir: string;
+  indexKey: string | undefined;
+  userId: string;
+}): Promise<AnonAuditDeleteResult> {
+  const { dir, indexKey, userId } = options;
+  return withDirLock(dir, () => deleteAnonAuditRecordsLocked({ dir, indexKey, userId }));
+}
+
+async function deleteAnonAuditRecordsLocked(options: {
   dir: string;
   indexKey: string | undefined;
   userId: string;

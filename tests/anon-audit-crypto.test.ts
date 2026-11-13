@@ -52,6 +52,13 @@ describe("anon audit crypto", () => {
     expect(() => createAnonCipher("not-a-key")).toThrow();
   });
 
+  it("rejects private-key PEM material — the bot must never hold it", () => {
+    expect(() => createAnonCipher(privateKey)).toThrow(/private-key/i);
+    expect(() => createAnonCipher(privateKey.replace("PRIVATE KEY", "RSA PRIVATE KEY"))).toThrow(
+      /private-key/i,
+    );
+  });
+
   it("derives public key material from a private key (test helper)", () => {
     expect(publicKeyFromPrivate(privateKey)).toContain("BEGIN PUBLIC KEY");
   });

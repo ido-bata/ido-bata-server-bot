@@ -32,7 +32,7 @@ export type ConsumerEntry = {
  * runs `/privacy delete`.
  */
 export const CONSUMERS: readonly ConsumerEntry[] = [
-  // Consent-gated (5)
+  // Consent-gated (6)
   {
     id: "timekeeper-history",
     label: "Timekeeper attendance history",
@@ -117,7 +117,7 @@ export const CONSUMERS: readonly ConsumerEntry[] = [
     rationale: "Per-guild operator config; no personal data",
   },
 
-  // Ephemeral (14) — listed for completeness; no on-disk storage
+  // Ephemeral (15) — listed for completeness; no on-disk storage
   {
     id: "game-activity",
     label: "Game activity (presence)",

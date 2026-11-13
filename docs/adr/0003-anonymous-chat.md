@@ -60,7 +60,9 @@ than the platform allows.
   body cannot ping anyone.
 - All user-facing replies are ephemeral and generic; failures never
   echo the body or identify which check failed beyond coarse categories
-  (cooldown vs. denied vs. unavailable).
+  (cooldown vs. denied vs. unavailable). Bot-side permission gaps also
+  produce the generic unavailable reply — no "bot lacks permission"
+  detail that would leak channel/bot configuration.
 
 ### 2. Authorization = "could this member post a normal message here"
 
@@ -71,21 +73,26 @@ overwrite), with these rules:
 
 - Require `ViewChannel` plus `SendMessages` (text/announcement/voice
   channels) or `SendMessagesInThreads` (threads).
-- **Threads**: discord.js `ThreadChannel.permissionsFor` delegates
-  *only* to the parent and ignores thread-level overwrites, so we
-  resolve `parent.permissionsFor(member)` and then apply the thread's
-  own `permissionOverwrites` with the same ordering. Guild owner and
-  `Administrator` bypass overwrites (checked before overwrite
-  application). `locked === true` → deny. Private threads additionally
-  require thread membership (`thread.members.fetch(userId)`); fetch
-  failure → deny. Archived (unlocked) threads are allowed — Discord
-  permits posting, which unarchives.
+- **Threads**: Discord threads have **no permission overwrites of
+  their own** — they inherit the parent channel's overwrites
+  wholesale, and discord.js `ThreadChannel.permissionsFor` reflects
+  exactly that by delegating to the parent. We resolve
+  `parent.permissionsFor(member)` and apply nothing further.
+  Guild owner and `Administrator` bypass overwrites (checked before
+  overwrite application). `locked !== false` → deny — discord.js types
+  `locked` as `boolean | null`, and an unknown state fails closed.
+  Private threads additionally require thread membership for the
+  invoking user (`thread.members.fetch`); fetch failure → deny. The
+  bot member gets the same preflight: in a private thread it must be
+  a thread member or hold `ManageThreads`, otherwise the post is
+  denied before send. Archived (unlocked) threads are allowed —
+  Discord permits posting, which unarchives.
 - The bot member's effective permissions on the same channel must also
-  include the send bit; otherwise the user gets a generic denial
-  (no "bot lacks permission" detail that would leak config).
+  include the send bit; otherwise the user gets a generic denial.
 - Any resolution failure — channel/member/parent fetch error, missing
   parent, non-guild channel, DM, category, forum — is **deny**
-  (fail closed).
+  (fail closed). All Discord lookups use `force: true` refreshes so
+  cached roles/overwrites/membership cannot stale a security decision.
 - `ANON_DENY_CHANNEL_IDS` (comma-separated) is an optional deny-list
   applied *in addition to* the permission check; it never replaces it.
   Default empty.
@@ -103,23 +110,36 @@ overwrite), with these rules:
   ("保存する場合").
 - When set, every successful post appends one record to
   `data/anon-audit/YYYY-MM-DD.jsonl` (UTC day files):
-  `{ v, idx, gid, cid, ct }` where `ct` is RSA-OAEP-SHA256 ciphertext
-  (base64) of `{ messageId, userId, guildId, channelId, postedAt }`,
+  `{ v, idx, gid, cid, mid, ct }` where `ct` is RSA-OAEP-SHA256
+  ciphertext (base64) of `{ userId, guildId, channelId, postedAt }`,
   `idx` is `HMAC-SHA256(ANON_AUDIT_INDEX_KEY, userId)` for `/privacy
-  delete` lookup, and `gid`/`cid` are plaintext operational metadata.
-  The message body is never stored (it lives in the public message).
+  delete` lookup, and `gid`/`cid`/`mid` are plaintext operational
+  metadata (guild, channel, public message id — needed for support
+  correlation and never sensitive). The message body is never stored
+  (it lives in the public message). The ciphertext cannot contain
+  `messageId` because the public message id only exists after send.
 - `ANON_AUDIT_INDEX_KEY` is a random bot-held secret used **only** for
   the HMAC lookup; it cannot decrypt. Both env vars are required
   together — public key without index key disables audit with an error
   log (never silently stores undeletable records).
-- The private key is never accepted from env, never written to disk,
-  never logged. Only `createPublicKey` material enters the process.
-- Ordering per post: validate → authorize → encrypt → cooldown commit →
-  `channel.send` → append audit. If encryption fails, the post is
-  rejected **before** sending (fail closed, no plaintext fallback). If
-  the audit append fails after a successful send, the bot attempts to
-  delete the just-posted message and reports failure — an anonymous
-  post must never exist without its audit record when audit is on.
+- The private key is never accepted from env — private-key PEM
+  material is explicitly rejected — never written to disk, never
+  logged. Only public-key material enters the process.
+- Audit files/dirs are created `0600`/`0700`; appends, retention
+  sweeps, and `/privacy delete` rewrites are serialized through a
+  per-directory lock so a delete rewrite cannot drop a concurrent
+  append.
+- Ordering per post: validate → cooldown → deny-list → resolve →
+  consent → seal → `channel.send` → append audit. If encryption
+  fails, the post is rejected **before** sending (fail closed, no
+  plaintext fallback). If the audit append fails after a successful
+  send, the bot attempts to delete the just-posted message and reports
+  failure — an anonymous post must never exist without its audit
+  record when audit is on.
+- If audit keys are configured but the sink fails to initialize
+  (e.g. malformed public key), the service runs in ephemeral mode and
+  reports `auditState: "error"` in the status store — status never
+  claims audit is active when it is not.
 - Retention: daily files older than `ANON_AUDIT_RETENTION_DAYS`
   (default 90) are swept on service start and before each append.
 - `/privacy delete`: the `anonymous-chat-audit` consumer recomputes the
@@ -151,9 +171,10 @@ overwrite), with these rules:
 
 - Easier: default deployment stores nothing; audit is a pure ops
   opt-in; permission logic is unit-testable without a Discord client.
-- Harder: thread permission resolution duplicates a slice of
-  discord.js internals — covered by dedicated tests; ops must run a
-  key ceremony before audit mode is meaningful.
+- Harder: thread permission resolution relies on Discord's
+  no-thread-overwrites invariant — if Discord ever ships thread
+  overwrites this ADR and `permissions.ts` must be revisited;
+  ops must run a key ceremony before audit mode is meaningful.
 - Constrained: enabling audit without consent configured relies on the
   poll/reminder precedent; changing that precedent requires touching
   this ADR and `docs/privacy.md` together.
@@ -169,8 +190,8 @@ overwrite), with these rules:
   "secret key must not reach the bot" requirement.
 - **Use `interaction.memberPermissions` directly.** Rejected as sole
   check: it is computed for the interaction channel but we re-derive
-  permissions anyway for the bot member and thread-overwrite correctness;
-  also keeps the logic testable via DI.
+  permissions anyway for the bot member and thread parent/membership
+  correctness; also keeps the logic testable via DI.
 - **Webhook-based posting.** Rejected: webhook messages still carry no
   author id, but webhook management adds a secret and audit-channel
   interplay for no anonymity gain over bot-authored messages (bot

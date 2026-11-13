@@ -6,7 +6,6 @@ import {
   type AnonChannelLike,
   type AnonGuildLike,
   type AnonMemberLike,
-  type AnonOverwrite,
   canPostWith,
   isPrivateThread,
   isThreadChannel,
@@ -53,31 +52,18 @@ function threadChannel(args: {
   type?: number;
   parent?: AnonChannelLike | null;
   parentId?: string | null;
-  overwrites?: AnonOverwrite[];
-  locked?: boolean;
-  archived?: boolean;
 }): AnonChannelLike {
-  const overwrites = args.overwrites ?? [];
   return {
     id: "thread-1",
     guildId: "guild-1",
     type: args.type ?? ChannelType.PublicThread,
     parent: args.parent ?? null,
     parentId: args.parentId ?? null,
-    locked: args.locked ?? false,
-    archived: args.archived ?? false,
     isTextBased: () => true,
-    permissionsFor: () => null, // discord.js delegates to parent; we must not rely on it
-    permissionOverwrites: { cache: { values: () => overwrites.values() } },
+    // discord.js ThreadChannel.permissionsFor delegates to the parent;
+    // the resolver must not rely on the thread's own result.
+    permissionsFor: () => null,
     send: vi.fn(async () => ({ id: "m1", delete: async () => undefined })),
-  };
-}
-
-function overwrite(id: string, allow: bigint, deny: bigint): AnonOverwrite {
-  return {
-    id,
-    allow: { bitfield: allow },
-    deny: { bitfield: deny },
   };
 }
 
@@ -120,17 +106,15 @@ describe("resolveEffectivePermissions — non-thread channels", () => {
 });
 
 describe("resolveEffectivePermissions — admin / owner bypass", () => {
-  it("returns all permissions for the guild owner even with deny overwrites", async () => {
-    const channel = threadChannel({
-      overwrites: [overwrite(GUILD.id, 0n, SEND_THREAD | VIEW)],
-    });
+  it("returns all permissions for the guild owner", async () => {
+    const channel = textChannel(() => bitsOf(VIEW)); // would deny send
     const result = await resolveEffectivePermissions({
       channel,
       member: member("owner-1"),
       guild: GUILD,
       fetchChannel: fetchChannelNull,
     });
-    expect(result?.has(SEND_THREAD)).toBe(true);
+    expect(result?.has(SEND)).toBe(true);
     expect(result?.has(VIEW)).toBe(true);
   });
 
@@ -147,7 +131,9 @@ describe("resolveEffectivePermissions — admin / owner bypass", () => {
 });
 
 describe("resolveEffectivePermissions — threads", () => {
-  it("uses parent permissions when the thread has no overwrites", async () => {
+  // Discord threads carry no permission_overwrites; permissions come
+  // wholesale from the parent channel (discord.js delegates likewise).
+  it("uses parent permissions when the thread is resolved inline", async () => {
     const parent = textChannel(() => bitsOf(VIEW, SEND_THREAD));
     const channel = threadChannel({ parent });
     const result = await resolveEffectivePermissions({
@@ -157,60 +143,6 @@ describe("resolveEffectivePermissions — threads", () => {
       fetchChannel: fetchChannelNull,
     });
     expect(result?.has(SEND_THREAD)).toBe(true);
-  });
-
-  it("applies an @everyone deny overwrite from the thread", async () => {
-    const parent = textChannel(() => bitsOf(VIEW, SEND_THREAD));
-    const channel = threadChannel({
-      parent,
-      overwrites: [overwrite(GUILD.id, 0n, SEND_THREAD)],
-    });
-    const result = await resolveEffectivePermissions({
-      channel,
-      member: member("u1"),
-      guild: GUILD,
-      fetchChannel: fetchChannelNull,
-    });
-    expect(result?.has(SEND_THREAD)).toBe(false);
-    expect(result?.has(VIEW)).toBe(true);
-  });
-
-  it("role deny beats role allow; member overwrite wins last", async () => {
-    const parent = textChannel(() => bitsOf(VIEW, SEND_THREAD));
-    const channel = threadChannel({
-      parent,
-      overwrites: [
-        overwrite("role-deny", 0n, SEND_THREAD),
-        overwrite("role-allow", SEND_THREAD, 0n),
-        overwrite("u1", SEND_THREAD, 0n), // member overwrite re-allows
-      ],
-    });
-    const memberWithRoles = member("u1", [], ["role-deny", "role-allow"]);
-    const result = await resolveEffectivePermissions({
-      channel,
-      member: memberWithRoles,
-      guild: GUILD,
-      fetchChannel: fetchChannelNull,
-    });
-    // discord.js ordering: role denies union then allows union, then member overwrite.
-    // role deny removes SEND_THREAD, role allow re-adds it, member allow keeps it.
-    expect(result?.has(SEND_THREAD)).toBe(true);
-  });
-
-  it("member overwrite deny overrides everything", async () => {
-    const parent = textChannel(() => bitsOf(VIEW, SEND_THREAD));
-    const channel = threadChannel({
-      parent,
-      overwrites: [overwrite("u1", 0n, SEND_THREAD | VIEW)],
-    });
-    const result = await resolveEffectivePermissions({
-      channel,
-      member: member("u1"),
-      guild: GUILD,
-      fetchChannel: fetchChannelNull,
-    });
-    expect(result?.has(SEND_THREAD)).toBe(false);
-    expect(result?.has(VIEW)).toBe(false);
   });
 
   it("fetches the parent via fetchChannel when thread.parent is unresolved", async () => {
@@ -229,6 +161,18 @@ describe("resolveEffectivePermissions — threads", () => {
 
   it("returns null when the parent cannot be resolved (fail closed)", async () => {
     const channel = threadChannel({ parent: null, parentId: "missing" });
+    const result = await resolveEffectivePermissions({
+      channel,
+      member: member("u1"),
+      guild: GUILD,
+      fetchChannel: fetchChannelNull,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("returns null when the parent's permissionsFor cannot resolve", async () => {
+    const parent = textChannel(() => null);
+    const channel = threadChannel({ parent });
     const result = await resolveEffectivePermissions({
       channel,
       member: member("u1"),

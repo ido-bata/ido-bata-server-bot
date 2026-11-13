@@ -107,13 +107,19 @@ describe("/anon command", () => {
     );
   });
 
-  it("maps bot permission denial to the dedicated reply", async () => {
+  it("maps bot permission denial to the generic unavailable reply", async () => {
+    // Bot-config details must not leak to the caller (ADR-0003 §1).
     const service = makeService({ ok: false, reason: "bot_permission_denied" });
     const { interaction, reply } = makeInteraction();
     await run(interaction, { service });
     expect(reply).toHaveBeenCalledWith(
-      expect.objectContaining({ content: expect.stringContaining("ボット") }),
+      expect.objectContaining({
+        ephemeral: true,
+        content: expect.stringContaining("利用できません"),
+      }),
     );
+    const content = reply.mock.calls[0]?.[0] as ReplyOptions | undefined;
+    expect(content?.content).not.toContain("ボット");
   });
 
   it("never throws — option read failure yields a generic ephemeral", async () => {

@@ -148,6 +148,43 @@ describe("deleteAnonAuditRecords", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("serializes concurrent record and delete so no audit line is lost", async () => {
+    const sink = createAnonAuditSink(auditConfig());
+    const idxKey = "test-index-key-0123456789";
+
+    // Interleave many appends for u1 with deletes for u2 — every u2
+    // record must survive and no append may be dropped by a rewrite.
+    const ops: Promise<unknown>[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      ops.push(
+        sink.record({
+          userId: i % 2 === 0 ? "u1" : "u2",
+          guildId: "g",
+          channelId: "c",
+          messageId: `m-${i}`,
+          postedAt: "t",
+          ciphertext: "ct",
+        }),
+      );
+      if (i % 3 === 0) {
+        ops.push(deleteAnonAuditRecords({ dir, indexKey: idxKey, userId: "u2" }));
+      }
+    }
+    await Promise.all(ops);
+
+    // Final state: delete u2 once more, then count remaining lines —
+    // must equal the number of u1 records (5 of the 10).
+    await deleteAnonAuditRecords({ dir, indexKey: idxKey, userId: "u2" });
+    const file = join(dir, dayFileName(new Date()));
+    const lines = readFileSync(file, "utf8")
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    expect(lines).toHaveLength(5);
+    for (const line of lines) {
+      expect(line).toContain(computeAnonIndex(idxKey, "u1"));
+    }
+  });
+
   it("keeps corrupt lines instead of silently dropping them", async () => {
     mkdirSync(dir, { recursive: true });
     const name = dayFileName(new Date());

@@ -15,6 +15,7 @@ import { createAnonymousChatService } from "../src/features/anonymous-chat/servi
 const VIEW = PermissionFlagsBits.ViewChannel;
 const SEND = PermissionFlagsBits.SendMessages;
 const SEND_THREAD = PermissionFlagsBits.SendMessagesInThreads;
+const MANAGE_THREADS = PermissionFlagsBits.ManageThreads;
 const ADMIN = PermissionFlagsBits.Administrator;
 
 function bitsOf(...flags: bigint[]): AnonBits {
@@ -39,7 +40,7 @@ type ChannelSpec = {
   guildId?: string | null;
   type?: number;
   permsByMemberId?: Record<string, AnonBits | null>;
-  locked?: boolean;
+  locked?: boolean | null;
   sendImpl?: () => Promise<{ id: string; delete: () => Promise<unknown> }>;
 };
 
@@ -54,7 +55,7 @@ function makeChannel(spec: ChannelSpec = {}) {
     type: spec.type ?? ChannelType.GuildText,
     parent: null,
     parentId: null,
-    locked: spec.locked ?? false,
+    locked: spec.locked === undefined ? false : spec.locked,
     archived: false,
     isTextBased: () => true,
     permissionsFor: (subject) => permsByMemberId[subject.id] ?? null,
@@ -81,6 +82,7 @@ function makeDeps(
     botMember?: AnonMemberLike | null;
     guild?: AnonGuildLike | null;
     threadMember?: boolean;
+    isThreadMember?: (channel: AnonChannelLike, userId: string) => Promise<boolean>;
     authorizeAudit?: (userId: string) => Promise<boolean>;
     audit?: AnonAuditSink | null;
     now?: () => number;
@@ -100,7 +102,7 @@ function makeDeps(
     fetchGuild: async () => guildObj,
     fetchMember: async () => memberObj,
     fetchBotMember: async () => botMemberObj,
-    isThreadMember: async () => overrides.threadMember ?? true,
+    isThreadMember: overrides.isThreadMember ?? (async () => overrides.threadMember ?? true),
     authorizeAudit: overrides.authorizeAudit,
     audit: overrides.audit,
     now: overrides.now,
@@ -163,6 +165,24 @@ describe("anonymous-chat service — deny-list & cooldown", () => {
     });
     expect(await service.post(INPUT)).toEqual({ ok: false, reason: "denied" });
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("consumes the cooldown even for deny-listed attempts", async () => {
+    // A denied attempt still burns the cooldown slot so permission
+    // probing cannot be repeated without waiting (ADR-0003 §2).
+    const { channel } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND), "bot-1": bitsOf(VIEW, SEND) },
+    });
+    const { service } = makeDeps({
+      channel,
+      config: makeConfig({ denyChannelIds: new Set(["chan-1"]) }),
+    });
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "denied" });
+    // Same user, different (allowed) channel → cooldown, not success.
+    expect(await service.post({ ...INPUT, channelId: "chan-2" })).toMatchObject({
+      ok: false,
+      reason: "cooldown",
+    });
   });
 
   it("enforces the per-user cooldown across attempts", async () => {
@@ -266,7 +286,9 @@ describe("anonymous-chat service — permission checks", () => {
 });
 
 describe("anonymous-chat service — threads", () => {
-  function makeThread(overrides: { locked?: boolean; parentBits?: AnonBits | null } = {}) {
+  function makeThread(
+    overrides: { locked?: boolean | null; parentBits?: AnonBits | null; type?: number } = {},
+  ) {
     const { channel: parent } = makeChannel({
       permsByMemberId: {
         "user-1": overrides.parentBits ?? bitsOf(VIEW, SEND_THREAD),
@@ -274,12 +296,12 @@ describe("anonymous-chat service — threads", () => {
       },
     });
     const { channel, send } = makeChannel({
-      type: ChannelType.PublicThread,
+      type: overrides.type ?? ChannelType.PublicThread,
       permsByMemberId: {},
     });
     channel.parent = parent;
     channel.parentId = "chan-1";
-    channel.locked = overrides.locked ?? false;
+    channel.locked = overrides.locked === undefined ? false : overrides.locked;
     return { channel, send };
   }
 
@@ -292,6 +314,13 @@ describe("anonymous-chat service — threads", () => {
 
   it("denies locked threads", async () => {
     const { channel, send } = makeThread({ locked: true });
+    const { service } = makeDeps({ channel });
+    expect(await service.post(INPUT)).toEqual({ ok: false, reason: "denied" });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("denies threads whose locked state is unknown (null) — fail closed", async () => {
+    const { channel, send } = makeThread({ locked: null });
     const { service } = makeDeps({ channel });
     expect(await service.post(INPUT)).toEqual({ ok: false, reason: "denied" });
     expect(send).not.toHaveBeenCalled();
@@ -323,6 +352,48 @@ describe("anonymous-chat service — threads", () => {
     channel.parent = parent;
     channel.parentId = "chan-1";
     const { service } = makeDeps({ channel, threadMember: true });
+    expect((await service.post(INPUT)).ok).toBe(true);
+    expect(send).toHaveBeenCalled();
+  });
+
+  it("denies private threads when the bot is neither a member nor a moderator", async () => {
+    const { channel: parent } = makeChannel({
+      permsByMemberId: { "user-1": bitsOf(VIEW, SEND_THREAD), "bot-1": bitsOf(VIEW, SEND_THREAD) },
+    });
+    const { channel, send } = makeChannel({
+      type: ChannelType.PrivateThread,
+      permsByMemberId: {},
+    });
+    channel.parent = parent;
+    channel.parentId = "chan-1";
+    const { service } = makeDeps({
+      channel,
+      isThreadMember: async (_c, userId) => userId === "user-1",
+    });
+    expect(await service.post(INPUT)).toEqual({
+      ok: false,
+      reason: "bot_permission_denied",
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("allows private threads when the bot holds ManageThreads without membership", async () => {
+    const { channel: parent } = makeChannel({
+      permsByMemberId: {
+        "user-1": bitsOf(VIEW, SEND_THREAD),
+        "bot-1": bitsOf(VIEW, SEND_THREAD, MANAGE_THREADS),
+      },
+    });
+    const { channel, send } = makeChannel({
+      type: ChannelType.PrivateThread,
+      permsByMemberId: {},
+    });
+    channel.parent = parent;
+    channel.parentId = "chan-1";
+    const { service } = makeDeps({
+      channel,
+      isThreadMember: async (_c, userId) => userId === "user-1",
+    });
     expect((await service.post(INPUT)).ok).toBe(true);
     expect(send).toHaveBeenCalled();
   });
@@ -451,5 +522,37 @@ describe("anonymous-chat service — audit mode", () => {
     });
     expect(await service.post(INPUT)).toEqual({ ok: false, reason: "unavailable" });
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("anonymous-chat service — auditState", () => {
+  it("reports disabled when no audit config and no injected sink", () => {
+    const { service } = makeDeps();
+    expect(service.auditState).toBe("disabled");
+  });
+
+  it("reports active when an audit sink is injected", () => {
+    const { service } = makeDeps({
+      audit: {
+        seal: () => "ct",
+        record: async () => undefined,
+        sweep: async () => undefined,
+      },
+    });
+    expect(service.auditState).toBe("active");
+  });
+
+  it("reports error when configured audit keys cannot build a sink", () => {
+    const { service } = makeDeps({
+      config: makeConfig({
+        audit: {
+          publicKey: "not-valid-key-material",
+          indexKey: "idx-key-0123456789",
+          dir: "data/anon-audit",
+          retentionDays: 90,
+        },
+      }),
+    });
+    expect(service.auditState).toBe("error");
   });
 });

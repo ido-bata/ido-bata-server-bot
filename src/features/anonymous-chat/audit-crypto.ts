@@ -29,6 +29,12 @@ export type AnonAuditPlaintext = {
  */
 export function createAnonCipher(publicKeyMaterial: string): (plaintext: string) => string {
   const trimmed = publicKeyMaterial.trim();
+  // The private key must never enter the bot process (ADR-0003 §3).
+  // `createPublicKey` would happily accept a private-key PEM and derive
+  // the public half, so reject private-key material explicitly.
+  if (/BEGIN [A-Z0-9 ]*PRIVATE KEY/.test(trimmed)) {
+    throw new Error("ANON_AUDIT_PUBLIC_KEY contains private-key material; refusing");
+  }
   const keyObject = trimmed.includes("BEGIN")
     ? createPublicKey(trimmed)
     : createPublicKey({
