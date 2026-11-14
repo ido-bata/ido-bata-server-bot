@@ -42,6 +42,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   resurrect data a user asked to forget.
 - **Restore drill**: the backup procedure (export → import → verify) is
   executable with the migration tooling and rehearsed as a regression test.
+- **Backup command**: `storage:migrate -- backup --target-bucket <name>`
+  copies the configured bucket into a second bucket and verifies *that*
+  bucket in the same run, so a daily backup is repeatable and can never be
+  verified against the wrong bucket. The export source is selectable
+  (`--source local` for the old host's `data/` directory).
+- **Fail-closed deletion ledger**: the append is a compare-and-swap, a
+  corrupt ledger is reported (and aborts a restore) instead of reading as
+  empty, a restore without `DELETION_LEDGER_KEY` is refused, and the
+  verification compares the post-erasure state so a correct final state
+  is not reported as a checksum mismatch.
 
 ### Changed
 
