@@ -78,6 +78,39 @@ describe("storage configuration", () => {
     expect(data.backend).toBe("u3");
   });
 
+  it("resolves valkey TLS options: CA inline/file, insecure opt-out, lease override", () => {
+    const pem = "-----BEGIN CERTIFICATE-----\\nabc\\n-----END CERTIFICATE-----\\n";
+    expect(
+      readStorageConfig({
+        STORAGE_BACKEND: "valkey",
+        VALKEY_URL: "rediss://h:1",
+        VALKEY_TLS_CA: pem,
+      }),
+    ).toMatchObject({ tlsCa: pem.replace(/\\n/g, "\n") });
+    expect(
+      readStorageConfig({
+        REDIS_TLS_INSECURE: "true",
+        STORAGE_BACKEND: "valkey",
+        VALKEY_URL: "rediss://h:1",
+      }),
+    ).toMatchObject({ tlsInsecure: true });
+    // No CA and no opt-out: verification stays on (fail closed).
+    const plain = readStorageConfig({ STORAGE_BACKEND: "valkey", VALKEY_URL: "rediss://h:1" });
+    expect(plain.backend).toBe("valkey");
+    if (plain.backend === "valkey") {
+      expect(plain.tlsCa).toBeUndefined();
+      expect(plain.tlsInsecure).toBeUndefined();
+    }
+    // Lease-scoped TLS vars win over the shared ones.
+    const lease = readLeaseConfig({
+      LEASE_STORAGE_BACKEND: "valkey",
+      LEASE_VALKEY_TLS_INSECURE: "true",
+      REDIS_URL: "rediss://h:1",
+      VALKEY_TLS_INSECURE: "false",
+    });
+    expect(lease).toMatchObject({ tlsInsecure: true });
+  });
+
   it("prefers the lease-specific valkey url and prefix", () => {
     const config = readLeaseConfig({
       LEASE_STORAGE_BACKEND: "valkey",

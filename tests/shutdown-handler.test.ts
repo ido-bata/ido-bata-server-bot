@@ -128,6 +128,23 @@ describe("shutdown handler", () => {
     expect(messages[0]).toContain("LEASE_LOST");
   });
 
+  it("exits with a failure code when the lease refused the start", async () => {
+    const exit = vi.fn();
+    const messages: string[] = [];
+    const runner = createShutdownRunner(
+      { destroy: vi.fn(async () => undefined) } as never,
+      { exit, cancelSession: async () => false },
+      (message) => messages.push(message),
+    );
+
+    await runner.run("LEASE_REFUSED");
+
+    // A refused start must terminate the process — lingering on the
+    // health port would look like a live instance to the platform.
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(messages[0]).toContain("LEASE_REFUSED");
+  });
+
   it("also exits cleanly on SIGTERM with no active session", async () => {
     const { cancelSession, destroyClient, exit, messages, runner } = setupRunner();
 

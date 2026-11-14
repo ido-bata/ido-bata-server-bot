@@ -472,7 +472,7 @@ async function main(): Promise<void> {
     },
   });
   registerTimekeeperCommandHandlers(client);
-  await registerHealthMetrics(client);
+  const healthMetrics = await registerHealthMetrics(client);
   statusStore.set({
     features: {
       ...statusStore.snapshot.features,
@@ -617,6 +617,14 @@ async function main(): Promise<void> {
   // migration cutover, or a duplicated Altare deployment — refuses to
   // start instead of processing the same events twice.
   const leaseDriver = getLeaseDriver();
+  // A refused start must actually terminate: returning from main() leaves
+  // the health server (and the event loop) alive, so the platform would
+  // see a live-but-unserving instance. Routing through the shutdown
+  // runner tears down and exits non-zero; `/ready` reports 503 meanwhile.
+  const refuseToStart = async (): Promise<void> => {
+    healthMetrics.registry.setStorageLeaseHeld(false);
+    await shutdownRunner.run("LEASE_REFUSED");
+  };
   const conditionalWrites = await leaseDriver.probeConditionalWrites();
   if (!conditionalWrites && process.env.LEASE_ALLOW_UNCONDITIONAL !== "true") {
     // The lease's exclusivity depends on conditional writes. Without them
@@ -627,7 +635,7 @@ async function main(): Promise<void> {
       "the storage backend does not support conditional writes; the instance lease cannot be exclusive. " +
         "Set LEASE_ALLOW_UNCONDITIONAL=true only after verifying the backend's behaviour manually.",
     );
-    process.exitCode = 1;
+    await refuseToStart();
     return;
   }
   if (!conditionalWrites) {
@@ -650,6 +658,7 @@ async function main(): Promise<void> {
         // Losing the lease means another instance owns the runtime: stop
         // instead of processing events unowned.
         onLost: (error) => {
+          healthMetrics.registry.setStorageLeaseHeld(false);
           rootLogger.error({ err: error }, "storage lease lost; shutting the bot down");
           void shutdownRunner.run("LEASE_LOST");
         },
@@ -664,7 +673,7 @@ async function main(): Promise<void> {
             { err: error, holderId: error.holderId, expiresAt: error.expiresAt },
             "another bot instance holds the storage lease; refusing to start",
           );
-          process.exitCode = 1;
+          await refuseToStart();
           return;
         }
         rootLogger.warn(
@@ -679,12 +688,13 @@ async function main(): Promise<void> {
           { err: error },
           "the storage backend cannot hold an exclusive lease; refusing to start",
         );
-        process.exitCode = 1;
+        await refuseToStart();
         return;
       }
       throw error;
     }
   }
+  healthMetrics.registry.setStorageLeaseHeld(true);
   rootLogger.info({ epoch: lease.epoch, holderId: lease.holderId }, "storage lease acquired");
 
   await client.login(config.discordToken);

@@ -9,13 +9,17 @@ import { cancelActiveSession } from "../timekeeper/service.js";
  *
  * `LEASE_LOST` is not an operator signal: the bot lost the storage lease
  * (ADR-0004), so another instance owns the runtime and this one must stop
- * immediately. It exits with a non-zero code so the platform restarts it
- * (and the supervisor notices).
+ * immediately. `LEASE_REFUSED` is the startup counterpart: another
+ * instance already holds the lease, so this process never owned the
+ * runtime and must exit non-zero instead of lingering on the health port.
+ * Both exit with a non-zero code so the platform restarts them (and the
+ * supervisor notices).
  */
-type ShutdownSignal = "SIGINT" | "SIGTERM" | "LEASE_LOST";
+type ShutdownSignal = "SIGINT" | "SIGTERM" | "LEASE_LOST" | "LEASE_REFUSED";
 
 const SHUTDOWN_EXIT_CODES: Record<ShutdownSignal, number> = {
   LEASE_LOST: 1,
+  LEASE_REFUSED: 1,
   SIGINT: 0,
   SIGTERM: 0,
 };

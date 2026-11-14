@@ -333,10 +333,14 @@ Altare Valkey (`LEASE_STORAGE_BACKEND=valkey`, `REDIS_URL` injected by
 `SET NX` gives atomic create-if-absent and the compare-and-swap runs as a
 single Lua script, so exclusivity is real, not probed-and-hoped.
 
-- `rediss://` endpoints present a self-signed certificate and ship no
-  CA; the driver skips chain validation for `rediss://` only (traffic
-  stays encrypted; residual MITM risk on the lease backend is accepted
-  for the managed deployment).
+- `rediss://` endpoints present a self-signed certificate made for the
+  instance (CA:TRUE, ~10y validity). The driver verifies it when a CA is
+  configured (`VALKEY_TLS_CA` / `VALKEY_TLS_CA_FILE`, PEM inline with
+  `
+` escapes allowed; `LEASE_VALKEY_TLS_*` overrides for the lease
+  backend). `VALKEY_TLS_INSECURE=true` is the explicit opt-out — without
+  a CA and without the flag, verification stays on and the connection
+  fails closed.
 - The contract suite runs against a real Valkey when `VALKEY_TEST_URL`
   is set; without it the suite skips — Lua atomicity cannot be faked.
 - Verified live: a second `acquireInstanceLease` on the same key is

@@ -50,6 +50,19 @@ export type ValkeyStorageOptions = {
   url: string;
   /** Key prefix inside the keyspace. Defaults to `storage:`. */
   prefix?: string;
+  /**
+   * PEM CA used to verify `rediss://` endpoints. Altare Valkey serves a
+   * self-signed certificate made for the instance — download it from the
+   * instance's console page ("Download certificate") and pass it here.
+   * When set, normal chain + hostname verification stays enabled.
+   */
+  tlsCa?: string;
+  /**
+   * Explicit opt-out of `rediss://` certificate verification. The channel
+   * stays encrypted but a MITM is possible — use only where no CA is
+   * available and the residual risk is accepted (ADR-0004 §10).
+   */
+  tlsInsecure?: boolean;
 };
 
 // Increment the envelope version and store the new payload atomically.
@@ -121,20 +134,22 @@ export function createValkeyStorage(options: ValkeyStorageOptions): StorageDrive
   }
 
   const prefix = options.prefix ?? DEFAULT_KEY_PREFIX;
-  // Altare Valkey serves TLS with a self-signed certificate and ships no
-  // CA to pin, so `rediss://` connections skip chain validation. The
-  // channel is still encrypted; the residual risk is a MITM on the lease
-  // backend, which is accepted for the managed-provider deployment
-  // (ADR-0004 §10).
-  const client: RedisClientType = createClient(
-    options.url.startsWith("rediss://")
-      ? // Altare Valkey serves TLS with a self-signed certificate and ships
-        // no CA to pin, so `rediss://` connections skip chain validation.
-        // The channel is still encrypted; the residual risk is a MITM on
-        // the lease backend, accepted for the managed deployment (ADR-0004 §10).
-        { socket: { rejectUnauthorized: false, tls: true }, url: options.url }
-      : { url: options.url },
-  );
+  // `rediss://` endpoints are verified when a CA is configured; the
+  // self-signed skip is an explicit opt-in only (`tlsInsecure`). Without
+  // either, Node's default verification applies and a self-signed
+  // certificate fails closed.
+  const secure = options.url.startsWith("rediss://");
+  const socket = secure
+    ? options.tlsCa
+      ? { ca: options.tlsCa, tls: true as const }
+      : options.tlsInsecure
+        ? { rejectUnauthorized: false, tls: true as const }
+        : { tls: true as const }
+    : undefined;
+  const client: RedisClientType = createClient({
+    socket,
+    url: options.url,
+  });
   // Connection errors surface through the command that needed them; an
   // unhandled 'error' event would crash the process instead.
   client.on("error", () => undefined);

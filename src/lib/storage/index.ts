@@ -25,6 +25,8 @@
  * source of truth on Altare.
  */
 
+import { readFileSync } from "node:fs";
+
 import { createLocalFileStorage } from "./local.js";
 import type { StorageDriver } from "./types.js";
 import { createU3Storage } from "./u3.js";
@@ -55,6 +57,10 @@ export type ValkeyStorageConfig = {
   url: string;
   /** Key prefix inside the keyspace. */
   prefix?: string;
+  /** PEM CA for `rediss://` verification (Altare: the instance certificate). */
+  tlsCa?: string;
+  /** Explicit opt-out of `rediss://` certificate verification (insecure). */
+  tlsInsecure?: boolean;
 };
 
 export type StorageConfig = LocalStorageConfig | U3StorageConfig | ValkeyStorageConfig;
@@ -118,6 +124,7 @@ export function readStorageConfig(env: NodeJS.ProcessEnv = process.env): Storage
       backend: "valkey",
       prefix: firstNonEmpty(env.VALKEY_PREFIX),
       url,
+      ...readValkeyTlsConfig(env),
     };
   }
 
@@ -206,9 +213,44 @@ export function readLeaseConfig(env: NodeJS.ProcessEnv = process.env): StorageCo
       backend: "valkey",
       prefix: firstNonEmpty(env.LEASE_VALKEY_PREFIX, env.VALKEY_PREFIX),
       url,
+      ...readValkeyTlsConfig(env, "LEASE_"),
     };
   }
   throw new Error(`unknown LEASE_STORAGE_BACKEND: ${backend} (expected "local", "u3" or "valkey")`);
+}
+
+/**
+ * Resolve the `rediss://` TLS options for a valkey backend.
+ *
+ * `*_TLS_CA` carries the PEM inline (literal `\n` sequences are
+ * unescaped, so a single-line env var works); `*_TLS_CA_FILE` reads it
+ * from a path instead. `*_TLS_INSECURE=true` is the explicit opt-out —
+ * without a CA and without the flag, certificate verification stays on
+ * and a self-signed endpoint fails closed. Lease-scoped variables win
+ * over the shared ones.
+ */
+function readValkeyTlsConfig(
+  env: NodeJS.ProcessEnv,
+  leasePrefix = "",
+): { tlsCa?: string; tlsInsecure?: boolean } {
+  const names = (suffix: string) =>
+    firstNonEmpty(
+      leasePrefix ? env[`${leasePrefix}VALKEY_TLS_${suffix}`] : undefined,
+      env[`VALKEY_TLS_${suffix}`],
+      env[`REDIS_TLS_${suffix}`],
+    );
+  const caFile = names("CA_FILE");
+  const caInline = names("CA");
+  const tlsCa = caFile ? readFileSync(caFile, "utf8") : caInline?.replace(/\\n/g, "\n");
+  const insecure = firstNonEmpty(
+    leasePrefix ? env[`${leasePrefix}VALKEY_TLS_INSECURE`] : undefined,
+    env.VALKEY_TLS_INSECURE,
+    env.REDIS_TLS_INSECURE,
+  );
+  return {
+    ...(tlsCa ? { tlsCa } : {}),
+    ...(insecure === "true" || insecure === "1" ? { tlsInsecure: true } : {}),
+  };
 }
 
 /** Build the storage driver described by `config`. */
@@ -217,7 +259,12 @@ export function createStorageDriverFromConfig(config: StorageConfig): StorageDri
     return createLocalFileStorage({ root: config.root });
   }
   if (config.backend === "valkey") {
-    return createValkeyStorage({ prefix: config.prefix, url: config.url });
+    return createValkeyStorage({
+      prefix: config.prefix,
+      tlsCa: config.tlsCa,
+      tlsInsecure: config.tlsInsecure,
+      url: config.url,
+    });
   }
   return createU3Storage({
     accessKeyId: config.accessKeyId,

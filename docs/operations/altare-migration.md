@@ -60,7 +60,7 @@ Altare → app → **Deployments → Settings**:
 | Install command | `bun install --frozen-lockfile` |
 | Build command | `bun run build` |
 | Start command | `node dist/index.js` |
-| Health check path | `/health` |
+| Health check path | `/health` (liveness); `/ready` returns 503 until the storage lease is held and the gateway is connected |
 | Node runtime | 22 (matches `engines.node`) |
 
 App variables (Settings → Variables):
@@ -209,7 +209,12 @@ at startup (`probeConditionalWrites`); a backend that does not enforce
 conditional writes stops the bot. On Altare the lease backend is Valkey —
 create it once and attach it to the app (`altr valkey create`, then
 `altr valkey attach <instance> "<app>"`, which injects `REDIS_URL` and
-redeploys):
+redeploys). The instance's `rediss://` endpoint serves a self-signed
+certificate: download it from the instance page ("Download certificate")
+and set `VALKEY_TLS_CA` (PEM inline, `
+` escapes allowed) so chain and
+hostname verification stay enabled. `VALKEY_TLS_INSECURE=true` is the
+explicit last-resort opt-out; without a CA the connection fails closed:
 
 ```text
 the storage backend does not support conditional writes; the instance lease cannot be exclusive
@@ -217,6 +222,11 @@ the storage backend does not support conditional writes; the instance lease cann
 
 `LEASE_ALLOW_UNCONDITIONAL=true` overrides that, but only after the
 backend's behaviour was verified by hand (§7.2).
+
+A refused or lost lease now exits the process non-zero
+(`LEASE_REFUSED` / `LEASE_LOST`) instead of lingering on the health port,
+and `/ready` reports 503 until the lease is held — a redeploy overlap is
+absorbed by the startup retry (lease TTL + margin) and then proceeds.
 
 **Never run two instances deliberately.** The lease is a safety net, not
 an orchestrator.
