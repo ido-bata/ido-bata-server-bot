@@ -59,7 +59,7 @@ read / readText / readVersioned / write / writeExclusive /
 compareAndSwap / list / delete / exists / move / probeConditionalWrites
 ```
 
-Two adapters implement it:
+The following adapters implement it:
 
 | Adapter | Backend | Used when |
 | --- | --- | --- |
@@ -67,8 +67,9 @@ Two adapters implement it:
 | `U3Storage` | S3-compatible object storage (Altare U3) | `STORAGE_BACKEND=u3` |
 | `ValkeyStorage` | Redis-compatible store (Altare Valkey) — lease backend; U3 ignores S3 conditional writes | `LEASE_STORAGE_BACKEND=valkey` |
 
-Semantics are identical on both sides, and `tests/storage-contract.test.ts`
-runs the same contract against both:
+Semantics are identical on every adapter, and `tests/storage-contract.test.ts`
+runs the same contract against each configured backend (Valkey only when
+`VALKEY_TEST_URL` points at a real instance):
 
 - `write` replaces an object atomically (temp file + `rename(2)` locally,
   a single `PUT` on object storage) — a reader never sees a half-written
@@ -88,7 +89,7 @@ state-snapshot bundles, birthday registry, polls, reminders, scheduled
 announcements, per-guild configuration, calendar source configuration and
 cache, hot-reload configuration.
 
-Key layout is flat and identical in both backends — `data/consent.json`
+Key layout is flat and identical in every backend — `data/consent.json`
 locally, `consent.json` in the bucket — so a migration is a straight copy
 (`bun run storage:migrate`, see `docs/operations/altare-migration.md`).
 

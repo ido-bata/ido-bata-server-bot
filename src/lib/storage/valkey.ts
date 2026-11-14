@@ -78,12 +78,17 @@ return v + 1
 `;
 
 // Compare-and-swap: ARGV[1] = expected version (-1 = must not exist),
-// ARGV[2] = base64 payload, ARGV[3] = mtime, ARGV[4] = size.
+// ARGV[2] = base64 payload, ARGV[3] = mtime, ARGV[4] = size. An existing
+// value whose envelope cannot be parsed is never overwritten: it reports
+// as a conflict so callers fail closed instead of clobbering state.
 const CAS_SCRIPT = `
 local cur = redis.call('GET', KEYS[1])
 local cv = nil
 if cur then
   cv = tonumber(string.match(cur, '"v":(%d+)'))
+  if cv == nil then
+    return 0
+  end
 end
 local ev = tonumber(ARGV[1])
 if (cv == nil and ev ~= -1) or (cv ~= nil and cv ~= ev) then
@@ -98,20 +103,24 @@ function parseEnvelope(raw: string | null): Envelope | null {
   if (raw === null) {
     return null;
   }
+  // A present-but-unparseable object is corruption, not absence: the
+  // storage contract requires it to throw so callers (notably the
+  // instance lease) fail closed instead of treating the key as missing.
+  let parsed: Partial<Envelope>;
   try {
-    const parsed = JSON.parse(raw) as Partial<Envelope>;
-    if (
-      typeof parsed.v !== "number" ||
-      typeof parsed.m !== "number" ||
-      typeof parsed.s !== "number" ||
-      typeof parsed.d !== "string"
-    ) {
-      return null;
-    }
-    return { d: parsed.d, m: parsed.m, s: parsed.s, v: parsed.v };
+    parsed = JSON.parse(raw) as Partial<Envelope>;
   } catch {
-    return null;
+    throw new Error("corrupt storage object: invalid envelope JSON");
   }
+  if (
+    typeof parsed.v !== "number" ||
+    typeof parsed.m !== "number" ||
+    typeof parsed.s !== "number" ||
+    typeof parsed.d !== "string"
+  ) {
+    throw new Error("corrupt storage object: invalid envelope fields");
+  }
+  return { d: parsed.d, m: parsed.m, s: parsed.s, v: parsed.v };
 }
 
 function envelopeFor(data: Uint8Array, version: number, mtimeMs: number): string {

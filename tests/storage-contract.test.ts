@@ -153,4 +153,31 @@ if (valkeyTestUrl) {
       url: valkeyTestUrl,
     });
   });
+
+  // Corruption must surface as an error, never as "missing": the lease
+  // relies on this to fail closed instead of overwriting a live term.
+  describe("valkey corruption semantics", () => {
+    it("throws on an unparseable envelope and refuses to CAS over it", async () => {
+      const { createValkeyStorage } = await import("../src/lib/storage/valkey.js");
+      const { createClient } = await import("redis");
+      const prefix = `corrupt-${Date.now()}-`;
+      const driver = createValkeyStorage({ prefix, url: valkeyTestUrl });
+      const client = createClient({ url: valkeyTestUrl });
+      await client.connect();
+      try {
+        await client.set(`${prefix}bad.json`, "not-an-envelope");
+        await expect(driver.read("bad.json")).rejects.toThrow(/corrupt storage object/);
+        await expect(driver.readVersioned("bad.json")).rejects.toThrow(/corrupt storage object/);
+        // expectedVersion=null means "must not exist" — a corrupt object
+        // exists, so the swap must conflict rather than overwrite it.
+        await expect(driver.compareAndSwap("bad.json", "x", null)).resolves.toBe("conflict");
+        // Unconditional write still replaces the corrupt value.
+        await driver.write("bad.json", "ok");
+        await expect(driver.readText("bad.json")).resolves.toBe("ok");
+      } finally {
+        await client.del(`${prefix}bad.json`).catch(() => undefined);
+        await client.quit().catch(() => undefined);
+      }
+    });
+  });
 }

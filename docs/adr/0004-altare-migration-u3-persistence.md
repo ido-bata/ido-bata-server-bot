@@ -336,8 +336,7 @@ single Lua script, so exclusivity is real, not probed-and-hoped.
 - `rediss://` endpoints present a self-signed certificate made for the
   instance (CA:TRUE, ~10y validity). The driver verifies it when a CA is
   configured (`VALKEY_TLS_CA` / `VALKEY_TLS_CA_FILE`, PEM inline with
-  `
-` escapes allowed; `LEASE_VALKEY_TLS_*` overrides for the lease
+  `\n` escapes allowed; `LEASE_VALKEY_TLS_*` overrides for the lease
   backend). `VALKEY_TLS_INSECURE=true` is the explicit opt-out — without
   a CA and without the flag, verification stays on and the connection
   fails closed.
@@ -346,6 +345,13 @@ single Lua script, so exclusivity is real, not probed-and-hoped.
 - Verified live: a second `acquireInstanceLease` on the same key is
   refused with `LeaseConflictError`, and a released term is re-acquirable
   with a bumped epoch.
+- Corruption fails closed: a present-but-unparseable envelope throws
+  (it never reads as "missing"), and compare-and-swap refuses to
+  overwrite it — a damaged lease term cannot be silently replaced.
+- Every lease-startup failure — bad backend config, probe error,
+  unsupported conditional writes, conflict past the retry deadline —
+  routes through `LEASE_REFUSED` and exits non-zero. No path leaves a
+  live-but-unserving process on the health port.
 
 ## References
 
