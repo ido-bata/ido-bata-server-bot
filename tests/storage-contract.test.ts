@@ -139,3 +139,18 @@ describeContract("u3 (s3-compatible)", async () => {
     secretAccessKey: "test-secret",
   });
 });
+
+// The valkey contract runs against a real instance only when
+// VALKEY_TEST_URL is set — the in-process fakes cannot prove Lua
+// atomicity. CI and developers without a Valkey skip it; the Altare
+// deployment is verified by the runbook drill instead.
+const valkeyTestUrl = process.env.VALKEY_TEST_URL;
+if (valkeyTestUrl) {
+  describeContract("valkey (real instance)", async () => {
+    const { createValkeyStorage } = await import("../src/lib/storage/valkey.js");
+    return createValkeyStorage({
+      prefix: `contract-${Date.now()}-`,
+      url: valkeyTestUrl,
+    });
+  });
+}

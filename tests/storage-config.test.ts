@@ -48,6 +48,50 @@ describe("storage configuration", () => {
     expect(readStorageConfig({ DATA_DIR: "/srv/bot-data" }).backend).toBe("local");
   });
 
+  it("requires a url for the valkey backend", () => {
+    expect(() => readStorageConfig({ STORAGE_BACKEND: "valkey" })).toThrow(/VALKEY_URL/);
+    expect(readStorageConfig({ REDIS_URL: "redis://localhost:6379" })).toEqual({
+      backend: "local",
+      root: `${process.cwd()}/data`,
+    });
+    expect(
+      readStorageConfig({ STORAGE_BACKEND: "valkey", VALKEY_URL: "rediss://cache:25041" }),
+    ).toEqual({ backend: "valkey", prefix: undefined, url: "rediss://cache:25041" });
+  });
+
+  it("puts the lease on valkey while the data stays on u3", () => {
+    // U3 ignores S3 conditional writes, so the lease cannot live there;
+    // the data backend stays u3 and only the lease moves to valkey.
+    const lease = readLeaseConfig({
+      LEASE_STORAGE_BACKEND: "valkey",
+      REDIS_URL: "rediss://cache:25041",
+      S3_BUCKET: "ido-bata-bot",
+      STORAGE_BACKEND: "u3",
+    });
+    expect(lease).toEqual({ backend: "valkey", prefix: undefined, url: "rediss://cache:25041" });
+    const data = readStorageConfig({
+      AWS_ACCESS_KEY_ID: "AK",
+      AWS_SECRET_ACCESS_KEY: "sk",
+      S3_BUCKET: "b",
+      STORAGE_BACKEND: "u3",
+    });
+    expect(data.backend).toBe("u3");
+  });
+
+  it("prefers the lease-specific valkey url and prefix", () => {
+    const config = readLeaseConfig({
+      LEASE_STORAGE_BACKEND: "valkey",
+      LEASE_VALKEY_PREFIX: "lease:",
+      LEASE_VALKEY_URL: "redis://lease:6379",
+      REDIS_URL: "redis://shared:6379",
+    });
+    expect(config).toEqual({
+      backend: "valkey",
+      prefix: "lease:",
+      url: "redis://lease:6379",
+    });
+  });
+
   it("uses the lease-specific bucket and credentials when they differ", () => {
     const config = readLeaseConfig({
       AWS_ACCESS_KEY_ID: "AKDATA",

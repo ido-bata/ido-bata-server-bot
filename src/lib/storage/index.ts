@@ -9,6 +9,10 @@
  *   "Connect to app" flow injects `S3_ENDPOINT` / `S3_REGION` / `S3_BUCKET`
  *   / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`; the `U3_*` aliases are
  *   accepted for operators who prefer them.
+ * - `valkey` — Redis-compatible store (Altare Valkey). U3 does not
+ *   implement S3 conditional writes, so the instance lease uses this
+ *   backend (`LEASE_STORAGE_BACKEND=valkey`, `REDIS_URL` injected by
+ *   `altr valkey attach`).
  *
  * The instance lease uses its own configuration (`LEASE_STORAGE_BACKEND` and
  * the `LEASE_*` overrides). During a migration cutover the old host must
@@ -24,6 +28,7 @@
 import { createLocalFileStorage } from "./local.js";
 import type { StorageDriver } from "./types.js";
 import { createU3Storage } from "./u3.js";
+import { createValkeyStorage } from "./valkey.js";
 
 export type { StorageDriver } from "./types.js";
 
@@ -44,7 +49,15 @@ export type U3StorageConfig = {
   sessionToken?: string;
 };
 
-export type StorageConfig = LocalStorageConfig | U3StorageConfig;
+export type ValkeyStorageConfig = {
+  backend: "valkey";
+  /** Connection URL (`redis://` / `rediss://`). */
+  url: string;
+  /** Key prefix inside the keyspace. */
+  prefix?: string;
+};
+
+export type StorageConfig = LocalStorageConfig | U3StorageConfig | ValkeyStorageConfig;
 
 function firstNonEmpty(...values: (string | undefined)[]): string | undefined {
   for (const value of values) {
@@ -96,7 +109,19 @@ export function readStorageConfig(env: NodeJS.ProcessEnv = process.env): Storage
     };
   }
 
-  throw new Error(`unknown STORAGE_BACKEND: ${backend} (expected "local" or "u3")`);
+  if (backend === "valkey") {
+    const url = firstNonEmpty(env.VALKEY_URL, env.REDIS_URL);
+    if (!url) {
+      throw new Error("storage backend 'valkey' requires VALKEY_URL (or REDIS_URL)");
+    }
+    return {
+      backend: "valkey",
+      prefix: firstNonEmpty(env.VALKEY_PREFIX),
+      url,
+    };
+  }
+
+  throw new Error(`unknown STORAGE_BACKEND: ${backend} (expected "local", "u3" or "valkey")`);
 }
 
 /**
@@ -165,13 +190,34 @@ export function readLeaseConfig(env: NodeJS.ProcessEnv = process.env): StorageCo
       ),
     };
   }
-  throw new Error(`unknown LEASE_STORAGE_BACKEND: ${backend} (expected "local" or "u3")`);
+  if (backend === "valkey") {
+    const url = firstNonEmpty(
+      env.LEASE_VALKEY_URL,
+      env.LEASE_REDIS_URL,
+      env.VALKEY_URL,
+      env.REDIS_URL,
+    );
+    if (!url) {
+      throw new Error(
+        "lease backend 'valkey' requires LEASE_VALKEY_URL (or VALKEY_URL / REDIS_URL)",
+      );
+    }
+    return {
+      backend: "valkey",
+      prefix: firstNonEmpty(env.LEASE_VALKEY_PREFIX, env.VALKEY_PREFIX),
+      url,
+    };
+  }
+  throw new Error(`unknown LEASE_STORAGE_BACKEND: ${backend} (expected "local", "u3" or "valkey")`);
 }
 
 /** Build the storage driver described by `config`. */
 export function createStorageDriverFromConfig(config: StorageConfig): StorageDriver {
   if (config.backend === "local") {
     return createLocalFileStorage({ root: config.root });
+  }
+  if (config.backend === "valkey") {
+    return createValkeyStorage({ prefix: config.prefix, url: config.url });
   }
   return createU3Storage({
     accessKeyId: config.accessKeyId,

@@ -15,7 +15,7 @@ Related: [`docs/architecture.md`](../architecture.md), [`docs/privacy.md`](../pr
 | Persistence | files under `data/` | U3 bucket (S3-compatible), `STORAGE_BACKEND=u3` |
 | App disk | authoritative | cache only — a redeploy may wipe it |
 | Secrets | `.env` on the host | Altare app variables |
-| Single instance | assumed | storage lease (`locks/instance.json`) in a backend **both hosts share** |
+| Single instance | assumed | storage lease in a backend **both hosts share** — Altare Valkey (`LEASE_STORAGE_BACKEND=valkey`), because U3 ignores S3 conditional writes |
 
 The storage *layout* does not change: `data/consent.json` becomes the
 object `consent.json`, `data/anon-audit/<file>` becomes
@@ -74,7 +74,7 @@ App variables (Settings → Variables):
 | `HEALTH_PORT` | `8080` | must match the app's exposed port |
 | `HEALTH_HOST` | `0.0.0.0` | the health endpoint must be reachable from outside |
 | `STORAGE_BACKEND` | `u3` | selects the object store |
-| `LEASE_STORAGE_BACKEND` | `u3` | the lease backend — must be shared with the old host |
+| `LEASE_STORAGE_BACKEND` | `valkey` | the lease backend — U3 cannot hold an exclusive lease (no conditional writes); attach a Valkey instance to inject `REDIS_URL` |
 | `DELETION_LEDGER_KEY` | secret (≥16 bytes) | HMAC key for the deletion ledger; without it a restore of an old backup can resurrect deleted data |
 | `ANON_AUDIT_PUBLIC_KEY` | PEM | only the **public** key; the private key never leaves the custodian's store |
 | `BOT_TUI` | `off` | headless host: the structured logger keeps writing JSON Lines |
@@ -119,9 +119,8 @@ shared bucket while its data stays local:
 ```sh
 # old host
 export STORAGE_BACKEND=local          # data still on the local disk
-export LEASE_STORAGE_BACKEND=u3       # the lease is shared with Altare
-export S3_ENDPOINT=... S3_REGION=... S3_BUCKET=ido-bata-bot
-export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+export LEASE_STORAGE_BACKEND=valkey   # the lease is shared with Altare
+export REDIS_URL=...                  # the shared Valkey instance
 bun run start
 ```
 
@@ -191,8 +190,10 @@ behaviour, not a failure to fix.
 The bot takes a lease (`locks/instance.json`) in the **lease backend**
 before it connects to Discord:
 
-- a second instance refuses to start (`LeaseConflictError`) — the old host
-  and the Altare deployment can never process the same event at once;
+- a second instance refuses to start (`LeaseConflictError`) — verified
+  live against Altare Valkey: `SET NX` + a Lua compare-and-swap give real
+  exclusivity (U3 was probed first and ignores `If-None-Match`/`If-Match`,
+  so it cannot hold the lease — ADR-0004 §10);
 - every lease mutation is a compare-and-swap against the version the
   holder read, so a takeover cannot be lost in a read-then-write window;
 - releasing *expires* the term instead of deleting the object, so a
@@ -205,7 +206,10 @@ before it connects to Discord:
 
 The lease is only as exclusive as the backend. The bot probes the backend
 at startup (`probeConditionalWrites`); a backend that does not enforce
-conditional writes stops the bot:
+conditional writes stops the bot. On Altare the lease backend is Valkey —
+create it once and attach it to the app (`altr valkey create`, then
+`altr valkey attach <instance> "<app>"`, which injects `REDIS_URL` and
+redeploys):
 
 ```text
 the storage backend does not support conditional writes; the instance lease cannot be exclusive

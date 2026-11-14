@@ -316,6 +316,33 @@ were reproduced and fixed:
 | The capability probe only covered the create path | `If-None-Match` was probed, `If-Match` (the renewal path) was not | The probe checks both conditional paths; a create-only backend is rejected |
 | The deletion ledger lost, hid and ignored records | The append was a read-modify-write, a corrupt ledger read as empty, and a missing key only warned | The append is a compare-and-swap, a corrupt ledger is reported and aborts a restore, and a restore without the key is refused |
 
+
+## 10. Revision after the first real deployment (2026-11-15)
+
+Deploying the branch to Altare surfaced a backend fact the mocks could
+not show: **U3 does not implement S3 conditional writes.** A live probe
+(`If-None-Match: *` on an existing key, `If-Match` with a stale ETag)
+showed both headers ignored — every conditional PUT succeeded. The
+startup capability probe therefore refused to boot, exactly as designed.
+
+Decision: the **data** backend stays U3 (plain atomic `PUT` is enough —
+only one instance writes at a time), and the **lease** backend moves to
+Altare Valkey (`LEASE_STORAGE_BACKEND=valkey`, `REDIS_URL` injected by
+`altr valkey attach`). `ValkeyStorage` implements the same
+`StorageDriver` port over Redis strings with a versioned JSON envelope;
+`SET NX` gives atomic create-if-absent and the compare-and-swap runs as a
+single Lua script, so exclusivity is real, not probed-and-hoped.
+
+- `rediss://` endpoints present a self-signed certificate and ship no
+  CA; the driver skips chain validation for `rediss://` only (traffic
+  stays encrypted; residual MITM risk on the lease backend is accepted
+  for the managed deployment).
+- The contract suite runs against a real Valkey when `VALKEY_TEST_URL`
+  is set; without it the suite skips — Lua atomicity cannot be faked.
+- Verified live: a second `acquireInstanceLease` on the same key is
+  refused with `LeaseConflictError`, and a released term is re-acquirable
+  with a bumped epoch.
+
 ## References
 
 - `AGENTS.md`, `CLAUDE.md`

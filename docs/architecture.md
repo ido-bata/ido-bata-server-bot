@@ -65,6 +65,7 @@ Two adapters implement it:
 | --- | --- | --- |
 | `LocalFileStorage` | files under `DATA_DIR` (default `<cwd>/data`) | `STORAGE_BACKEND=local` (default) |
 | `U3Storage` | S3-compatible object storage (Altare U3) | `STORAGE_BACKEND=u3` |
+| `ValkeyStorage` | Redis-compatible store (Altare Valkey) — lease backend; U3 ignores S3 conditional writes | `LEASE_STORAGE_BACKEND=valkey` |
 
 Semantics are identical on both sides, and `tests/storage-contract.test.ts`
 runs the same contract against both:

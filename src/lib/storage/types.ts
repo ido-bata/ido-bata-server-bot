@@ -6,12 +6,15 @@
  * is rebuilt from the GitHub checkout on every deploy — runtime-created
  * files are therefore not durable there (ADR-0004).
  *
- * This module defines the *port*; `local.ts` and `u3.ts` provide the two
- * adapters:
+ * This module defines the *port*; `local.ts`, `u3.ts` and `valkey.ts`
+ * provide the adapters:
  *
  * - `LocalFileStorage` — the previous behaviour, byte-for-byte compatible.
  * - `U3Storage` — S3-compatible object storage (Altare U3), the source of
  *   truth on Altare.
+ * - `ValkeyStorage` — Redis-compatible key/value store (Altare Valkey).
+ *   U3 does not implement S3 conditional writes, so the instance lease
+ *   runs on Valkey instead (`LEASE_STORAGE_BACKEND=valkey`).
  *
  * Contract, identical for every adapter:
  *
@@ -64,8 +67,8 @@ export type VersionedObject = {
 export type CompareAndSwapResult = "written" | "conflict" | "unsupported";
 
 export type StorageDriver = {
-  /** Adapter identifier — `local` (filesystem) or `u3` (object storage). */
-  readonly kind: "local" | "u3";
+  /** Adapter identifier — `local` (filesystem), `u3` (object storage) or `valkey` (key/value store). */
+  readonly kind: "local" | "u3" | "valkey";
   /** Read an object. Resolves `null` when the key does not exist. */
   read: (key: string) => Promise<Uint8Array | null>;
   /** Read an object as UTF-8 text. Resolves `null` when the key is missing. */
