@@ -18,7 +18,7 @@ export type AnonAuditConfig = {
   publicKey: string;
   /** Key id written into each record envelope; bump on rotation. */
   keyId: string;
-  /** Directory holding per-record `<UTC-ts>-<rand>.jsonl` audit files. */
+  /** Storage key prefix holding the per-record audit files. */
   dir: string;
   /** Record files older than this many days are swept. */
   retentionDays: number;
@@ -37,18 +37,30 @@ export type AnonymousChatConfig = {
 
 const DEFAULT_COOLDOWN_SECONDS = 30;
 const DEFAULT_MAX_MESSAGE_LENGTH = 1000;
-const DEFAULT_AUDIT_DIR = "data/anon-audit";
+const DEFAULT_AUDIT_DIR = "anon-audit";
 const DEFAULT_AUDIT_RETENTION_DAYS = 90;
 const DEFAULT_AUDIT_KEY_ID = "v1";
 
 /**
- * Resolve the audit directory from raw env input — trim, and fall
- * back to the default for missing/blank values. Shared by the writer
- * config and the privacy consumer so both always inspect the same
- * directory the writer uses.
+ * Resolve the audit storage prefix from raw env input.
+ *
+ * The records live in the storage backend (ADR-0004): the local
+ * `data/anon-audit` directory on a single host, the `anon-audit/`
+ * prefix inside the U3 bucket on Altare. A legacy `data/anon-audit`
+ * value is normalised to the storage prefix so an existing operator
+ * setting keeps pointing at the same records.
  */
 export function resolveAnonAuditDir(raw: string | undefined): string {
-  return raw?.trim() || DEFAULT_AUDIT_DIR;
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return DEFAULT_AUDIT_DIR;
+  }
+  const normalized = trimmed
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/^data\//, "")
+    .replace(/\/+$/, "");
+  return normalized || DEFAULT_AUDIT_DIR;
 }
 
 export type AnonConfigEnv = {

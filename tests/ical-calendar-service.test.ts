@@ -1,4 +1,6 @@
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -13,16 +15,35 @@ import { createCalendarFetcher } from "../src/features/ical-calendar/fetcher.js"
 import type { Logger } from "../src/features/ical-calendar/logger.js";
 import { createCalendarService } from "../src/features/ical-calendar/service.js";
 import type { CalendarEvent } from "../src/features/ical-calendar/types.js";
+import { createLocalFileStorage } from "../src/lib/storage/local.js";
+import type { StorageDriver } from "../src/lib/storage/types.js";
 
 const tmpPaths: string[] = [];
 
+/**
+ * The service persists the calendar cache through the storage backend.
+ * Tests point it at a temp directory so the repository's `data/` stays
+ * untouched.
+ */
+let driver: StorageDriver;
+
+beforeEach(() => {
+  // The service persists the calendar cache through the storage backend;
+  // every test gets its own temp directory so the repository's `data/`
+  // stays untouched.
+  driver = createLocalFileStorage({ root: mkdtempSync(join(tmpdir(), "ical-service-")) });
+});
+
 function makeConfig(overrides: Partial<IcalCalendarConfig> = {}): IcalCalendarConfig {
-  const basePath = `/tmp/ical-test-${Math.random().toString(36).slice(2)}-${Date.now()}.json`;
+  const basePath = join(
+    tmpdir(),
+    `ical-test-${Math.random().toString(36).slice(2)}-${Date.now()}.json`,
+  );
   tmpPaths.push(basePath);
   return {
     announcementChannelId: null,
-    cachePath: basePath.replace(".json", "-cache.json"),
-    dataPath: basePath,
+    cacheKey: "calendar-cache.json",
+    dataKey: basePath,
     fetchIntervalMs: 60 * 60 * 1000,
     lookAheadDays: 7,
     rateLimitMs: 0,
@@ -60,12 +81,15 @@ afterEach(() => {
 });
 
 describe("ical-calendar cache", () => {
-  it("returns empty cache when file does not exist", () => {
-    const cache = loadCache("/tmp/does-not-exist-cache.json");
+  it("returns empty cache when the object does not exist", async () => {
+    const cache = await loadCache(
+      createLocalFileStorage({ root: join(tmpdir(), "ical-missing") }),
+      "does-not-exist.json",
+    );
     expect(cache.sources).toEqual([]);
   });
 
-  it("upserts source entries", () => {
+  it("upserts source entries", async () => {
     const start = {
       sources: [] as { events: CalendarEvent[]; fetchedAt: string; sourceId: string }[],
     };
@@ -84,7 +108,7 @@ describe("ical-calendar cache", () => {
     expect(afterSecond.sources[0]?.events[0]?.uid).toBe("team:2");
   });
 
-  it("marks entries as stale after threshold", () => {
+  it("marks entries as stale after threshold", async () => {
     const now = new Date("2026-09-13T00:00:00Z");
     const fresh = { fetchedAt: now.toISOString() };
     const stale = { fetchedAt: new Date(now.getTime() - 10 * 60 * 1000).toISOString() };
@@ -92,13 +116,13 @@ describe("ical-calendar cache", () => {
     expect(isStale(stale, 5 * 60 * 1000, now)).toBe(true);
   });
 
-  it("persists and reloads the cache", () => {
-    const cachePath = `/tmp/ical-cache-${Math.random().toString(36).slice(2)}.json`;
-    tmpPaths.push(cachePath);
+  it("persists and reloads the cache", async () => {
+    const driver = createLocalFileStorage({ root: join(tmpdir(), "ical-cache-store") });
     const event = makeEvent();
     const cache = mergeSourceEvents({ sources: [] }, "team", [event], new Date().toISOString());
-    saveCache(cachePath, cache);
-    const reloaded = loadCache(cachePath);
+    const cacheKey = `ical-cache-${Math.random().toString(36).slice(2)}.json`;
+    await saveCache(cache, driver, cacheKey);
+    const reloaded = await loadCache(driver, cacheKey);
     expect(reloaded.sources).toHaveLength(1);
     const firstEvent = reloaded.sources[0]?.events[0];
     expect(firstEvent?.startAt).toBeInstanceOf(Date);
@@ -190,8 +214,9 @@ describe("ical-calendar service", () => {
       now: () => now,
     });
 
-    const service = createCalendarService({
+    const service = await createCalendarService({
       config,
+      driver,
       fetcher,
       now: () => now,
     });
@@ -210,8 +235,9 @@ describe("ical-calendar service", () => {
       rateLimitMs: 0,
       now: () => now,
     });
-    const service = createCalendarService({
+    const service = await createCalendarService({
       config,
+      driver,
       fetcher,
       logger,
       now: () => now,
@@ -224,10 +250,11 @@ describe("ical-calendar service", () => {
     expect(logger.error).not.toHaveBeenCalled();
   });
 
-  it("stops the scheduler when stopScheduler is called", () => {
+  it("stops the scheduler when stopScheduler is called", async () => {
     const now = new Date("2026-09-13T00:00:00Z");
-    const service = createCalendarService({
+    const service = await createCalendarService({
       config: { ...config, fetchIntervalMs: 10 },
+      driver,
       now: () => now,
       fetcher: createCalendarFetcher({ rateLimitMs: 0 }),
     });
@@ -265,8 +292,9 @@ describe("ical-calendar service", () => {
     const cachePath = `/tmp/ical-failure-${Math.random().toString(36).slice(2)}.json`;
     tmpPaths.push(cachePath);
 
-    const service = createCalendarService({
-      config: { ...config, cachePath },
+    const service = await createCalendarService({
+      config: { ...config, cacheKey: "calendar-cache.json" },
+      driver,
       fetcher: workingFetcher,
       now: () => now,
     });
@@ -285,8 +313,9 @@ describe("ical-calendar service", () => {
       rateLimitMs: 0,
       now: () => now,
     });
-    const brokenService = createCalendarService({
-      config: { ...config, cachePath },
+    const brokenService = await createCalendarService({
+      config: { ...config, cacheKey: "calendar-cache.json" },
+      driver,
       fetcher: failingFetcher,
       now: () => now,
     });

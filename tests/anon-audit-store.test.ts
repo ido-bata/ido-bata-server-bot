@@ -18,6 +18,8 @@ import {
   hasAnonAuditRecords,
 } from "../src/features/anonymous-chat/audit-store.js";
 import type { AnonAuditConfig } from "../src/features/anonymous-chat/config.js";
+import { createLocalFileStorage } from "../src/lib/storage/local.js";
+import type { StorageDriver } from "../src/lib/storage/types.js";
 
 const { publicKey } = generateKeyPairSync("rsa", {
   modulusLength: 2048,
@@ -27,10 +29,12 @@ const { publicKey } = generateKeyPairSync("rsa", {
 
 let dir: string;
 let cleanup: () => void;
+let driver: StorageDriver;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "anon-audit-"));
   cleanup = () => rmSync(dir, { recursive: true, force: true });
+  driver = createLocalFileStorage({ root: dir });
 });
 
 afterEach(() => cleanup());
@@ -39,7 +43,7 @@ function auditConfig(overrides: Partial<AnonAuditConfig> = {}): AnonAuditConfig 
   return {
     publicKey,
     keyId: "v1",
-    dir,
+    dir: "",
     retentionDays: 90,
     ...overrides,
   };
@@ -71,7 +75,7 @@ function oldRecordName(date: string): string {
 
 describe("createAnonAuditSink", () => {
   it("writes one immutable file per record", async () => {
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     const ct = sink.seal(attemptPlaintext());
     await sink.record(recordInput(ct));
 
@@ -105,7 +109,7 @@ describe("createAnonAuditSink", () => {
   });
 
   it("writes the configured key id into the envelope for rotation", async () => {
-    const sink = createAnonAuditSink(auditConfig({ keyId: "v2-next" }));
+    const sink = createAnonAuditSink(auditConfig({ keyId: "v2-next" }), { driver });
     await sink.record(recordInput("ct", "posted"));
     const line = readFileSync(join(dir, recordFiles()[0]!), "utf8").trim();
     const record = JSON.parse(line) as Record<string, unknown>;
@@ -113,10 +117,12 @@ describe("createAnonAuditSink", () => {
     expect(record.kind).toBe("posted");
   });
 
-  it("creates a missing audit directory eagerly at sink construction", () => {
-    const fresh = join(dir, "nested", "anon-audit");
-    expect(() => createAnonAuditSink(auditConfig({ dir: fresh }))).not.toThrow();
-    expect(readdirSync(fresh)).toHaveLength(0);
+  it("publishes the first record into a prefix that did not exist yet", async () => {
+    const sink = createAnonAuditSink(auditConfig({ dir: "anon-audit" }), { driver });
+    await sink.record(recordInput("ct"));
+    expect(
+      readdirSync(join(dir, "anon-audit")).filter((name) => name.endsWith(".jsonl")),
+    ).toHaveLength(1);
   });
 
   it("sweeps files older than the retention window before appending", async () => {
@@ -129,7 +135,7 @@ describe("createAnonAuditSink", () => {
     const recentLegacy = `${new Date().toISOString().slice(0, 10)}.jsonl`;
     writeFileSync(join(dir, recentLegacy), '{"v":1,"ct":"x"}\n');
 
-    const sink = createAnonAuditSink(auditConfig({ retentionDays: 30 }));
+    const sink = createAnonAuditSink(auditConfig({ retentionDays: 30 }), { driver });
     await sink.record(recordInput("ct"));
 
     const remaining = recordFiles();
@@ -140,13 +146,13 @@ describe("createAnonAuditSink", () => {
   });
 
   it("leaves no temp files behind after a successful record", async () => {
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     await sink.record(recordInput("ct"));
     expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toHaveLength(0);
   });
 
   it("sweeps stale orphan temp files but keeps fresh ones", async () => {
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     const stale = join(dir, ".2020-01-01T00-00-00-000Z-aaaa1111.tmp");
     writeFileSync(stale, "partial");
     // Backdate the temp file beyond TMP_STALE_MS (1h).
@@ -160,7 +166,7 @@ describe("createAnonAuditSink", () => {
   });
 
   it("serializes concurrent appends without losing records", async () => {
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     await Promise.all(Array.from({ length: 20 }, (_, i) => sink.record(recordInput(`ct-${i}`))));
     expect(recordFiles()).toHaveLength(20);
   });
@@ -168,39 +174,39 @@ describe("createAnonAuditSink", () => {
 
 describe("hasAnonAuditRecords", () => {
   it("returns false for a missing directory", async () => {
-    expect(await hasAnonAuditRecords(join(dir, "missing"))).toBe(false);
+    expect(await hasAnonAuditRecords("missing", { driver })).toBe(false);
   });
 
   it("returns false for an empty directory", async () => {
-    expect(await hasAnonAuditRecords(dir)).toBe(false);
+    expect(await hasAnonAuditRecords("", { driver })).toBe(false);
   });
 
   it("returns true when a non-empty record file exists", async () => {
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     await sink.record(recordInput("ct"));
-    expect(await hasAnonAuditRecords(dir)).toBe(true);
+    expect(await hasAnonAuditRecords("", { driver })).toBe(true);
   });
 
   it("ignores non-record files and empty record files", async () => {
     writeFileSync(join(dir, "notes.txt"), "hello");
     writeFileSync(join(dir, "2026-11-13T00-00-00-000Z-empty.jsonl"), "");
-    expect(await hasAnonAuditRecords(dir)).toBe(false);
+    expect(await hasAnonAuditRecords("", { driver })).toBe(false);
   });
 
   it("detects legacy daily files", async () => {
     writeFileSync(join(dir, "2026-11-13.jsonl"), '{"v":1,"ct":"x"}\n');
-    expect(await hasAnonAuditRecords(dir)).toBe(true);
+    expect(await hasAnonAuditRecords("", { driver })).toBe(true);
   });
 
   it("publishes records with mode 0600", async () => {
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     await sink.record(recordInput("ct"));
     const file = join(dir, recordFiles()[0]!);
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it("fails closed on an unwritable audit dir — no partial record is published", async () => {
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     chmodSync(dir, 0o500);
     try {
       await expect(sink.record(recordInput("ct"))).rejects.toThrow();
@@ -214,6 +220,6 @@ describe("hasAnonAuditRecords", () => {
 
   it("treats temp files as possible records (fail closed)", async () => {
     writeFileSync(join(dir, ".2026-11-13T00-00-00-000Z-aaaabbbb.tmp"), "partial");
-    expect(await hasAnonAuditRecords(dir)).toBe(true);
+    expect(await hasAnonAuditRecords("", { driver })).toBe(true);
   });
 });

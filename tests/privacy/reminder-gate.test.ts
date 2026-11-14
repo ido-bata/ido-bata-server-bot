@@ -51,7 +51,7 @@ describe("reminder consent gate", () => {
     if (!result.ok) {
       expect(result.error).toBe("consent denied");
     }
-    expect(loadReminders(options).reminders).toEqual([]);
+    expect((await loadReminders(options)).reminders).toEqual([]);
   });
 
   it("persists when authorize allows", async () => {
@@ -66,7 +66,7 @@ describe("reminder consent gate", () => {
       fireAt: new Date(now.getTime() + 60_000),
     });
     expect(result.ok).toBe(true);
-    expect(loadReminders(options).reminders).toHaveLength(1);
+    expect((await loadReminders(options)).reminders).toHaveLength(1);
   });
 
   it("returns 'consent gate not configured' when no gate is wired", async () => {

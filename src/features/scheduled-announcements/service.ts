@@ -46,6 +46,12 @@ export type ScheduledAnnouncementsService = {
   start: () => void;
   stop: () => void;
   /**
+   * Resolves once the persisted cadence configuration has been loaded and
+   * the scheduler is armed. The store is read asynchronously (ADR-0004),
+   * so callers that need the schedule to be live should await this.
+   */
+  ready: () => Promise<void>;
+  /**
    * Compute the next fire that will run, mostly for diagnostics and tests.
    */
   getNextFire: () => ScheduledFire | null;
@@ -70,8 +76,12 @@ export function createScheduledAnnouncementsService(
 ): ScheduledAnnouncementsService {
   const logger = options.logger ?? defaultLogger;
   const sleep = options.sleep ?? defaultSleep;
-  const initial = loadScheduledAnnouncements(options.loadOptions ?? {});
-  let entries: ScheduledAnnouncementEntry[] = [...initial.entries];
+  // The store is read asynchronously (ADR-0004). The load is awaited
+  // before the scheduler arms its first timer.
+  const initialLoad = loadScheduledAnnouncements(options.loadOptions ?? {}).then((loaded) => {
+    entries = [...loaded.entries];
+  });
+  let entries: ScheduledAnnouncementEntry[] = [];
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
 
@@ -94,9 +104,9 @@ export function createScheduledAnnouncementsService(
       });
   }
 
-  function persist(): void {
+  async function persist(): Promise<void> {
     try {
-      saveScheduledAnnouncements(entries, options.loadOptions ?? {});
+      await saveScheduledAnnouncements(entries, options.loadOptions ?? {});
     } catch (error) {
       logger.error(`Failed to persist state: ${stringifyError(error)}`);
     }
@@ -199,7 +209,7 @@ export function createScheduledAnnouncementsService(
             ? [...entries, updated]
             : entries.map((candidate) => (candidate.id === entry.id ? updated : candidate));
         logger.info(`One-shot ${entry.id} finished (${reason})`);
-        persist();
+        await persist();
       }
       return;
     }
@@ -212,19 +222,27 @@ export function createScheduledAnnouncementsService(
   }
 
   return {
+    ready: () => initialLoad,
     start() {
       if (timer || stopped) {
         return;
       }
 
-      logger.info(`Loaded ${entries.length} scheduled-announcements entries`);
-      for (const entry of entries) {
-        const next = getNextFireTime(entry, new Date());
-        logger.info(
-          `  - ${entry.id} enabled=${entry.enabled} weekday=${entry.weekday ?? "-"} oneShotDate=${entry.oneShotDate ?? "-"} ${pad2(entry.hour)}:${pad2(entry.minute)} next=${next ? next.toISOString() : "(none)"}`,
-        );
-      }
-      scheduleNext();
+      // The cadence configuration is loaded asynchronously; the scheduler
+      // arms its first timer once the load resolved.
+      void initialLoad.then(() => {
+        if (stopped) {
+          return;
+        }
+        logger.info(`Loaded ${entries.length} scheduled-announcements entries`);
+        for (const entry of entries) {
+          const next = getNextFireTime(entry, new Date());
+          logger.info(
+            `  - ${entry.id} enabled=${entry.enabled} weekday=${entry.weekday ?? "-"} oneShotDate=${entry.oneShotDate ?? "-"} ${pad2(entry.hour)}:${pad2(entry.minute)} next=${next ? next.toISOString() : "(none)"}`,
+          );
+        }
+        scheduleNext();
+      });
     },
     stop() {
       stopped = true;
@@ -272,6 +290,7 @@ export function registerScheduledAnnouncements(
   });
 
   return {
+    ready: () => service?.ready() ?? Promise.resolve(),
     start() {
       service?.start();
     },

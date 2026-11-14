@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GuildListener } from "../../src/features/multi-guild/listener.js";
 import { createGuildRegistry } from "../../src/features/multi-guild/registry.js";
-import { createFileConfigStore } from "../../src/features/multi-guild/store.js";
-import { createMemoryFs } from "./memory-fs.js";
+import { createConfigStore } from "../../src/features/multi-guild/store.js";
+import { createMemoryDriver } from "./memory-driver.js";
 
 function silentLogger() {
   return {
@@ -13,7 +13,7 @@ function silentLogger() {
 }
 
 function makeStore() {
-  return createFileConfigStore({ dataRoot: "data", fs: createMemoryFs() });
+  return createConfigStore({ driver: createMemoryDriver() });
 }
 
 describe("multi-guild registry", () => {

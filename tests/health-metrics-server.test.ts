@@ -56,11 +56,13 @@ describe("health-metrics HTTP server", () => {
         status: string;
         uptime_sec: number;
         discord_ws: string;
+        storage_lease: string;
       };
       expect(body).toEqual({
         status: "ok",
         uptime_sec: 13,
         discord_ws: "connected",
+        storage_lease: "not_held",
       });
     });
 
@@ -90,8 +92,49 @@ describe("health-metrics HTTP server", () => {
     }
   });
 
+  describe("GET /ready", () => {
+    it("returns 503 until both the lease and the gateway are up", async () => {
+      handle = await startServer(() => 0);
+
+      const res = await fetch(`http://${HOST}:${handle.server.port}/ready`);
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as { status: string; storage_lease: string };
+      expect(body.status).toBe("not_ready");
+      expect(body.storage_lease).toBe("not_held");
+    });
+
+    it("returns 503 when the lease is held but the gateway is down", async () => {
+      handle = await startServer(() => 0);
+      handle.registry.setStorageLeaseHeld(true);
+
+      const res = await fetch(`http://${HOST}:${handle.server.port}/ready`);
+      expect(res.status).toBe(503);
+    });
+
+    it("returns 200 only when the lease is held and the gateway is connected", async () => {
+      handle = await startServer(() => 0);
+      handle.registry.setDiscordWsConnected(true);
+      handle.registry.setStorageLeaseHeld(true);
+
+      const res = await fetch(`http://${HOST}:${handle.server.port}/ready`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: "ready" });
+    });
+
+    it("flips back to 503 when the lease is lost", async () => {
+      handle = await startServer(() => 0);
+      handle.registry.setDiscordWsConnected(true);
+      handle.registry.setStorageLeaseHeld(true);
+      expect((await fetch(`http://${HOST}:${handle.server.port}/ready`)).status).toBe(200);
+
+      handle.registry.setStorageLeaseHeld(false);
+      const res = await fetch(`http://${HOST}:${handle.server.port}/ready`);
+      expect(res.status).toBe(503);
+    });
+  });
+
   describe("GET /metrics", () => {
-    it("returns 200 with Prometheus text content type and the four required metric families", async () => {
+    it("returns 200 with Prometheus text content type and the required metric families", async () => {
       handle = await startServer(() => 100);
       handle.registry.setDiscordWsConnected(true);
       handle.registry.setTimekeeperActiveSessions(1);
@@ -109,6 +152,9 @@ describe("health-metrics HTTP server", () => {
 
       expect(body).toMatch(/# HELP bot_discord_ws_connected /);
       expect(body).toMatch(/^bot_discord_ws_connected 1$/m);
+
+      expect(body).toMatch(/# HELP bot_storage_lease_held /);
+      expect(body).toMatch(/^bot_storage_lease_held 0$/m);
 
       expect(body).toMatch(/# HELP bot_timekeeper_active_sessions /);
       expect(body).toMatch(/^bot_timekeeper_active_sessions 1$/m);

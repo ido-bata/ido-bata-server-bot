@@ -1,23 +1,12 @@
 import { createHash } from "node:crypto";
-import {
-  closeSync,
-  createReadStream,
-  existsSync,
-  readSync as fsReadSync,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { pipeline } from "node:stream/promises";
-
+import type { StorageDriver } from "../../lib/storage/types.js";
+import { joinStorageKey } from "../../lib/storage/types.js";
 import { decryptBuffer, encryptBuffer, resolveEncryptionKey } from "./encryption.js";
 
 export type SnapshotFileEntry = {
+  /** Storage key of the mirrored source (e.g. `consent.json`). */
   path: string;
   size: number;
   missing: boolean;
@@ -31,10 +20,11 @@ type SnapshotManifest = {
 };
 
 export type SnapshotMetadata = {
-  id: string;
-  path: string;
   createdAt: string;
   files: SnapshotFileEntry[];
+  id: string;
+  /** Storage key of the encrypted snapshot object. */
+  path: string;
 };
 
 /**
@@ -42,9 +32,9 @@ export type SnapshotMetadata = {
  * boundary accepts ONLY this shape: a plain `SnapshotMetadata` carries a
  * `path` field, which would tempt callers (and static analysers like
  * CodeQL) to read that path into an outbound network request. Routing the
- * file read through `loadEncryptedSnapshot` validates the bytes are an
+ * object read through `loadEncryptedSnapshot` validates the bytes are an
  * actual encrypted container and lets us upload pre-validated content
- * without ever re-reading the filesystem from inside the uploader.
+ * without ever re-reading the storage backend from inside the uploader.
  */
 export type EncryptedSnapshot = {
   meta: SnapshotMetadata;
@@ -54,13 +44,13 @@ export type EncryptedSnapshot = {
 const MANIFEST_PREFIX = Buffer.from("SNAP1\n", "utf8");
 
 export type SnapshotStoreOptions = {
-  snapshotDir: string;
-  sourcePaths: string[];
+  /** Storage backend that holds both the sources and the snapshots. */
+  driver: StorageDriver;
+  /** Storage key prefix that holds the encrypted snapshot objects. */
+  snapshotPrefix: string;
+  /** Storage keys of the consent-gated sources to mirror. */
+  sourceKeys: string[];
 };
-
-export function ensureSnapshotDir(snapshotDir: string): void {
-  mkdirSync(snapshotDir, { recursive: true });
-}
 
 export function buildSnapshotId(now: Date): string {
   const formatter = new Intl.DateTimeFormat("en-CA", {
@@ -79,18 +69,12 @@ export function buildSnapshotId(now: Date): string {
   );
 }
 
-function snapshotFilePath(snapshotDir: string, id: string): string {
-  return join(snapshotDir, `${id}.snap.enc`);
-}
-
 export async function createSnapshot(
   options: SnapshotStoreOptions,
   hexKey: string | undefined,
   now: Date = new Date(),
 ): Promise<SnapshotMetadata> {
-  ensureSnapshotDir(options.snapshotDir);
-
-  const files = await collectSourceFiles(options.sourcePaths);
+  const { files, buffers } = await collectSourceFiles(options.driver, options.sourceKeys);
   const manifest: SnapshotManifest = {
     createdAt: now.toISOString(),
     files,
@@ -98,26 +82,27 @@ export async function createSnapshot(
   };
 
   const manifestBuffer = Buffer.from(JSON.stringify(manifest), "utf8");
-  const payload = packSnapshotPayload(manifestBuffer, files);
+  const payload = packSnapshotPayload(manifestBuffer, files, buffers);
   const key = resolveEncryptionKey(hexKey);
   const encrypted = encryptBuffer(payload, key);
 
   const id = buildSnapshotId(now);
-  const targetPath = snapshotFilePath(options.snapshotDir, id);
+  const targetKey = joinStorageKey(options.snapshotPrefix, `${id}.snap.enc`);
   const container = encodeEncryptedContainer(encrypted);
 
-  writeFileSync(targetPath, container);
+  await options.driver.write(targetKey, container);
 
   return {
     createdAt: manifest.createdAt,
     files: manifest.files,
     id,
-    path: targetPath,
+    path: targetKey,
   };
 }
 
 export type RestoreOptions = {
   outputDir: string;
+  driver: StorageDriver;
 };
 
 export type RestoreResult = {
@@ -125,13 +110,22 @@ export type RestoreResult = {
   manifest: SnapshotManifest;
 };
 
+/**
+ * Restore a snapshot into `outputDir` on the local filesystem. The output
+ * directory is an operator-facing inspection area (not the bot's data
+ * root), so it stays a plain directory.
+ */
 export async function restoreSnapshot(
-  snapshotPath: string,
+  snapshotKey: string,
   hexKey: string | undefined,
   options: RestoreOptions,
 ): Promise<RestoreResult> {
   const expectedKey = resolveEncryptionKey(hexKey);
-  const encrypted = decodeEncryptedContainer(readFileSync(snapshotPath));
+  const bytes = await options.driver.read(snapshotKey);
+  if (bytes === null) {
+    throw new Error(`snapshot not found: ${snapshotKey}`);
+  }
+  const encrypted = decodeEncryptedContainer(Buffer.from(bytes));
   const payload = decryptBuffer(encrypted, expectedKey);
   const { manifest, fileBuffers } = unpackSnapshotPayload(payload);
 
@@ -150,8 +144,8 @@ export async function restoreSnapshot(
       );
     }
     const absolute = join(options.outputDir, entry.path);
-    mkdirSync(dirname(absolute), { recursive: true });
-    writeFileSync(absolute, buffer);
+    await mkdir(dirname(absolute), { recursive: true });
+    await writeFile(absolute, buffer);
   }
 
   return {
@@ -164,169 +158,143 @@ export async function restoreSnapshot(
   };
 }
 
-export function readSnapshotMetadata(
-  snapshotPath: string,
+export async function readSnapshotMetadata(
+  snapshotKey: string,
   hexKey: string | undefined,
-): SnapshotMetadata {
+  driver: StorageDriver,
+): Promise<SnapshotMetadata> {
   const key = resolveEncryptionKey(hexKey);
-  const encrypted = decodeEncryptedContainer(readFileSync(snapshotPath));
+  const bytes = await driver.read(snapshotKey);
+  if (bytes === null) {
+    throw new Error(`snapshot not found: ${snapshotKey}`);
+  }
+  const encrypted = decodeEncryptedContainer(Buffer.from(bytes));
   const payload = decryptBuffer(encrypted, key);
   const { manifest } = unpackSnapshotPayload(payload);
   const id =
-    snapshotPath
-      .split(/[\\/]/)
+    snapshotKey
+      .split("/")
       .pop()
       ?.replace(/\.snap\.enc$/, "") ?? "";
   return {
     createdAt: manifest.createdAt,
     files: manifest.files,
     id,
-    path: snapshotPath,
+    path: snapshotKey,
   };
 }
 
 /**
- * Read a snapshot file from disk and verify its bytes form a valid
- * encrypted container (`<iv:12><authTag:16><ciphertext:≥1>`).
+ * Read a snapshot object from the storage backend and verify its bytes form
+ * a valid encrypted container (`<iv:12><authTag:16><ciphertext:≥1>`).
  *
  * This is the gate that sits between `SnapshotMetadata.path` and
  * `SnapshotUploader.upload`. By forcing the uploader boundary to accept
  * only `EncryptedSnapshot`, a caller cannot accidentally upload a
- * plain-text source file: the type system plus this validator together
+ * plain-text source object: the type system plus this validator together
  * guarantee that whatever bytes leave the process were produced by
  * `createSnapshot` (which always encrypts) or by an equivalent AES-256-GCM
  * pipeline. We deliberately do not decrypt here — that requires the
  * operator's encryption key, which the uploader does not have.
  *
- * Throws when the file is missing, unreadable, or structurally invalid.
+ * Throws when the object is missing, unreadable, or structurally invalid.
  */
-export function loadEncryptedSnapshot(snapshotPath: string): EncryptedSnapshot {
+export async function loadEncryptedSnapshot(
+  snapshotKey: string,
+  driver: StorageDriver,
+): Promise<EncryptedSnapshot> {
   const id =
-    snapshotPath
-      .split(/[\\/]/)
+    snapshotKey
+      .split("/")
       .pop()
       ?.replace(/\.snap\.enc$/, "") ?? "";
 
-  // Resolve the file with a single openSync call so the kernel resolves
-  // the path once and we either get the fd or an ENOENT we handle
-  // immediately. Subsequent reads use the fd (not the path) so a
-  // concurrent rename / replace between stat and read does not surface
-  // here as a TOCTOU mismatch.
-  let fd: number;
-  try {
-    fd = openSync(snapshotPath, "r");
-  } catch (error) {
-    throw new Error(
-      `loadEncryptedSnapshot: cannot open ${snapshotPath}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      { cause: error },
-    );
+  const bytes = await driver.read(snapshotKey);
+  if (bytes === null) {
+    throw new Error(`loadEncryptedSnapshot: cannot read ${snapshotKey}`);
   }
+  const buffer = Buffer.from(bytes);
 
-  let bytes: Buffer;
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) {
-      throw new Error(`${snapshotPath} is not a regular file`);
-    }
-    const length = stat.size;
-    const buffer = Buffer.alloc(length);
-    let offset = 0;
-    while (offset < length) {
-      const read = fsReadSync(fd, buffer, offset, length - offset, null);
-      if (read <= 0) {
-        break;
-      }
-      offset += read;
-    }
-    bytes = offset === length ? buffer : buffer.subarray(0, offset);
-  } finally {
-    closeSync(fd);
-  }
-
-  if (bytes.length < 12 + 16 + 1) {
+  if (buffer.length < 12 + 16 + 1) {
     throw new Error(
-      `loadEncryptedSnapshot: ${snapshotPath} is too small (${bytes.length} bytes) to be an encrypted container`,
+      `loadEncryptedSnapshot: ${snapshotKey} is too small (${buffer.length} bytes) to be an encrypted container`,
     );
   }
   // Reject plaintext that happens to be exactly 28 bytes long — encrypted
   // bytes never start with the SNAP1 manifest prefix because the prefix
   // is wrapped inside the ciphertext. This is a cheap sanity check, not
   // a confidentiality guarantee.
-  if (bytes.subarray(0, MANIFEST_PREFIX.length).equals(MANIFEST_PREFIX)) {
+  if (buffer.subarray(0, MANIFEST_PREFIX.length).equals(MANIFEST_PREFIX)) {
     throw new Error(
-      `loadEncryptedSnapshot: ${snapshotPath} appears to contain an unencrypted manifest prefix; refusing to upload`,
+      `loadEncryptedSnapshot: ${snapshotKey} appears to contain an unencrypted manifest prefix; refusing to upload`,
     );
   }
   return {
-    bytes,
+    bytes: buffer,
     meta: {
       createdAt: "",
       files: [],
       id,
-      path: snapshotPath,
+      path: snapshotKey,
     },
   };
 }
 
-async function snapshotFile(sourcePath: string): Promise<SnapshotFileEntry> {
-  if (!existsSync(sourcePath)) {
-    return {
-      missing: true,
-      path: sourcePath,
-      sha256: "",
-      size: 0,
-    };
+async function collectSourceFiles(
+  driver: StorageDriver,
+  sourceKeys: string[],
+): Promise<{ files: SnapshotFileEntry[]; buffers: Map<string, Buffer> }> {
+  const files: SnapshotFileEntry[] = [];
+  const buffers = new Map<string, Buffer>();
+  for (const sourceKey of sourceKeys) {
+    const bytes = await driver.read(sourceKey);
+    if (bytes === null) {
+      files.push({
+        missing: true,
+        path: sourceKey,
+        sha256: "",
+        size: 0,
+      });
+      continue;
+    }
+    const buffer = Buffer.from(bytes);
+    buffers.set(sourceKey, buffer);
+    files.push({
+      missing: false,
+      path: sourceKey,
+      sha256: sha256Hex(buffer),
+      size: buffer.length,
+    });
   }
-
-  const stat = statSync(sourcePath);
-  if (!stat.isFile()) {
-    throw new Error(`Source path is not a regular file: ${sourcePath}`);
-  }
-
-  const sha = await hashFile(sourcePath);
-  return {
-    missing: false,
-    path: sourcePath,
-    sha256: sha,
-    size: stat.size,
-  };
+  return { buffers, files };
 }
 
-async function collectSourceFiles(sourcePaths: string[]): Promise<SnapshotFileEntry[]> {
-  const entries: SnapshotFileEntry[] = [];
-  for (const sourcePath of sourcePaths) {
-    entries.push(await snapshotFile(sourcePath));
+export async function listSnapshots(
+  snapshotPrefix: string,
+  hexKey: string | undefined,
+  driver: StorageDriver,
+): Promise<SnapshotMetadata[]> {
+  const entries = await driver.list(`${snapshotPrefix}/`);
+  const metadata: SnapshotMetadata[] = [];
+  for (const entry of entries) {
+    if (!entry.key.endsWith(".snap.enc")) {
+      continue;
+    }
+    try {
+      metadata.push(await readSnapshotMetadata(entry.key, hexKey, driver));
+    } catch {
+      // A snapshot we cannot decrypt is skipped, mirroring the previous
+      // behaviour: it cannot be classified for retention.
+    }
   }
-  return entries;
+  return metadata.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
-export function listSnapshots(snapshotDir: string, hexKey: string | undefined): SnapshotMetadata[] {
-  if (!existsSync(snapshotDir)) {
-    return [];
-  }
-  const entries = readdirSync(snapshotDir).filter((name) => name.endsWith(".snap.enc"));
-  return entries
-    .map((name) => {
-      const snapshotPath = join(snapshotDir, name);
-      try {
-        return readSnapshotMetadata(snapshotPath, hexKey);
-      } catch {
-        return null;
-      }
-    })
-    .filter((entry): entry is SnapshotMetadata => entry !== null)
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-}
-
-async function hashFile(filePath: string): Promise<string> {
-  const hash = createHash("sha256");
-  await pipeline(createReadStream(filePath), hash);
-  return hash.digest("hex");
-}
-
-function packSnapshotPayload(manifest: Buffer, files: SnapshotFileEntry[]): Buffer {
+function packSnapshotPayload(
+  manifest: Buffer,
+  files: SnapshotFileEntry[],
+  buffers: Map<string, Buffer>,
+): Buffer {
   const parts: Buffer[] = [MANIFEST_PREFIX];
   const manifestLength = Buffer.alloc(4);
   manifestLength.writeUInt32BE(manifest.length, 0);
@@ -338,12 +306,15 @@ function packSnapshotPayload(manifest: Buffer, files: SnapshotFileEntry[]): Buff
       parts.push(missingMarker);
       continue;
     }
+    const buffer = buffers.get(entry.path);
+    if (!buffer) {
+      throw new Error(`Snapshot payload is missing the source bytes for ${entry.path}`);
+    }
     parts.push(Buffer.from([1]));
     const pathBuffer = Buffer.from(entry.path, "utf8");
     const pathLength = Buffer.alloc(4);
     pathLength.writeUInt32BE(pathBuffer.length, 0);
     parts.push(pathLength, pathBuffer);
-    const buffer = readFileSync(entry.path);
     const sizeBuffer = Buffer.alloc(8);
     sizeBuffer.writeBigUInt64BE(BigInt(buffer.length), 0);
     parts.push(sizeBuffer, buffer);

@@ -8,11 +8,11 @@ export type RegisterOptions = {
   service?: CalendarService;
 };
 
-export function registerIcalCalendar(
+export async function registerIcalCalendar(
   client: Client,
   options: RegisterOptions = {},
-): CalendarService {
-  const service = options.service ?? createCalendarService();
+): Promise<CalendarService> {
+  const service = options.service ?? (await createCalendarService());
   const command = createCalendarSlashCommand();
   bindDiscordCalendarCommands(client, service, command).bind();
 

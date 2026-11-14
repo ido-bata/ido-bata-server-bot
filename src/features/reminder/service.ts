@@ -122,17 +122,22 @@ export function createReminderQueue(
   const logger = options.logger ?? defaultLogger;
   const loadOptions = options.loadOptions ?? {};
 
-  const initial = loadReminders(loadOptions);
-  let reminders: PersistedReminder[] = [...initial.reminders];
+  // The store is read asynchronously (ADR-0004). The load is awaited by
+  // `add` before the first mutation so a reminder can never be written
+  // on top of a not-yet-loaded list.
+  const initialLoad = loadReminders(loadOptions).then((loaded) => {
+    reminders = [...loaded.reminders];
+  });
+  let reminders: PersistedReminder[] = [];
   let stopped = false;
   let loopPromise: Promise<void> | null = null;
   // Aborts the in-flight scheduler sleep so add()/stop() can wake the loop
   // immediately instead of waiting up to SCAN_INTERVAL_MS for the next tick.
   let sleepAbortController: AbortController | null = null;
 
-  function persist(): void {
+  async function persist(): Promise<void> {
     try {
-      saveReminders(reminders, loadOptions);
+      await saveReminders(reminders, loadOptions);
     } catch (error) {
       logger.error(`Failed to persist reminder state: ${stringifyError(error)}`);
     }
@@ -167,7 +172,8 @@ export function createReminderQueue(
     });
   }
 
-  function add(input: AddReminderInput): AddReminderResult | Promise<AddReminderResult> {
+  async function add(input: AddReminderInput): Promise<AddReminderResult> {
+    await initialLoad;
     const message = input.message.trim();
     if (message.length === 0) {
       return { ok: false, error: "message is empty" };
@@ -206,15 +212,14 @@ export function createReminderQueue(
       return { ok: false, error: "consent gate not configured" };
     }
     const gate = options.consent;
-    return gate.authorize(input.userId, "activity-history").then((decision) => {
-      if (!decision.ok) {
-        return { ok: false, error: "consent denied" } satisfies AddReminderResult;
-      }
-      reminders = [...reminders, reminder];
-      persist();
-      wakeScheduler();
-      return { ok: true, reminder } satisfies AddReminderResult;
-    });
+    const decision = await gate.authorize(input.userId, "activity-history");
+    if (!decision.ok) {
+      return { ok: false, error: "consent denied" } satisfies AddReminderResult;
+    }
+    reminders = [...reminders, reminder];
+    await persist();
+    wakeScheduler();
+    return { ok: true, reminder } satisfies AddReminderResult;
   }
 
   function countForUser(userId: string): number {
@@ -268,11 +273,14 @@ export function createReminderQueue(
     if (completed.length > 0) {
       const completedSet = new Set(completed);
       reminders = reminders.filter((reminder) => !completedSet.has(reminder.id));
-      persist();
+      await persist();
     }
   }
 
   async function tick(): Promise<void> {
+    // The initial load must be finished before a scan runs, otherwise a
+    // reload-on-boot queue would dispatch nothing.
+    await initialLoad;
     const now = nowFn();
     const overdue = pickOverdueReminders(reminders, now);
     await dispatch(overdue);
@@ -313,7 +321,7 @@ export function createReminderQueue(
       if (loopPromise) {
         return;
       }
-      logger.info(`Loaded ${reminders.length} reminder(s) from ${initial.filePath}`);
+      logger.info(`Reminder queue started with ${reminders.length} reminder(s)`);
       loopPromise = loop();
     },
     stop() {

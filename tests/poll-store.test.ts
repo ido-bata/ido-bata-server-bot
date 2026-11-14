@@ -40,21 +40,21 @@ function makePoll(overrides: Partial<Poll> = {}): Poll {
 }
 
 describe("poll store", () => {
-  it("returns an empty state when the file does not exist", () => {
+  it("returns an empty state when the file does not exist", async () => {
     const store = createFilePollStore(join(dir, "missing.json"));
 
-    const state = store.load();
+    const state = await store.load();
 
     expect(state).toEqual(createPollState());
   });
 
-  it("round-trips a poll through save and load", () => {
+  it("round-trips a poll through save and load", async () => {
     const path = join(dir, "polls.json");
     const store = createFilePollStore(path);
     const original = makePoll();
 
-    store.save(upsertPoll(createPollState(), original));
-    const loaded = store.load();
+    await store.save(upsertPoll(createPollState(), original));
+    const loaded = await store.load();
 
     expect(loaded.polls).toHaveLength(1);
     expect(loaded.polls[0]).toEqual(original);
@@ -66,55 +66,55 @@ describe("poll store", () => {
     expect(JSON.parse(onDisk)).toEqual(loaded);
   });
 
-  it("load is idempotent: load → save → load yields the same state", () => {
+  it("load is idempotent: load → save → load yields the same state", async () => {
     const path = join(dir, "polls.json");
     const store = createFilePollStore(path);
     const original = makePoll();
     const first = upsertPoll(createPollState(), original);
-    store.save(first);
+    await store.save(first);
 
-    const reloaded = store.load();
+    const reloaded = await store.load();
     // Re-saving should be a no-op aside from formatting.
-    store.save(reloaded);
+    await store.save(reloaded);
 
-    expect(store.load()).toEqual(reloaded);
+    expect(await store.load()).toEqual(reloaded);
   });
 
-  it("upserts replace existing polls by id", () => {
+  it("upserts replace existing polls by id", async () => {
     const path = join(dir, "polls.json");
     const store = createFilePollStore(path);
 
     const original = makePoll({ id: "p-1", votes: { "u-1": 0 } });
-    store.save(upsertPoll(createPollState(), original));
+    await store.save(upsertPoll(createPollState(), original));
 
     const updated = makePoll({ id: "p-1", votes: { "u-1": 1, "u-2": 0 } });
-    store.save(upsertPoll(store.load(), updated));
+    await store.save(upsertPoll(await store.load(), updated));
 
-    const loaded = store.load();
+    const loaded = await store.load();
     expect(loaded.polls).toHaveLength(1);
     expect(loaded.polls[0]?.votes).toEqual({ "u-1": 1, "u-2": 0 });
   });
 
-  it("treats a corrupt JSON file as an empty state and logs a warning", () => {
+  it("treats a corrupt JSON file as an empty state and logs a warning", async () => {
     const path = join(dir, "polls.json");
     const store = createFilePollStore(path);
 
     // Write something the schema cannot parse.
     writeFileSync(path, "{}", "utf8");
 
-    const state = store.load();
+    const state = await store.load();
     expect(state).toEqual(createPollState());
   });
 
-  it("treats an empty file as an empty state without throwing", () => {
+  it("treats an empty file as an empty state without throwing", async () => {
     const path = join(dir, "polls.json");
     const store = createFilePollStore(path);
     writeFileSync(path, "", "utf8");
 
-    expect(store.load()).toEqual(createPollState());
+    expect(await store.load()).toEqual(createPollState());
   });
 
-  it("finds a poll by message id and by id", () => {
+  it("finds a poll by message id and by id", async () => {
     const a = makePoll({ id: "p-1", messageId: "m-1" });
     const b = makePoll({ id: "p-2", messageId: "m-2" });
     const state = upsertPoll(upsertPoll(createPollState(), a), b);
@@ -124,7 +124,7 @@ describe("poll store", () => {
     expect(findPollByMessageId(state, "missing")).toBeUndefined();
   });
 
-  it("schema rejects an out-of-range vote index", () => {
+  it("schema rejects an out-of-range vote index", async () => {
     const result = pollStateFileSchema.safeParse({
       version: 1,
       polls: [
@@ -136,7 +136,7 @@ describe("poll store", () => {
     expect(result.success).toBe(false);
   });
 
-  it("schema accepts a vote pointing at a valid option index", () => {
+  it("schema accepts a vote pointing at a valid option index", async () => {
     const result = pollStateFileSchema.safeParse({
       version: 1,
       polls: [

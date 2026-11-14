@@ -49,6 +49,79 @@ src/index.ts
 - `src/scripts/stage-audio-smoke.ts` — joins the configured voice channel, plays the first timeline clip, then exits
 - `tests/` — vitest specs that mirror `src/` layout (`config.test.ts`, `timekeeper-timeline.test.ts`, `timekeeper-engagement.test.ts`, etc.)
 
+## Persistence layer (`src/lib/storage/`)
+
+Every persisted artefact of the bot goes through one port,
+`StorageDriver` (`src/lib/storage/types.ts`):
+
+```text
+read / readText / readVersioned / write / writeExclusive /
+compareAndSwap / list / delete / exists / move / probeConditionalWrites
+```
+
+The following adapters implement it:
+
+| Adapter | Backend | Used when |
+| --- | --- | --- |
+| `LocalFileStorage` | files under `DATA_DIR` (default `<cwd>/data`) | `STORAGE_BACKEND=local` (default) |
+| `U3Storage` | S3-compatible object storage (Altare U3) | `STORAGE_BACKEND=u3` |
+| `ValkeyStorage` | Redis-compatible store (Altare Valkey) — lease backend; U3 ignores S3 conditional writes | `LEASE_STORAGE_BACKEND=valkey` |
+
+Semantics are identical on every adapter, and `tests/storage-contract.test.ts`
+runs the same contract against each configured backend (Valkey only when
+`VALKEY_TEST_URL` points at a real instance):
+
+- `write` replaces an object atomically (temp file + `rename(2)` locally,
+  a single `PUT` on object storage) — a reader never sees a half-written
+  document.
+- `writeExclusive` creates only when the key is free and never
+  overwrites — the audit records and the instance lease depend on it.
+- A missing key reads as `null`; **every other failure throws**. Callers
+  treat a throw as "storage unavailable" and fail closed.
+- `compareAndSwap` writes only when the stored version still matches the
+  one the caller read; `probeConditionalWrites` reports whether the
+  backend can enforce conditions at all. The instance lease depends on
+  both — a backend without conditional writes stops the bot.
+
+Consumers (all of them): consent registry (`consent.json`), timekeeper
+attendance + session log, `/anon` audit records + custodian operation log,
+state-snapshot bundles, birthday registry, polls, reminders, scheduled
+announcements, per-guild configuration, calendar source configuration and
+cache, hot-reload configuration.
+
+Key layout is flat and identical in every backend — `data/consent.json`
+locally, `consent.json` in the bucket — so a migration is a straight copy
+(`bun run storage:migrate`, see `docs/operations/altare-migration.md`).
+
+### Instance lease
+
+`src/lib/storage/lease.ts` implements a single-instance guard:
+
+- the lease object carries a monotonic `epoch` and a per-term `token`;
+- acquisition, renewal and release are **compare-and-swap** writes, so a
+  takeover cannot slip through a read-then-write window;
+- release *expires* the term instead of deleting the object — a delete
+  could remove a term another instance just acquired;
+- the backend is probed at startup; a backend that cannot enforce
+  conditional writes stops the bot (fail closed);
+- a lost lease shuts the bot down with exit code 1 — it never keeps
+  running unowned;
+- the lease backend is configured independently of the data backend
+  (`LEASE_STORAGE_BACKEND`), so the old host and the Altare deployment
+  contend for the *same* lease during a cutover.
+
+A live lease held by another instance aborts the startup — the old host
+and the Altare deployment can therefore never process the same event
+twice.
+
+### Deletion ledger
+
+`src/lib/storage/deletions.ts` records every privacy deletion as an
+HMAC-SHA256 digest of the subject id (`privacy/deletions.json`). The
+ledger is append-only: a restore merges it and re-applies the recorded
+erasures (`src/lib/storage/erasure.ts`), so restoring an old backup cannot
+resurrect data a user asked to forget.
+
 ## Container runtime
 
 The bot ships a multi-stage `Containerfile` and a single-service `compose.yml`. The image targets are kept in `src/features/container/target.ts` so CI and local scripts can resolve them through the same code path.

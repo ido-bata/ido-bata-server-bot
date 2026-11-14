@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { migrateLegacyEnvToGuildConfigs } from "../../src/features/multi-guild/migration.js";
-import { createFileConfigStore } from "../../src/features/multi-guild/store.js";
-import { createMemoryFs } from "./memory-fs.js";
+import { createConfigStore } from "../../src/features/multi-guild/store.js";
+import { createMemoryDriver } from "./memory-driver.js";
 
 describe("multi-guild env migration", () => {
   it("writes a default config for each id in DISCORD_GUILD_IDS", async () => {
-    const fs = createMemoryFs();
-    const store = createFileConfigStore({ dataRoot: "data", fs });
+    const store = createConfigStore({ driver: createMemoryDriver() });
 
     const result = await migrateLegacyEnvToGuildConfigs({ DISCORD_GUILD_IDS: "111,222" }, store);
 
@@ -20,8 +19,7 @@ describe("multi-guild env migration", () => {
   });
 
   it("falls back to legacy DISCORD_GUILD_ID when DISCORD_GUILD_IDS is missing", async () => {
-    const fs = createMemoryFs();
-    const store = createFileConfigStore({ dataRoot: "data", fs });
+    const store = createConfigStore({ driver: createMemoryDriver() });
 
     const result = await migrateLegacyEnvToGuildConfigs(
       { DISCORD_GUILD_ID: "legacy-guild" },
@@ -33,8 +31,7 @@ describe("multi-guild env migration", () => {
   });
 
   it("prefers DISCORD_GUILD_IDS over DISCORD_GUILD_ID and warns about both", async () => {
-    const fs = createMemoryFs();
-    const store = createFileConfigStore({ dataRoot: "data", fs });
+    const store = createConfigStore({ driver: createMemoryDriver() });
 
     const result = await migrateLegacyEnvToGuildConfigs(
       { DISCORD_GUILD_ID: "old", DISCORD_GUILD_IDS: "new1,new2" },
@@ -46,8 +43,7 @@ describe("multi-guild env migration", () => {
   });
 
   it("skips guilds that already have a config file", async () => {
-    const fs = createMemoryFs();
-    const store = createFileConfigStore({ dataRoot: "data", fs });
+    const store = createConfigStore({ driver: createMemoryDriver() });
     await store.ensureGuild("existing");
 
     const result = await migrateLegacyEnvToGuildConfigs(
@@ -60,8 +56,7 @@ describe("multi-guild env migration", () => {
   });
 
   it("seeds timekeeper settings from legacy env variables", async () => {
-    const fs = createMemoryFs();
-    const store = createFileConfigStore({ dataRoot: "data", fs });
+    const store = createConfigStore({ driver: createMemoryDriver() });
 
     await migrateLegacyEnvToGuildConfigs(
       {
@@ -84,8 +79,7 @@ describe("multi-guild env migration", () => {
   });
 
   it("returns a warning when no guild ids are provided", async () => {
-    const fs = createMemoryFs();
-    const store = createFileConfigStore({ dataRoot: "data", fs });
+    const store = createConfigStore({ driver: createMemoryDriver() });
 
     const result = await migrateLegacyEnvToGuildConfigs({}, store);
     expect(result.added).toEqual([]);
@@ -94,8 +88,7 @@ describe("multi-guild env migration", () => {
   });
 
   it("deduplicates guild ids in the input list", async () => {
-    const fs = createMemoryFs();
-    const store = createFileConfigStore({ dataRoot: "data", fs });
+    const store = createConfigStore({ driver: createMemoryDriver() });
 
     const result = await migrateLegacyEnvToGuildConfigs({ DISCORD_GUILD_IDS: "g1,g1,g2" }, store);
     expect(result.added.sort()).toEqual(["g1", "g2"]);

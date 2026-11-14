@@ -6,25 +6,27 @@
  * host. The audit-key custodian runs this OFFLINE with the private
  * key (see `src/scripts/anon-audit-delete.ts`).
  *
- * Current records are one-per-file and published atomically, so
- * deletion is a per-file `rm` — a concurrent bot append creates a
- * different file and can never be lost. Legacy daily files
+ * Current records are one-per-object and published atomically, so
+ * deletion is a per-record delete — a concurrent bot append creates a
+ * different record and can never be lost. Legacy daily files
  * (`YYYY-MM-DD.jsonl`, one record per line, written by earlier
  * revisions) are handled by kept-lines rewrite: no current writer
  * targets those names, so the rewrite cannot race an append.
  *
- * Fail-closed contract: EVERY record file is decrypted and inspected
- * before ANY file is modified. A corrupt file, a missing `ct`, an
- * undecryptable record, an unreadable file, an empty file, or a
- * multi-record CURRENT-format file aborts the run — we cannot prove
+ * Fail-closed contract: EVERY record is decrypted and inspected
+ * before ANY record is modified. A corrupt record, a missing `ct`, an
+ * undecryptable record, an unreadable object, an empty record, or a
+ * multi-record CURRENT-format record aborts the run — we cannot prove
  * such content is not the target user's, so nothing is touched and
- * the caller gets an error, never a partial "success". A file that
+ * the caller gets an error, never a partial "success". A record that
  * vanished between listing and reading (retention sweep) is already
  * gone and is skipped.
  */
-import { constants, createPrivateKey, privateDecrypt, randomBytes } from "node:crypto";
-import { lstat, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { constants, createPrivateKey, privateDecrypt } from "node:crypto";
+
+import { getStorageDriver } from "../../lib/storage/index.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
+import { joinStorageKey } from "../../lib/storage/types.js";
 
 // Current per-record names (`YYYY-MM-DDT…-rand.jsonl`) plus legacy
 // daily files (`YYYY-MM-DD.jsonl`).
@@ -50,17 +52,9 @@ function isRecord(value: unknown): value is AuditRecord {
   return value !== null && typeof value === "object";
 }
 
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    typeof (error as NodeJS.ErrnoException).code === "string"
-  );
-}
-
 type Plan =
-  | { kind: "remove-file"; name: string }
-  | { kind: "rewrite-file"; name: string; kept: string[] };
+  | { kind: "remove-record"; name: string }
+  | { kind: "rewrite-record"; name: string; kept: string[] };
 
 /**
  * Remove every audit record whose decrypted `userId` matches.
@@ -71,9 +65,12 @@ export async function deleteAnonAuditUserRecords(options: {
   dir: string;
   privateKey: string;
   userId: string;
+  /** Storage backend to operate on. Defaults to the configured backend. */
+  driver?: StorageDriver;
 }): Promise<AnonAuditDeleteResult> {
   const { dir, privateKey, userId } = options;
   const key = createPrivateKey(privateKey);
+  const driver = options.driver ?? getStorageDriver();
 
   // A record we cannot fully parse — bad JSON, failed decrypt, or a
   // plaintext that does not match the sealed schema — might belong
@@ -106,41 +103,37 @@ export async function deleteAnonAuditUserRecords(options: {
   };
 
   try {
-    const entries = await readdir(dir);
-    const names = entries.filter((name) => FILE_NAME_PATTERN.test(name));
-    // Hidden temp files may be hard-link aliases to published
-    // ciphertext — a record file deletion must not leave one behind.
-    const tempNames = entries.filter((name) => name.endsWith(".tmp"));
+    const entries = await driver.list(dir === "" ? "" : `${dir}/`);
+    const names = entries
+      .map((entry) => (dir === "" ? entry.key : entry.key.slice(`${dir}/`.length)))
+      .filter((name) => FILE_NAME_PATTERN.test(name));
+    // Temp leftovers from an interrupted local write can alias
+    // published ciphertext — a record deletion must not leave one
+    // behind.
+    const tempNames = entries
+      .map((entry) => (dir === "" ? entry.key : entry.key.slice(`${dir}/`.length)))
+      .filter((name) => name.endsWith(".tmp"));
 
-    // Phase 1: inspect EVERY record before modifying ANY file.
+    // Phase 1: inspect EVERY record before modifying ANY object.
     const plans: Plan[] = [];
     let scanned = 0;
     let removed = 0;
     for (const name of names) {
-      const path = join(dir, name);
-      let raw: string;
-      try {
-        raw = await readFile(path, "utf8");
-      } catch (error) {
-        if (isNodeError(error) && error.code === "ENOENT") {
-          // Swept or already deleted — nothing left to inspect.
-          continue;
-        }
-        return {
-          ok: false,
-          error: `unreadable record file; nothing was modified: ${name}`,
-        };
+      const raw = await driver.readText(joinStorageKey(dir, name));
+      if (raw === null) {
+        // Swept or already deleted — nothing left to inspect.
+        continue;
       }
       const lines = raw.split("\n").filter((line) => line.trim() !== "");
       const legacy = LEGACY_NAME_PATTERN.test(name);
-      // An empty record file can be an interrupted write — it might
-      // be hiding the target user's record, so refuse rather than
+      // An empty record can be an interrupted write — it might be
+      // hiding the target user's record, so refuse rather than
       // assume it is safe.
       if (lines.length === 0) {
         return { ok: false, error: `empty record file ${name}; nothing was modified` };
       }
-      // Current-format files hold exactly one record; a multi-line
-      // current file cannot be partially deleted without a rewrite
+      // Current-format records hold exactly one line; a multi-line
+      // current record cannot be partially deleted without a rewrite
       // that could race nothing — but we refuse anyway because the
       // layout is unexpected. Legacy daily files legitimately hold
       // many lines.
@@ -189,13 +182,15 @@ export async function deleteAnonAuditUserRecords(options: {
       }
 
       if (!legacy) {
-        // One record per file: either the whole file goes or it stays.
+        // One record per object: either the whole record goes or it stays.
         if (fileRemoves > 0) {
-          plans.push({ kind: "remove-file", name });
+          plans.push({ kind: "remove-record", name });
         }
       } else if (fileRemoves > 0) {
         plans.push(
-          kept.length === 0 ? { kind: "remove-file", name } : { kind: "rewrite-file", name, kept },
+          kept.length === 0
+            ? { kind: "remove-record", name }
+            : { kind: "rewrite-record", name, kept },
         );
       }
       // Yield periodically so large histories do not starve other work.
@@ -203,83 +198,31 @@ export async function deleteAnonAuditUserRecords(options: {
     }
 
     // Phase 2: modify only after every record inspected cleanly.
-    // Drop temp files first: they can be hard-link aliases to the
-    // ciphertext about to be deleted, so a completed run must not
-    // leave any behind. An in-flight bot write loses its temp and
-    // its publish then fails — the post is refused, never sent
-    // unaudited (fail closed).
+    // Drop temp leftovers first: they can alias the ciphertext about
+    // to be deleted, so a completed run must not leave any behind. An
+    // in-flight bot write loses its temp and its publish then fails —
+    // the post is refused, never sent unaudited (fail closed).
     for (const tempName of tempNames) {
-      await rm(join(dir, tempName), { force: true });
+      await driver.delete(joinStorageKey(dir, tempName));
     }
     for (const plan of plans) {
-      const path = join(dir, plan.name);
-      if (plan.kind === "remove-file") {
-        await rm(path, { force: true });
+      if (plan.kind === "remove-record") {
+        await driver.delete(joinStorageKey(dir, plan.name));
         continue;
       }
-      // Legacy rewrite: temp file + atomic rename (replace semantics —
-      // the legacy file exists by design). No current writer targets
+      // Legacy rewrite: the write is atomic (temp file + rename on the
+      // local backend, a single PUT on object storage), so readers see
+      // either the old or the new content. No current writer targets
       // `YYYY-MM-DD.jsonl` names, so this cannot race an append; two
       // concurrent custodian runs are an ops error.
-      const tempPath = join(dir, `.${plan.name}-${randomBytes(8).toString("hex")}.tmp`);
-      try {
-        await writeFile(tempPath, `${plan.kept.join("\n")}\n`, {
-          encoding: "utf8",
-          mode: 0o600,
-          flag: "wx",
-        });
-      } catch (error) {
-        // EEXIST: the temp belongs to another attempt — never remove
-        // a file we did not create. Any other failure means `wx` did
-        // not hand the name to someone else, so a partial file here
-        // can only be ours.
-        if (!(isNodeError(error) && error.code === "EEXIST")) {
-          await rm(tempPath, { force: true }).catch(() => {});
-        }
-        throw error;
+      const current = await driver.readText(joinStorageKey(dir, plan.name));
+      if (current === null) {
+        // The retention sweep removed the legacy record after
+        // inspection — every record in it is already gone. Recreating
+        // it would resurrect expired ciphertext.
+        continue;
       }
-      // Re-check the target immediately before publishing: if the
-      // retention sweep removed the legacy file after inspection,
-      // every record in it is already gone — recreating it via
-      // rename would resurrect expired ciphertext. (A sweep landing
-      // in the remaining window is self-correcting: the recreated
-      // file keeps its old date prefix and the next sweep removes it
-      // again.)
-      try {
-        await lstat(path);
-      } catch (error) {
-        await rm(tempPath, { force: true }).catch(() => {});
-        if (isNodeError(error) && error.code === "ENOENT") {
-          continue;
-        }
-        throw error;
-      }
-      // Flush the replacement to stable storage BEFORE the rename:
-      // writeFile resolving does not imply the data reached disk, and
-      // a crash between rename and flush could lose other users'
-      // kept records along with the deleted ones.
-      const tempHandle = await open(tempPath, "r+");
-      try {
-        await tempHandle.sync();
-      } finally {
-        await tempHandle.close();
-      }
-      try {
-        await rename(tempPath, path);
-      } catch (error) {
-        await rm(tempPath, { force: true }).catch(() => {});
-        throw error;
-      }
-    }
-
-    // Make the deletions/replacements themselves durable: dirent
-    // changes (unlinks, renames) need a directory fsync, same as the
-    // writer's publish path.
-    const dirHandle = await open(dir, "r");
-    try {
-      await dirHandle.sync();
-    } finally {
-      await dirHandle.close();
+      await driver.write(joinStorageKey(dir, plan.name), `${plan.kept.join("\n")}\n`);
     }
 
     return { ok: true, scanned, removed };

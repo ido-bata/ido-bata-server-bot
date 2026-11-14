@@ -19,6 +19,10 @@
  */
 
 import type { ConsentService } from "../../consent/service.js";
+import { childFor, getRootLogger } from "../../lib/logger/index.js";
+import { appendDeletionRecord, digestSubjectId } from "../../lib/storage/deletions.js";
+import { getStorageDriver } from "../../lib/storage/index.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
 import { deleteUserData as deleteAnonAuditData } from "./consumers/anon-audit.js";
 import { deleteUserData as deleteBirthdayData } from "./consumers/birthday.js";
 import { deleteUserData as deletePollData } from "./consumers/poll.js";
@@ -26,6 +30,8 @@ import { deleteUserData as deleteReminderData } from "./consumers/reminder.js";
 import { deleteUserData as deleteSnapshotData } from "./consumers/state-snapshot.js";
 import { deleteUserData as deleteTimekeeperData } from "./consumers/timekeeper.js";
 import type { DeleteResult } from "./types.js";
+
+const logger = childFor(getRootLogger(), "privacy-clear");
 
 export type ConsumerDeleteAdapter = (
   userId: string,
@@ -41,6 +47,12 @@ export type ClearConsumerResult = {
 export type ClearReport = {
   /** True ONLY when every consumer + the consent registry cleared. */
   ok: boolean;
+  /**
+   * Whether the deletion was recorded in the deletion ledger. `unavailable`
+   * means the erasure history could not be maintained — the data *is*
+   * deleted, but a restore of an older backup could bring it back.
+   */
+  deletionLedger: "recorded" | "unavailable";
   /** Per-consumer outcomes in iteration order, plus the `consent-registry` slot. */
   results: ClearConsumerResult[];
   subjectId: string;
@@ -61,6 +73,17 @@ const CONSUMER_ADAPTERS: ReadonlyArray<{ consumer: string; adapter: ConsumerDele
 ];
 
 export type ClearUserDataOptions = {
+  /**
+   * Storage backend that holds the deletion ledger. Defaults to the
+   * process-wide driver.
+   */
+  driver?: StorageDriver;
+  /**
+   * Key used to digest the subject id in the deletion ledger. Without it
+   * the ledger stays empty and a restore of an old backup can resurrect
+   * the deleted data — the caller is warned.
+   */
+  ledgerKey?: string;
   /**
    * Live consent service. When provided, `clearUserData` also calls
    * `ConsentService.clear(subjectId)` so the grant records in
@@ -138,7 +161,45 @@ export async function clearUserData(
   }
 
   const ok = results.every((result) => result.ok);
-  return { ok, results, subjectId };
+
+  // Record the erasure in the deletion ledger. A backup taken before this
+  // deletion still contains the subject, so the restore path re-applies
+  // the ledger. The ledger stores a digest, never the subject id.
+  const ledgerKey = options.ledgerKey ?? process.env.DELETION_LEDGER_KEY;
+  let deletionLedger: ClearReport["deletionLedger"] = "unavailable";
+  if (!ledgerKey) {
+    // The erasure itself already happened. The ledger is what keeps a
+    // restore of an older backup from resurrecting the data, so its
+    // absence must be visible — not silently accepted.
+    logger.error(
+      "privacy clear: DELETION_LEDGER_KEY is not configured; the deletion is not recorded in the ledger and a restore of an old backup can resurrect the deleted data",
+    );
+  } else {
+    try {
+      const appended = await appendDeletionRecord(options.driver ?? getStorageDriver(), {
+        at: new Date().toISOString(),
+        complete: ok,
+        digest: digestSubjectId(subjectId, ledgerKey),
+      });
+      if (appended.ok) {
+        deletionLedger = "recorded";
+      } else {
+        logger.error(
+          { error: appended.error },
+          "privacy clear: the deletion ledger could not be updated; a restore of an old backup may resurrect the deleted data",
+        );
+      }
+    } catch (error) {
+      // The deletion itself already happened; a ledger failure must not
+      // be reported as a deletion failure — but it must be visible.
+      logger.error(
+        { err: error },
+        "privacy clear: could not write the deletion ledger; a restore of an old backup may resurrect the deleted data",
+      );
+    }
+  }
+
+  return { deletionLedger, ok, results, subjectId };
 }
 
 function stringifyError(error: unknown): string {

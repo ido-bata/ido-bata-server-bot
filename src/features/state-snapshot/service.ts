@@ -1,15 +1,14 @@
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 import type { Client } from "discord.js";
 import { Events } from "discord.js";
 import type { ConsentService } from "../../consent/service.js";
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
+import { getStorageDriver } from "../../lib/storage/index.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
 import type { SnapshotConfig } from "./config.js";
 import { applyRetentionPlan, planRetention, type RetentionPolicy } from "./retention.js";
 import { getNextSnapshotStartAt } from "./schedule.js";
 import {
   createSnapshot,
-  ensureSnapshotDir,
   listSnapshots,
   loadEncryptedSnapshot,
   type SnapshotMetadata,
@@ -28,6 +27,8 @@ type SnapshotDependencies = {
   runOnReady?: boolean;
   clock?: () => Date;
   uploader?: SnapshotUploader;
+  /** Storage backend holding the sources and the snapshot objects. */
+  driver?: StorageDriver;
   /**
    * v0.2.0: optional `ConsentService`. When provided, every `clear` event
    * triggers `applyRetentionPlan` with a keep-nothing policy so any
@@ -38,6 +39,7 @@ type SnapshotDependencies = {
 
 export type SnapshotRuntime = {
   config: SnapshotConfig;
+  driver: StorageDriver;
   encryptionKey: string | undefined;
   runOnReady: boolean;
   clock: () => Date;
@@ -52,6 +54,7 @@ export function createSnapshotRuntime(
   return {
     clock: dependencies.clock ?? (() => new Date()),
     config,
+    driver: dependencies.driver ?? getStorageDriver(),
     encryptionKey: dependencies.encryptionKey ?? process.env.STATE_SNAPSHOT_ENCRYPTION_KEY,
     runOnReady: dependencies.runOnReady ?? false,
     uploader,
@@ -81,7 +84,8 @@ export function registerStateSnapshotScheduler(
       // the contract: existing snapshots before `now()` are dropped, the
       // freshly-created one is preserved.
       void purgeAllSnapshots({
-        snapshotDir: runtime.config.snapshotDir,
+        driver: runtime.driver,
+        snapshotPrefix: runtime.config.snapshotPrefix,
         encryptionKey: runtime.encryptionKey,
         clock: runtime.clock,
         takeFreshSnapshot: async () => {
@@ -151,22 +155,22 @@ export function registerStateSnapshotScheduler(
 }
 
 export async function runSnapshotOnce(runtime: SnapshotRuntime): Promise<SnapshotMetadata> {
-  ensureSnapshotDir(runtime.config.snapshotDir);
   const created = await createSnapshot(
     {
-      snapshotDir: runtime.config.snapshotDir,
-      sourcePaths: runtime.config.sourcePaths,
+      driver: runtime.driver,
+      snapshotPrefix: runtime.config.snapshotPrefix,
+      sourceKeys: runtime.config.sourceKeys,
     },
     runtime.encryptionKey,
     runtime.clock(),
   );
 
   const plan = planRetention(
-    listSnapshots(runtime.config.snapshotDir, runtime.encryptionKey),
+    await listSnapshots(runtime.config.snapshotPrefix, runtime.encryptionKey, runtime.driver),
     toRetentionPolicy(runtime.config),
     runtime.clock(),
   );
-  await applyRetentionPlan(plan);
+  await applyRetentionPlan(plan, { driver: runtime.driver });
 
   await uploadSnapshot(runtime, created);
   return created;
@@ -179,7 +183,7 @@ async function uploadSnapshot(runtime: SnapshotRuntime, created: SnapshotMetadat
     // reach the uploader boundary. `loadEncryptedSnapshot` rejects
     // missing / too-small / unencrypted files; whatever survives is
     // safe to upload.
-    encrypted = loadEncryptedSnapshot(created.path);
+    encrypted = await loadEncryptedSnapshot(created.path, runtime.driver);
   } catch (error) {
     logger.error(
       { uploader: runtime.uploader.name, path: created.path, err: error },
@@ -258,7 +262,8 @@ export type PurgeSnapshotsResult =
   | { ok: false; error: string };
 
 export async function purgeAllSnapshots(options: {
-  snapshotDir: string;
+  driver: StorageDriver;
+  snapshotPrefix: string;
   encryptionKey: string | undefined;
   clock?: () => Date;
   /**
@@ -273,20 +278,16 @@ export async function purgeAllSnapshots(options: {
   takeFreshSnapshot?: () => Promise<string | null>;
   subjectId?: string;
 }): Promise<PurgeSnapshotsResult> {
-  if (!existsSync(options.snapshotDir)) {
-    return { ok: true, deleted: 0, kept: null };
-  }
-  const paths = readdirSync(options.snapshotDir)
-    .filter((name) => name.endsWith(".snap.enc"))
-    .map((name) => join(options.snapshotDir, name));
+  const listed = await options.driver.list(`${options.snapshotPrefix}/`);
+  const paths = listed.map((entry) => entry.key).filter((key) => key.endsWith(".snap.enc"));
   if (paths.length === 0) {
     return { ok: true, deleted: 0, kept: null };
   }
   if (!options.takeFreshSnapshot) {
     logger.warn(
       {
-        snapshotDir: options.snapshotDir,
         count: paths.length,
+        snapshotPrefix: options.snapshotPrefix,
         subjectId: options.subjectId,
       },
       "purgeAllSnapshots declined: no takeFreshSnapshot hook wired; retaining existing snapshots",
@@ -348,13 +349,15 @@ export async function purgeAllSnapshots(options: {
       path,
     }));
   const plan = { keep, delete: del };
-  await applyRetentionPlan(plan);
-  // Re-stat the directory: if anything OTHER than the fresh snapshot we
-  // intend to keep is still on disk, that's a leaked file the retention
-  // pass couldn't unlink (permission denied, EISDIR, etc.) and must
-  // surface so the operator can intervene instead of silently leaking.
-  const remaining = readdirSync(options.snapshotDir).filter((name) => name.endsWith(".snap.enc"));
-  const leftover = remaining.filter((name) => join(options.snapshotDir, name) !== freshPath);
+  await applyRetentionPlan(plan, { driver: options.driver });
+  // Re-list the storage prefix: if anything OTHER than the fresh snapshot
+  // we intend to keep is still there, that's a leaked object the retention
+  // pass couldn't delete and must surface so the operator can intervene
+  // instead of silently leaking.
+  const remaining = (await options.driver.list(`${options.snapshotPrefix}/`))
+    .map((entry) => entry.key)
+    .filter((key) => key.endsWith(".snap.enc"));
+  const leftover = remaining.filter((key) => key !== freshPath);
   if (leftover.length > 0) {
     return {
       ok: false,

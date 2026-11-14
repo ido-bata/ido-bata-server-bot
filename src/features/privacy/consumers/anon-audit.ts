@@ -15,12 +15,16 @@
  * Claiming success here would tell `/privacy delete` callers their
  * data is gone when it is not — a privacy invariant violation.
  */
+
+import { getStorageDriver } from "../../../lib/storage/index.js";
+import type { StorageDriver } from "../../../lib/storage/types.js";
 import { hasAnonAuditRecords } from "../../anonymous-chat/audit-store.js";
 import { resolveAnonAuditDir } from "../../anonymous-chat/config.js";
 import type { DeleteResult } from "../types.js";
 
 export type AnonAuditDeleteOptions = {
   dir?: string;
+  driver?: StorageDriver;
 };
 
 export async function deleteUserData(
@@ -28,16 +32,16 @@ export async function deleteUserData(
   options: AnonAuditDeleteOptions = {},
 ): Promise<DeleteResult> {
   void userId; // Selective deletion is impossible on the bot — see header.
-  // Resolve the default dir at call time (not module load) so the path
+  // Resolve the default prefix at call time (not module load) so it
   // tracks the writer's default regardless of cwd at import time, and
   // use the SAME normalization as the writer — a padded or blank
-  // ANON_AUDIT_DIR must not make us inspect a different directory
+  // ANON_AUDIT_DIR must not make us inspect a different prefix
   // than the one records are written to.
   const dir = options.dir ?? resolveAnonAuditDir(process.env.ANON_AUDIT_DIR);
 
   let exists: boolean;
   try {
-    exists = await hasAnonAuditRecords(dir);
+    exists = await hasAnonAuditRecords(dir, { driver: options.driver ?? getStorageDriver() });
   } catch (error) {
     return {
       ok: false,

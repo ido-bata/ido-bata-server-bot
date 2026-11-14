@@ -11,8 +11,9 @@ export type BirthdayRoleConfig = {
   // Optional text channel that receives an announcement on each member's
   // birthday. Leave as an empty string to disable announcements.
   announcementChannelId: string;
-  // Path to the persisted birthday registry. Lives under data/ which is
-  // gitignored — see .gitignore.
+  // Storage key of the persisted birthday registry (ADR-0004): the local
+  // backend resolves it under `data/`, object storage under the bucket
+  // root.
   dataFile: string;
 };
 
@@ -22,7 +23,7 @@ export const birthdayRoleConfig: BirthdayRoleConfig = {
   guildId: "",
   roleId: "",
   announcementChannelId: "",
-  dataFile: "data/birthdays.json",
+  dataFile: "birthdays.json",
 };
 
 export function isBirthdayRoleConfigured(config: BirthdayRoleConfig): boolean {

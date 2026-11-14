@@ -7,17 +7,25 @@
  * partial failure. ENOENT (no persisted file) is treated as success —
  * there is nothing to remove.
  */
-import { join } from "node:path";
 import { z } from "zod";
-
-import { mutateJsonFile } from "../../../lib/storage/atomic-json.js";
+import { mutateJsonObject } from "../../../lib/storage/json.js";
+import { STORAGE_KEYS } from "../../../lib/storage/keys.js";
+import { resolveStorageTarget } from "../../../lib/storage/target.js";
+import type { StorageDriver } from "../../../lib/storage/types.js";
 import type { DeleteResult } from "../types.js";
 
 export type BirthdayDeleteOptions = {
+  /**
+   * Legacy filesystem path. Kept for operators and tests that pin the
+   * store to one file; the store is then served by a local filesystem
+   * driver rooted at its directory.
+   */
   filePath?: string;
+  /** Storage backend holding the store. */
+  driver?: StorageDriver;
+  /** Storage key of the store. Defaults to the canonical key. */
+  key?: string;
 };
-
-const DEFAULT_RELATIVE_PATH = "data/birthdays.json";
 
 const entrySchema = z.object({
   date: z.string(),
@@ -29,13 +37,6 @@ const storeSchema = z.object({
   birthdays: z.record(z.string(), entrySchema),
 });
 
-function resolveFilePath(options: BirthdayDeleteOptions): string {
-  if (options.filePath) {
-    return options.filePath;
-  }
-  return join(process.cwd(), DEFAULT_RELATIVE_PATH);
-}
-
 export function deleteUserData(
   userId: string,
   options: BirthdayDeleteOptions = {},
@@ -44,9 +45,15 @@ export function deleteUserData(
 }
 
 async function runDelete(userId: string, options: BirthdayDeleteOptions): Promise<DeleteResult> {
-  const filePath = resolveFilePath(options);
-  const outcome = await mutateJsonFile({
-    filePath,
+  const { driver, key } = resolveStorageTarget({
+    defaultKey: STORAGE_KEYS.birthdays,
+    driver: options.driver,
+    filePath: options.filePath,
+    key: options.key,
+  });
+  const outcome = await mutateJsonObject({
+    driver,
+    key,
     mutate: (current) => {
       if (!(userId in current.birthdays)) {
         return current;

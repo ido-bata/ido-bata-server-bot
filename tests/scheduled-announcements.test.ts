@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -18,7 +18,7 @@ import type { ChannelResolver } from "../src/features/scheduled-announcements/se
 import { createScheduledAnnouncementsService } from "../src/features/scheduled-announcements/service.js";
 
 describe("scheduled-announcements config schema", () => {
-  it("parses a valid weekly entry", () => {
+  it("parses a valid weekly entry", async () => {
     const result = scheduledAnnouncementsFileSchema.parse({
       entries: [
         {
@@ -37,7 +37,7 @@ describe("scheduled-announcements config schema", () => {
     expect(result.entries[0]?.id).toBe("weekly");
   });
 
-  it("rejects entries that are missing both weekday and oneShotDate", () => {
+  it("rejects entries that are missing both weekday and oneShotDate", async () => {
     expect(() =>
       scheduledAnnouncementsFileSchema.parse({
         entries: [
@@ -54,7 +54,7 @@ describe("scheduled-announcements config schema", () => {
     ).toThrow(/exactly one of weekday or oneShotDate/);
   });
 
-  it("rejects entries that set both weekday and oneShotDate", () => {
+  it("rejects entries that set both weekday and oneShotDate", async () => {
     expect(() =>
       scheduledAnnouncementsFileSchema.parse({
         entries: [
@@ -73,7 +73,7 @@ describe("scheduled-announcements config schema", () => {
     ).toThrow(/exactly one of weekday or oneShotDate/);
   });
 
-  it("rejects oneShotDate that is not YYYY-MM-DD", () => {
+  it("rejects oneShotDate that is not YYYY-MM-DD", async () => {
     expect(() =>
       scheduledAnnouncementsFileSchema.parse({
         entries: [
@@ -105,14 +105,14 @@ describe("scheduled-announcements file IO", () => {
     rmSync(workDir, { recursive: true, force: true });
   });
 
-  it("returns an empty list when the file does not exist", () => {
-    const result = loadScheduledAnnouncements({ filePath });
+  it("returns an empty list when the file does not exist", async () => {
+    const result = await loadScheduledAnnouncements({ filePath });
 
     expect(result.entries).toEqual([]);
-    expect(result.filePath).toBe(filePath);
+    expect(result.key).toBe(basename(filePath));
   });
 
-  it("loads entries from an existing file", () => {
+  it("loads entries from an existing file", async () => {
     writeFileSync(
       filePath,
       JSON.stringify({
@@ -131,14 +131,14 @@ describe("scheduled-announcements file IO", () => {
       "utf8",
     );
 
-    const result = loadScheduledAnnouncements({ filePath });
+    const result = await loadScheduledAnnouncements({ filePath });
 
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0]?.id).toBe("weekly-1");
   });
 
-  it("persists the entries back to disk", () => {
-    saveScheduledAnnouncements(
+  it("persists the entries back to disk", async () => {
+    await saveScheduledAnnouncements(
       [
         {
           id: "oneshot-1",
@@ -153,7 +153,7 @@ describe("scheduled-announcements file IO", () => {
       { filePath },
     );
 
-    const result = loadScheduledAnnouncements({ filePath });
+    const result = await loadScheduledAnnouncements({ filePath });
 
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0]?.id).toBe("oneshot-1");
@@ -162,7 +162,7 @@ describe("scheduled-announcements file IO", () => {
 });
 
 describe("getNextFireTime (JST-aware)", () => {
-  it("schedules a weekly entry for later today when the time has not passed", () => {
+  it("schedules a weekly entry for later today when the time has not passed", async () => {
     // 2026-04-01 is a Wednesday (JST). weekday 3 = Wednesday.
     const fireAt = getNextFireTime(
       {
@@ -180,7 +180,7 @@ describe("getNextFireTime (JST-aware)", () => {
     expect(fireAt?.toISOString()).toBe("2026-04-01T12:00:00.000Z");
   });
 
-  it("rolls to next week when today's JST time has already passed", () => {
+  it("rolls to next week when today's JST time has already passed", async () => {
     // 2026-04-01 Wednesday. weekday 3 (Wed), hour 9 already passed.
     const fireAt = getNextFireTime(
       { id: "wed-09", channelId: "c", message: "m", weekday: 3, hour: 9, minute: 0, enabled: true },
@@ -190,7 +190,7 @@ describe("getNextFireTime (JST-aware)", () => {
     expect(fireAt?.toISOString()).toBe("2026-04-08T00:00:00.000Z");
   });
 
-  it("schedules the next matching weekday when today is a different weekday", () => {
+  it("schedules the next matching weekday when today is a different weekday", async () => {
     // 2026-04-01 Wednesday. Want Friday (weekday 5).
     const fireAt = getNextFireTime(
       { id: "fri-09", channelId: "c", message: "m", weekday: 5, hour: 9, minute: 0, enabled: true },
@@ -200,7 +200,7 @@ describe("getNextFireTime (JST-aware)", () => {
     expect(fireAt?.toISOString()).toBe("2026-04-03T00:00:00.000Z");
   });
 
-  it("rolls the weekday forward across a month boundary", () => {
+  it("rolls the weekday forward across a month boundary", async () => {
     // 2026-04-29 Wednesday. Want Tuesday next week (2026-05-05).
     const fireAt = getNextFireTime(
       {
@@ -218,7 +218,7 @@ describe("getNextFireTime (JST-aware)", () => {
     expect(fireAt?.toISOString()).toBe("2026-05-05T12:00:00.000Z");
   });
 
-  it("returns null for a disabled weekly entry", () => {
+  it("returns null for a disabled weekly entry", async () => {
     const fireAt = getNextFireTime(
       { id: "x", channelId: "c", message: "m", weekday: 3, hour: 21, minute: 0, enabled: false },
       new Date("2026-04-01T00:00:00Z"),
@@ -229,7 +229,7 @@ describe("getNextFireTime (JST-aware)", () => {
 });
 
 describe("getNextFireTime (oneShotDate)", () => {
-  it("schedules a future oneShotDate in JST", () => {
+  it("schedules a future oneShotDate in JST", async () => {
     // 2026-04-01 09:00 JST; oneShot 2026-04-10 12:00 JST.
     const fireAt = getNextFireTime(
       {
@@ -247,7 +247,7 @@ describe("getNextFireTime (oneShotDate)", () => {
     expect(fireAt?.toISOString()).toBe("2026-04-10T03:00:00.000Z");
   });
 
-  it("returns null when the oneShotDate is in the past", () => {
+  it("returns null when the oneShotDate is in the past", async () => {
     const fireAt = getNextFireTime(
       {
         id: "announce",
@@ -264,7 +264,7 @@ describe("getNextFireTime (oneShotDate)", () => {
     expect(fireAt).toBeNull();
   });
 
-  it("returns null when the oneShotDate JST time has already passed today", () => {
+  it("returns null when the oneShotDate JST time has already passed today", async () => {
     // 2026-04-10 14:00 JST; oneShot 2026-04-10 12:00 JST.
     const fireAt = getNextFireTime(
       {
@@ -282,7 +282,7 @@ describe("getNextFireTime (oneShotDate)", () => {
     expect(fireAt).toBeNull();
   });
 
-  it("treats oneShotDate at JST midnight as 15:00 UTC the previous day", () => {
+  it("treats oneShotDate at JST midnight as 15:00 UTC the previous day", async () => {
     const fireAt = getNextFireTime(
       {
         id: "announce",
@@ -301,7 +301,7 @@ describe("getNextFireTime (oneShotDate)", () => {
 });
 
 describe("pickNextFires", () => {
-  it("orders multiple entries by their next fire time", () => {
+  it("orders multiple entries by their next fire time", async () => {
     const entries = [
       {
         id: "weekly-mon",
@@ -328,7 +328,7 @@ describe("pickNextFires", () => {
     expect(fires.map((f) => f.entry.id)).toEqual(["oneshot-soon", "weekly-mon"]);
   });
 
-  it("skips disabled entries", () => {
+  it("skips disabled entries", async () => {
     const entries = [
       {
         id: "disabled",
@@ -346,7 +346,7 @@ describe("pickNextFires", () => {
 });
 
 describe("getNextWeeklyFireAfter", () => {
-  it("schedules the next fire exactly 7 days after the previous fire", () => {
+  it("schedules the next fire exactly 7 days after the previous fire", async () => {
     const previous = new Date("2026-04-01T12:00:00Z");
     const next = getNextWeeklyFireAfter(previous);
 
@@ -408,6 +408,8 @@ describe("scheduled-announcements service", () => {
 
     service.start();
 
+    await service.ready();
+
     // The next fire is 2026-04-02T00:00:00Z. Tick the clock past it.
     await vi.advanceTimersByTimeAsync(120_000);
     // Drain retry/idle timers and the post-fire scheduleNext() tick.
@@ -454,6 +456,8 @@ describe("scheduled-announcements service", () => {
 
     service.start();
 
+    await service.ready();
+
     await vi.advanceTimersByTimeAsync(120_000);
     await vi.advanceTimersByTimeAsync(120_000);
 
@@ -497,6 +501,8 @@ describe("scheduled-announcements service", () => {
 
     service.start();
 
+    await service.ready();
+
     await vi.advanceTimersByTimeAsync(86_400_000 * 7);
     await vi.advanceTimersByTimeAsync(120_000);
 
@@ -536,6 +542,8 @@ describe("scheduled-announcements service", () => {
     });
 
     service.start();
+
+    await service.ready();
 
     // The next fire is 2026-04-01T12:00:00Z (Wed 21:00 JST). We are at
     // 2026-04-01T23:59:00Z (Thu 08:59 JST) so the next fire is one week later.
@@ -581,11 +589,16 @@ describe("scheduled-announcements service", () => {
 
     service.start();
 
+    await service.ready();
+
     await vi.advanceTimersByTimeAsync(120_000);
     await vi.advanceTimersByTimeAsync(120_000);
 
-    const reloaded = loadScheduledAnnouncements({ filePath });
-    expect(reloaded.entries[0]?.enabled).toBe(false);
+    // The cadence is persisted asynchronously — wait for the write.
+    await vi.waitFor(async () => {
+      const reloaded = await loadScheduledAnnouncements({ filePath });
+      expect(reloaded.entries[0]?.enabled).toBe(false);
+    });
 
     service.stop();
   });
@@ -629,6 +642,8 @@ describe("scheduled-announcements service", () => {
     });
 
     service.start();
+
+    await service.ready();
 
     // Sanity check: at the anchor, the next fire is the far-future oneShot.
     expect(service.getNextFire()?.entry.id).toBe("oneshot-far");
