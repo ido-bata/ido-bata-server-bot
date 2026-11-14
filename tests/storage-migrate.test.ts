@@ -20,6 +20,9 @@ describe("storage migration tooling", () => {
   let target: ReturnType<typeof createU3Storage>;
 
   beforeAll(async () => {
+    // The restore path refuses to run without the ledger key: the
+    // recorded erasures could not be re-applied otherwise.
+    process.env.DELETION_LEDGER_KEY = "migrate-test-ledger-key-0123456789";
     server = await startFakeS3Server();
     sourceRoot = mkdtempSync(join(tmpdir(), "storage-migrate-source-"));
     exportDir = mkdtempSync(join(tmpdir(), "storage-migrate-export-"));
@@ -42,6 +45,7 @@ describe("storage migration tooling", () => {
 
   afterAll(async () => {
     await server.close();
+    delete process.env.DELETION_LEDGER_KEY;
     rmSync(sourceRoot, { recursive: true, force: true });
     rmSync(exportDir, { recursive: true, force: true });
   });

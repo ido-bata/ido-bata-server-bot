@@ -196,6 +196,78 @@ describe("instance lease (local backend)", () => {
     }
   });
 
+  it("refuses the term when a concurrent takeover replaced it right after the write", async () => {
+    const { cleanup, driver } = tempDriver();
+    try {
+      // Fault injection: the compare-and-swap succeeds, but the object is
+      // replaced by another instance before the acquisition reads it back.
+      const hijacked: StorageDriver = {
+        ...driver,
+        compareAndSwap: async (key, data, expectedVersion) => {
+          const result = await driver.compareAndSwap(key, data, expectedVersion);
+          if (result === "written") {
+            await driver.write(
+              key,
+              JSON.stringify({
+                acquiredAt: new Date().toISOString(),
+                epoch: 99,
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                holderId: "instance-b",
+                token: "someone-elses-token",
+              }),
+            );
+          }
+          return result;
+        },
+      };
+
+      await expect(
+        acquireInstanceLease({ driver: hijacked, holderId: "instance-a" }),
+      ).rejects.toBeInstanceOf(LeaseConflictError);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("can be acquired again after the previous holder lost the term", async () => {
+    const { cleanup, driver } = tempDriver();
+    try {
+      const first = await acquireInstanceLease({ driver, holderId: "instance-a" });
+      // The term was taken over by another instance.
+      await driver.write(
+        "locks/instance.json",
+        JSON.stringify({
+          acquiredAt: new Date().toISOString(),
+          epoch: 2,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          holderId: "instance-b",
+          token: "instance-b-token",
+        }),
+      );
+      await expect(first.renew()).rejects.toBeInstanceOf(LeaseLostError);
+
+      // The new holder is gone as well: its term expired.
+      await driver.write(
+        "locks/instance.json",
+        JSON.stringify({
+          acquiredAt: new Date(Date.now() - 120_000).toISOString(),
+          epoch: 2,
+          expiresAt: new Date(Date.now() - 60_000).toISOString(),
+          holderId: "instance-b",
+          token: "instance-b-token",
+        }),
+      );
+
+      // The first instance may take the term again — with a higher epoch.
+      const again = await acquireInstanceLease({ driver, holderId: "instance-a" });
+      expect(again.holderId).toBe("instance-a");
+      expect(again.epoch).toBe(3);
+      await again.release();
+    } finally {
+      cleanup();
+    }
+  });
+
   it("gives the term to exactly one of two racing instances", async () => {
     const { cleanup, driver } = tempDriver();
     try {
@@ -275,6 +347,78 @@ describe("instance lease (u3 backend)", () => {
     }
   });
 
+  it("refuses the term when a concurrent takeover replaced it right after the write", async () => {
+    const { cleanup, driver } = tempDriver();
+    try {
+      // Fault injection: the compare-and-swap succeeds, but the object is
+      // replaced by another instance before the acquisition reads it back.
+      const hijacked: StorageDriver = {
+        ...driver,
+        compareAndSwap: async (key, data, expectedVersion) => {
+          const result = await driver.compareAndSwap(key, data, expectedVersion);
+          if (result === "written") {
+            await driver.write(
+              key,
+              JSON.stringify({
+                acquiredAt: new Date().toISOString(),
+                epoch: 99,
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                holderId: "instance-b",
+                token: "someone-elses-token",
+              }),
+            );
+          }
+          return result;
+        },
+      };
+
+      await expect(
+        acquireInstanceLease({ driver: hijacked, holderId: "instance-a" }),
+      ).rejects.toBeInstanceOf(LeaseConflictError);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("can be acquired again after the previous holder lost the term", async () => {
+    const { cleanup, driver } = tempDriver();
+    try {
+      const first = await acquireInstanceLease({ driver, holderId: "instance-a" });
+      // The term was taken over by another instance.
+      await driver.write(
+        "locks/instance.json",
+        JSON.stringify({
+          acquiredAt: new Date().toISOString(),
+          epoch: 2,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          holderId: "instance-b",
+          token: "instance-b-token",
+        }),
+      );
+      await expect(first.renew()).rejects.toBeInstanceOf(LeaseLostError);
+
+      // The new holder is gone as well: its term expired.
+      await driver.write(
+        "locks/instance.json",
+        JSON.stringify({
+          acquiredAt: new Date(Date.now() - 120_000).toISOString(),
+          epoch: 2,
+          expiresAt: new Date(Date.now() - 60_000).toISOString(),
+          holderId: "instance-b",
+          token: "instance-b-token",
+        }),
+      );
+
+      // The first instance may take the term again — with a higher epoch.
+      const again = await acquireInstanceLease({ driver, holderId: "instance-a" });
+      expect(again.holderId).toBe("instance-a");
+      expect(again.epoch).toBe(3);
+      await again.release();
+    } finally {
+      cleanup();
+    }
+  });
+
   it("gives the term to exactly one of two racing instances", async () => {
     await driver.delete("locks/instance.json");
     const results = await Promise.allSettled([
@@ -286,12 +430,42 @@ describe("instance lease (u3 backend)", () => {
   });
 });
 
+describe("instance lease (backend that honours create but not update)", () => {
+  let server: FakeS3Server;
+  let driver: StorageDriver;
+
+  beforeAll(async () => {
+    server = await startFakeS3Server("test-bucket", { conditionalWrites: "create-only" });
+    driver = createU3Storage({
+      accessKeyId: "AKTESTTESTTEST",
+      bucket: server.bucket,
+      endpoint: server.endpoint,
+      region: "eu",
+      secretAccessKey: "test-secret",
+    });
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("rejects the backend because the conditional update path is not enforced", async () => {
+    // A create-only backend would pass a create-if-absent probe, but the
+    // lease renewal (a conditional update) would silently overwrite the
+    // term of another instance.
+    expect(await driver.probeConditionalWrites()).toBe(false);
+    await expect(acquireInstanceLease({ driver, holderId: "instance-a" })).rejects.toBeInstanceOf(
+      LeaseUnsupportedError,
+    );
+  });
+});
+
 describe("instance lease (backend without conditional writes)", () => {
   let server: FakeS3Server;
   let driver: StorageDriver;
 
   beforeAll(async () => {
-    server = await startFakeS3Server("test-bucket", { conformant: false });
+    server = await startFakeS3Server("test-bucket", { conditionalWrites: "none" });
     driver = createU3Storage({
       accessKeyId: "AKTESTTESTTEST",
       bucket: server.bucket,

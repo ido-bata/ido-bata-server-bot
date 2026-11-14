@@ -287,11 +287,32 @@ export function createU3Storage(options: U3StorageOptions): StorageDriver {
      * answers 2xx both times and is reported as not supporting
      * conditional writes.
      */
+    /**
+     * Probe the backend itself. Both conditional paths the lease relies on
+     * are checked:
+     *
+     * 1. **create-if-absent** (`If-None-Match: *`) must succeed once and
+     *    fail the second time.
+     * 2. **conditional update** (`If-Match: <etag>`) must succeed with
+     *    the current ETag and fail with a stale one.
+     *
+     * A backend that honours only the first path would pass a
+     * create-only probe while the renewal path (which updates an existing
+     * term) silently overwrites the term of another instance.
+     */
     async probeConditionalWrites(): Promise<boolean> {
       const key = `locks/probe-${randomBytes(6).toString("hex")}`;
       const body = encodeStorageData("probe");
+      const cleanup = async (): Promise<void> => {
+        await client
+          .send(new DeleteObjectCommand({ Bucket: options.bucket, Key: key }))
+          .catch(() => undefined);
+      };
+
+      // 1. create-if-absent
+      let created: PutObjectCommandOutput;
       try {
-        await client.send(
+        created = await client.send(
           new PutObjectCommand({
             Body: body,
             Bucket: options.bucket,
@@ -300,6 +321,7 @@ export function createU3Storage(options: U3StorageOptions): StorageDriver {
           }),
         );
       } catch {
+        await cleanup();
         return false;
       }
       try {
@@ -312,12 +334,50 @@ export function createU3Storage(options: U3StorageOptions): StorageDriver {
           }),
         );
         // The second create succeeded: the condition was ignored.
-        await client.send(new DeleteObjectCommand({ Bucket: options.bucket, Key: key }));
+        await cleanup();
         return false;
       } catch (error) {
-        await client
-          .send(new DeleteObjectCommand({ Bucket: options.bucket, Key: key }))
-          .catch(() => undefined);
+        if (!isPreconditionFailed(error)) {
+          await cleanup();
+          return false;
+        }
+      }
+
+      // 2. conditional update — the path the lease renewal uses.
+      const currentEtag = created.ETag;
+      if (!currentEtag) {
+        await cleanup();
+        return false;
+      }
+      try {
+        await client.send(
+          new PutObjectCommand({
+            Body: encodeStorageData("probe-2"),
+            Bucket: options.bucket,
+            IfMatch: currentEtag,
+            Key: key,
+          }),
+        );
+      } catch {
+        // The update with the current ETag must succeed.
+        await cleanup();
+        return false;
+      }
+      try {
+        await client.send(
+          new PutObjectCommand({
+            Body: encodeStorageData("probe-3"),
+            Bucket: options.bucket,
+            IfMatch: '"stale-etag"',
+            Key: key,
+          }),
+        );
+        // The stale update succeeded: `If-Match` is ignored, so a
+        // renewal could overwrite a term taken over by another instance.
+        await cleanup();
+        return false;
+      } catch (error) {
+        await cleanup();
         return isPreconditionFailed(error);
       }
     },

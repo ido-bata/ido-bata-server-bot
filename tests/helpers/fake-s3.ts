@@ -31,11 +31,16 @@ export type FakeS3Server = {
 
 export type FakeS3Options = {
   /**
-   * When false the server ignores `If-None-Match` / `If-Match`, like a
-   * backend that does not implement conditional writes. The lease probe
-   * must detect that and refuse to start.
+   * Which conditional headers the backend enforces:
+   *
+   * - `both` (default) — `If-None-Match` and `If-Match` are honoured.
+   * - `create-only` — only `If-None-Match` is honoured; `If-Match` is
+   *   ignored. A backend like this would pass a create-only probe while
+   *   the lease renewal path silently overwrites another instance's
+   *   term, so the probe must reject it.
+   * - `none` — neither header is honoured.
    */
-  conformant?: boolean;
+  conditionalWrites?: "both" | "create-only" | "none";
 };
 
 function etagOf(body: Buffer): string {
@@ -63,7 +68,7 @@ export async function startFakeS3Server(
   options: FakeS3Options = {},
 ): Promise<FakeS3Server> {
   const objects = new Map<string, FakeS3Object>();
-  const conformant = options.conformant ?? true;
+  const conditionalWrites = options.conditionalWrites ?? "both";
 
   const server: Server = createServer((request, response) => {
     void handle(request, response).catch(() => {
@@ -128,19 +133,19 @@ export async function startFakeS3Server(
       const body = await readBody(request);
       const ifNoneMatch = request.headers["if-none-match"];
       const ifMatch = request.headers["if-match"];
-      if (conformant) {
+      if (conditionalWrites !== "none") {
         if (ifNoneMatch === "*" && objects.has(objectKey)) {
           response.statusCode = 412;
           response.end("<Error><Code>PreconditionFailed</Code></Error>");
           return;
         }
-        if (typeof ifMatch === "string") {
-          const current = objects.get(objectKey);
-          if (!current || current.etag !== ifMatch) {
-            response.statusCode = 412;
-            response.end("<Error><Code>PreconditionFailed</Code></Error>");
-            return;
-          }
+      }
+      if (conditionalWrites === "both" && typeof ifMatch === "string") {
+        const current = objects.get(objectKey);
+        if (!current || current.etag !== ifMatch) {
+          response.statusCode = 412;
+          response.end("<Error><Code>PreconditionFailed</Code></Error>");
+          return;
         }
       }
       const metadata: Record<string, string> = {};

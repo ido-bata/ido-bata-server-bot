@@ -24,6 +24,7 @@ describe("backup and restore drill", () => {
   let workDir: string;
 
   beforeAll(async () => {
+    process.env.DELETION_LEDGER_KEY = LEDGER_KEY;
     server = await startFakeS3Server();
     primary = createU3Storage({
       accessKeyId: "AKTESTTESTTEST",
@@ -51,6 +52,7 @@ describe("backup and restore drill", () => {
 
   afterAll(async () => {
     await server.close();
+    delete process.env.DELETION_LEDGER_KEY;
     rmSync(workDir, { recursive: true, force: true });
   });
 
@@ -152,21 +154,16 @@ describe("backup and restore drill", () => {
         digest: digestSubjectId(subjectId, LEDGER_KEY),
       });
 
-      // Restoring the old backup over the live store would bring the
-      // deleted subject back …
+      // Restoring the old backup re-applies the recorded erasure, so the
+      // deleted subject does not come back.
       const restoreReport = await importStorage({
         allowOverwrite: true,
         dir: backupDir,
         target: live,
       });
-      expect(await live.readText("timekeeper-history.json")).toContain(subjectId);
-
-      // … unless the recorded erasure is re-applied. The restore applies
-      // the ledger itself, so the caller only sees the end state.
-      const erasure = await applyDeletionLedger(live, LEDGER_KEY);
-      expect(erasure.removedSubjects).toEqual([subjectId]);
-      expect(erasure.rewrittenObjects).toContain("timekeeper-history.json");
-      expect(erasure.rewrittenObjects).toContain("consent.json");
+      expect(restoreReport.erasedSubjects).toEqual([subjectId]);
+      expect(restoreReport.rewrittenObjects).toContain("timekeeper-history.json");
+      expect(restoreReport.rewrittenObjects).toContain("consent.json");
 
       const afterRestore = await live.readText("timekeeper-history.json");
       expect(afterRestore).not.toContain(subjectId);
@@ -174,7 +171,11 @@ describe("backup and restore drill", () => {
 
       const consent = await live.readText("consent.json");
       expect(consent).not.toContain(subjectId);
-      void restoreReport;
+
+      // Re-applying the erasure is idempotent.
+      const erasure = await applyDeletionLedger(live, LEDGER_KEY);
+      expect(erasure.removedSubjects).toEqual([]);
+      expect(erasure.rewrittenObjects).toEqual([]);
     } finally {
       rmSync(liveRoot, { recursive: true, force: true });
     }

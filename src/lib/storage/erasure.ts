@@ -136,6 +136,74 @@ function removeSubjectFromStore(
 }
 
 /**
+ * Collect the subject ids that appear in a store.
+ *
+ * Used both by the restore (to find the ids to erase) and by the
+ * verification (to compute the *expected* final state after the erasure
+ * was re-applied).
+ */
+export function collectSubjectIds(value: unknown, into: Set<string>): Set<string> {
+  const store = asRecord(value);
+  if (!store) {
+    return into;
+  }
+  for (const field of Object.keys(store)) {
+    // A flat map (timekeeper-history.json, reminders.json) stores the
+    // subject id as the *key of the store itself*.
+    into.add(field);
+    const nested = asRecord(store[field]);
+    if (!nested) {
+      continue;
+    }
+    for (const id of Object.keys(nested)) {
+      into.add(id);
+    }
+  }
+  if (Array.isArray(store.records)) {
+    for (const record of store.records) {
+      const subjectId = stringField(record, "subjectId");
+      if (subjectId) {
+        into.add(subjectId);
+      }
+    }
+  }
+  if (Array.isArray(store.polls)) {
+    for (const poll of store.polls) {
+      const creatorId = stringField(poll, "creatorId");
+      if (creatorId) {
+        into.add(creatorId);
+      }
+      const votes = recordField(poll, "votes");
+      for (const voter of votes ? Object.keys(votes) : []) {
+        into.add(voter);
+      }
+    }
+  }
+  return into;
+}
+
+/**
+ * The state an object must have after the recorded erasures were applied.
+ *
+ * The verification compares the restored store against this value, so a
+ * correct post-erasure state is recognised as correct instead of being
+ * reported as a checksum mismatch.
+ */
+export function applyErasuresToValue(
+  value: unknown,
+  subjectIds: readonly string[],
+): { changed: boolean; value: unknown } {
+  let current = value;
+  let changed = false;
+  for (const subjectId of subjectIds) {
+    const outcome = removeSubjectFromStore(current, subjectId);
+    current = outcome.value;
+    changed = changed || outcome.changed;
+  }
+  return { changed, value: current };
+}
+
+/**
  * Remove every subject recorded in the ledger from the restored objects.
  *
  * The subject ids are recovered by scanning the restored objects for the
@@ -169,39 +237,7 @@ export async function applyDeletionLedger(
     if (raw === null) {
       continue;
     }
-    const store = asRecord(parseJson(raw));
-    if (!store) {
-      continue;
-    }
-    for (const field of Object.keys(store)) {
-      const nested = asRecord(store[field]);
-      if (!nested) {
-        continue;
-      }
-      for (const id of Object.keys(nested)) {
-        candidates.add(id);
-      }
-    }
-    if (Array.isArray(store.records)) {
-      for (const record of store.records) {
-        const subjectId = stringField(record, "subjectId");
-        if (subjectId) {
-          candidates.add(subjectId);
-        }
-      }
-    }
-    if (Array.isArray(store.polls)) {
-      for (const poll of store.polls) {
-        const creatorId = stringField(poll, "creatorId");
-        if (creatorId) {
-          candidates.add(creatorId);
-        }
-        const votes = recordField(poll, "votes");
-        for (const voter of votes ? Object.keys(votes) : []) {
-          candidates.add(voter);
-        }
-      }
-    }
+    collectSubjectIds(parseJson(raw), candidates);
   }
 
   const deletedSubjects = [...candidates].filter((candidate) =>

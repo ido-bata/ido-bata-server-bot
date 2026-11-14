@@ -206,8 +206,22 @@ export async function acquireInstanceLease(options: AcquireLeaseOptions): Promis
     );
   }
 
+  // Read the term back and confirm it is *ours*. The compare-and-swap
+  // above only proves that our write won the race at that moment; if a
+  // concurrent takeover landed right after, the stored term belongs to
+  // somebody else. Handing out a lease we do not own would let two
+  // instances run.
+  const stored = await driver.readVersioned(key);
+  const storedLease = stored ? parseLease(new TextDecoder().decode(stored.data)) : null;
+  if (!storedLease || storedLease.holderId !== holderId || storedLease.epoch !== epoch) {
+    throw new LeaseConflictError(
+      storedLease?.holderId ?? "unknown",
+      storedLease?.expiresAt ?? new Date(now()).toISOString(),
+    );
+  }
+
   let expiresAtMs = now() + ttlMs;
-  let token = "";
+  let token = storedLease.token;
   let released = false;
 
   const readOwned = async (): Promise<{ lease: LeasePayload; version: string | null } | null> => {
@@ -282,11 +296,6 @@ export async function acquireInstanceLease(options: AcquireLeaseOptions): Promis
       // Releasing is best effort: the term expires on its own.
     }
   };
-
-  // Read back the term we just wrote so the token matches what is stored.
-  const stored = await driver.readVersioned(key);
-  const storedLease = stored ? parseLease(new TextDecoder().decode(stored.data)) : null;
-  token = storedLease?.token ?? "";
 
   return {
     epoch,
