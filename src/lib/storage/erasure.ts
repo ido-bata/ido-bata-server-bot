@@ -12,7 +12,7 @@
  * backups (see `docs/operations/altare-migration.md`).
  */
 
-import { digestSubjectId, readDeletionLedger } from "./deletions.js";
+import { digestSubjectId, readDeletionLedgerState } from "./deletions.js";
 import type { StorageDriver } from "./types.js";
 
 export type ErasureReport = {
@@ -22,6 +22,8 @@ export type ErasureReport = {
   incompleteDeletions: number;
   /** Objects that were rewritten because a subject was removed. */
   rewrittenObjects: string[];
+  /** Set when the ledger could not be read — the erasure did NOT run. */
+  error?: string;
 };
 
 /** The stores that hold user-keyed records and are therefore filtered. */
@@ -223,7 +225,17 @@ export async function applyDeletionLedger(
     return report;
   }
 
-  const ledger = await readDeletionLedger(driver);
+  const state = await readDeletionLedgerState(driver);
+  if (state.status === "corrupt") {
+    // A damaged ledger must not be read as "no deletions happened" — that
+    // would silently skip the erasure of every recorded subject.
+    report.error = state.error;
+    return report;
+  }
+  if (state.status === "missing") {
+    return report;
+  }
+  const ledger = state.ledger;
   if (ledger.records.length === 0) {
     return report;
   }

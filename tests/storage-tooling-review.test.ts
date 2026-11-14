@@ -9,6 +9,7 @@ import {
   digestSubjectId,
   readDeletionLedgerState,
 } from "../src/lib/storage/deletions.js";
+import { applyDeletionLedger } from "../src/lib/storage/erasure.js";
 import { createLocalFileStorage } from "../src/lib/storage/local.js";
 import type { StorageDriver } from "../src/lib/storage/types.js";
 import { createU3Storage } from "../src/lib/storage/u3.js";
@@ -304,6 +305,21 @@ describe("storage tooling: export source, repeatable backup, ledger safety", () 
     } finally {
       rmSync(seed, { recursive: true, force: true });
     }
+  });
+
+  it("does not run the erasure when the ledger is corrupt", async () => {
+    const driver = createLocalFileStorage({
+      root: mkdtempSync(join(tmpdir(), "storage-review-erasure-corrupt-")),
+    });
+    await driver.write("timekeeper-history.json", '{"user-1":["2026-11-01"]}');
+    await driver.write(DELETION_LEDGER_KEY, "{broken");
+
+    const report = await applyDeletionLedger(driver, LEDGER_KEY);
+
+    // The erasure did NOT run — and the caller is told why.
+    expect(report.error).toMatch(/deletion ledger/);
+    expect(report.removedSubjects).toEqual([]);
+    expect(await driver.readText("timekeeper-history.json")).toBe('{"user-1":["2026-11-01"]}');
   });
 
   it("verifies the post-erasure state instead of the raw backup bytes", async () => {
