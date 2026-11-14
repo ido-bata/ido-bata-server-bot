@@ -576,7 +576,9 @@ async function main(): Promise<void> {
   }
 
   if (options.command === "backup") {
-    const outDir = resolve(options.out ?? `backups/${new Date().toISOString().slice(0, 19)}`);
+    // ISO timestamps contain ':' which is illegal in Windows paths.
+    const stamp = new Date().toISOString().slice(0, 19).replace(/:/g, "-");
+    const outDir = resolve(options.out ?? `backups/${stamp}`);
     const report = await backupStorage({
       allowMissingLedger: options.allowMissingLedger,
       exportDir: outDir,
