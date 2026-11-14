@@ -79,6 +79,7 @@ import {
 import { getLeaseDriver } from "./lib/storage/index.js";
 import {
   acquireInstanceLease,
+  DEFAULT_LEASE_TTL_MS,
   type InstanceLease,
   LeaseConflictError,
   LeaseUnsupportedError,
@@ -636,36 +637,53 @@ async function main(): Promise<void> {
     );
   }
 
-  try {
-    lease = await acquireInstanceLease({
-      driver: leaseDriver,
-      // Losing the lease means another instance owns the runtime: stop
-      // instead of processing events unowned.
-      onLost: (error) => {
-        rootLogger.error({ err: error }, "storage lease lost; shutting the bot down");
-        void shutdownRunner.run("LEASE_LOST");
-      },
-    });
-  } catch (error) {
-    if (error instanceof LeaseConflictError) {
-      // Fail closed: a second instance must never process the same
-      // events as the running one.
-      rootLogger.error(
-        { err: error, holderId: error.holderId, expiresAt: error.expiresAt },
-        "another bot instance holds the storage lease; refusing to start",
-      );
-      process.exitCode = 1;
-      return;
+  // A redeploy starts the new instance while the old one's lease term is
+  // still valid (its release races the platform's SIGTERM), so a conflict
+  // is retried until the term can expire — bounded by the lease TTL plus
+  // margin. A genuinely running second instance still loses: it exits
+  // after the deadline instead of ever sharing the runtime.
+  const leaseRetryDeadlineMs = Date.now() + DEFAULT_LEASE_TTL_MS + 30_000;
+  for (;;) {
+    try {
+      lease = await acquireInstanceLease({
+        driver: leaseDriver,
+        // Losing the lease means another instance owns the runtime: stop
+        // instead of processing events unowned.
+        onLost: (error) => {
+          rootLogger.error({ err: error }, "storage lease lost; shutting the bot down");
+          void shutdownRunner.run("LEASE_LOST");
+        },
+      });
+      break;
+    } catch (error) {
+      if (error instanceof LeaseConflictError) {
+        if (Date.now() >= leaseRetryDeadlineMs) {
+          // Fail closed: a second instance must never process the same
+          // events as the running one.
+          rootLogger.error(
+            { err: error, holderId: error.holderId, expiresAt: error.expiresAt },
+            "another bot instance holds the storage lease; refusing to start",
+          );
+          process.exitCode = 1;
+          return;
+        }
+        rootLogger.warn(
+          { err: error, holderId: error.holderId, expiresAt: error.expiresAt },
+          "storage lease held by another instance; retrying until it expires",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+        continue;
+      }
+      if (error instanceof LeaseUnsupportedError) {
+        rootLogger.error(
+          { err: error },
+          "the storage backend cannot hold an exclusive lease; refusing to start",
+        );
+        process.exitCode = 1;
+        return;
+      }
+      throw error;
     }
-    if (error instanceof LeaseUnsupportedError) {
-      rootLogger.error(
-        { err: error },
-        "the storage backend cannot hold an exclusive lease; refusing to start",
-      );
-      process.exitCode = 1;
-      return;
-    }
-    throw error;
   }
   rootLogger.info({ epoch: lease.epoch, holderId: lease.holderId }, "storage lease acquired");
 
