@@ -101,6 +101,12 @@ export async function exportStorage(options: {
   const entries: ManifestEntry[] = [];
 
   for (const key of keys) {
+    // The manifest is the export's own bookkeeping, never data. Copying it
+    // would make an export of an export directory rewrite its own manifest
+    // and then fail its own checksum comparison.
+    if (key === MANIFEST_NAME) {
+      continue;
+    }
     const bytes = await source.read(key);
     if (bytes === null) {
       continue;
@@ -201,6 +207,9 @@ export async function importStorage(options: {
   let importedLedger = liveLedger;
 
   for (const entry of manifest.entries) {
+    if (entry.key === MANIFEST_NAME) {
+      continue;
+    }
     const bytes = await readFile(join(dir, entry.key));
     const actual = sha256Hex(bytes);
     if (actual !== entry.sha256) {
@@ -226,6 +235,20 @@ export async function importStorage(options: {
     }
     report.imported += 1;
     report.verified += 1;
+  }
+
+  // The live ledger must not be *shorter* than the backup's: a truncated
+  // erasure history means deletion records were lost, and a restore would
+  // then be able to resurrect those subjects.
+  const liveDigests = new Set(liveLedger.records.map((record) => record.digest));
+  const lostRecords = importedLedger.records.filter(
+    (record) => !liveDigests.has(record.digest) && liveState.status === "ok",
+  );
+  if (liveState.status === "ok" && lostRecords.length > 0) {
+    throw new Error(
+      `the live deletion ledger lost ${lostRecords.length} record(s) that the backup still has; ` +
+        "refusing to restore — the erasure history is incomplete",
+    );
   }
 
   if (importedLedger.records.length !== liveLedger.records.length) {
@@ -413,6 +436,7 @@ type CliOptions = {
   source: "configured" | "local";
   sourceDir: string;
   targetBucket?: string;
+  targetDir?: string;
 };
 
 function parseArgs(argv: string[]): CliOptions {
@@ -425,8 +449,8 @@ function parseArgs(argv: string[]): CliOptions {
   ) {
     throw new Error(
       "usage: storage-migrate <export|import|verify|backup> [--out <dir>] [--from <dir>] " +
-        "[--source local|u3] [--source-dir <dir>] [--target-bucket <name>] [--allow-overwrite] " +
-        "[--allow-missing-deletion-ledger]",
+        "[--source local|u3] [--source-dir <dir>] [--target-bucket <name>] [--target-dir <dir>] " +
+        "[--allow-overwrite] [--allow-missing-deletion-ledger]",
     );
   }
   let dir: string | undefined;
@@ -436,6 +460,7 @@ function parseArgs(argv: string[]): CliOptions {
   let source: CliOptions["source"] = "configured";
   let sourceDir = resolve(process.cwd(), "data");
   let targetBucket: string | undefined;
+  let targetDir: string | undefined;
 
   for (let index = 1; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -461,6 +486,9 @@ function parseArgs(argv: string[]): CliOptions {
     } else if (arg === "--target-bucket" && value) {
       targetBucket = value;
       index += 1;
+    } else if (arg === "--target-dir" && value) {
+      targetDir = resolve(value);
+      index += 1;
     } else if (arg === "--allow-overwrite") {
       allowOverwrite = true;
     } else if (arg === "--allow-missing-deletion-ledger") {
@@ -479,6 +507,7 @@ function parseArgs(argv: string[]): CliOptions {
     source,
     sourceDir,
     targetBucket,
+    targetDir,
   };
 }
 
@@ -501,7 +530,14 @@ function resolveSourceDriver(options: CliOptions): StorageDriver {
  */
 function resolveTargetDriver(options: CliOptions): StorageDriver {
   if (!options.targetBucket) {
-    throw new Error("--target-bucket <name> is required (the backup target must be explicit)");
+    if (options.targetDir) {
+      // A local target keeps the command executable (and testable) without
+      // bucket credentials.
+      return createLocalFileStorage({ root: options.targetDir });
+    }
+    throw new Error(
+      "--target-bucket <name> (or --target-dir <dir>) is required: the backup target must be explicit so the verification runs against the bucket that was written",
+    );
   }
   const env = process.env;
   const endpoint = env.BACKUP_S3_ENDPOINT ?? env.S3_ENDPOINT ?? env.U3_ENDPOINT;
@@ -548,7 +584,7 @@ async function main(): Promise<void> {
       target: resolveTargetDriver(options),
     });
     console.log(
-      `backed up ${report.exported} object(s) to ${options.targetBucket} (${report.verified} verified, ${report.erasureAdjusted.length} erasure-adjusted)`,
+      `backed up ${report.exported} object(s) to ${options.targetBucket ?? options.targetDir} (${report.verified} verified, ${report.erasureAdjusted.length} erasure-adjusted)`,
     );
     return;
   }

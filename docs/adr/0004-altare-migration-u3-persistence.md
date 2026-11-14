@@ -140,16 +140,28 @@ The lease object (`locks/instance.json`) carries a monotonically increasing
 
 ### 5. Migration tooling
 
-`bun run storage:migrate -- <export|import|verify>`:
+`bun run storage:migrate -- <export|import|verify|backup>`:
 
 - `export` — writes a manifest (per-file size + sha256 + record counts)
-  and a copy of every file from a local `data/` root.
+  and a copy of every file. The source is selectable: the **configured
+  backend** by default (`--source u3` / the environment), or the old
+  host's local directory with `--source local --source-dir <dir>`. An
+  export that could only read the local directory could not produce the
+  daily backup of a bucket.
 - `import` — uploads the exported files into a target backend, verifying
   each sha256 after the write; refuses to overwrite existing objects
   unless `--allow-overwrite` is passed.
 - `verify` — compares two backends file-by-file (size + sha256) and
   reports counts, so the cutover can assert "same data" rather than
-  "upload succeeded".
+  "upload succeeded". The comparison is **erasure aware**: an object
+  that differs from the backup only because a recorded deletion was
+  re-applied is verified against the state the erasure must produce, not
+  reported as a checksum mismatch.
+- `backup` — copies the configured bucket into an explicitly named
+  `--target-bucket` and verifies **that** bucket. One command, so the
+  verification can never run against a different bucket than the one
+  that was written, and the copy overwrites the previous one so the
+  command is repeatable.
 
 The old host's `data/` is never deleted by these tools.
 
@@ -181,22 +193,32 @@ would resurrect data the user asked to forget.
   is append-only; a restore must never roll the erasure history back) and
   then re-applies the recorded erasures to the restored objects.
 - The bot-side `/privacy delete` outcome does not depend on the ledger:
-  the deletion itself already happened, a ledger failure is logged loudly
-  but never reported as a deletion failure.
+  the deletion itself already happened. The report states whether the
+  deletion was **recorded** in the ledger or the ledger was
+  **unavailable** — an unavailable ledger is never presented as a
+  recorded erasure.
+- The ledger append is a **compare-and-swap**, so two concurrent
+  deletions cannot lose one another's record.
+- A **corrupt** ledger is reported as corrupt; it is never read as "no
+  deletions happened". A restore aborts when the live ledger is damaged.
+- A **missing ledger key** makes the restore refuse (fail closed) unless
+  the operator passes an explicit override; the erased state cannot be
+  evaluated without the key, so it must not be assumed.
 
 ### 6c. Backup and restore are proven, not described
 
 The backup procedure is the tooling itself, so it can be rehearsed:
 
-1. export the primary bucket → `storage:migrate -- export`
-2. import that export into the backup bucket (`S3_BUCKET=<backup>`) →
-   `storage:migrate -- import`
-3. restore drill: export the backup bucket and import it into an empty
-   bucket → `storage:migrate -- verify` must report zero missing and
-   zero mismatched objects.
+1. `storage:migrate -- backup --target-bucket <backup-bucket> --out <dir>`
+   copies the configured bucket into the backup bucket **and verifies the
+   backup bucket it just wrote**. The target bucket is explicit, so the
+   verification cannot run against the wrong bucket; the copy overwrites
+   the previous one, so a daily backup is repeatable.
+2. restore drill: export the backup bucket, import it into an empty
+   bucket and verify → zero missing and zero mismatched objects.
 
-The drill is a regression test (`tests/storage-backup-restore.test.ts`),
-not a manual checklist item.
+The drill is a regression test (`tests/storage-backup-restore.test.ts`,
+`tests/storage-tooling-review.test.ts`), not a manual checklist item.
 
 ### 7. Altare runtime configuration (documented, not implied)
 
@@ -280,6 +302,19 @@ the implementation and fixed:
 | Backup procedure was not executable / no restore proof | prose only | export → import → verify is the procedure; a restore drill is a regression test, and the deletion ledger keeps old backups from resurrecting deleted data |
 
 The evidence is recorded in PR #122.
+
+### 9.1 Second review round
+
+A second review of the same branch raised five more findings. All five
+were reproduced and fixed:
+
+| Finding | Root cause | Fix |
+| --- | --- | --- |
+| The U3 export was pinned to the local directory | `export` always read `data/` on the local filesystem, so "export the primary bucket" was impossible — and the documented backup procedure was wrong | The export source is selectable (`--source local|u3`, default: the configured backend); the daily backup is the `backup` command |
+| The daily backup failed from the second run and could verify the wrong bucket | The import refused to overwrite, and the verification followed the ambient `S3_BUCKET` | `backup --target-bucket <name>` copies and verifies the same bucket in one command and overwrites the previous copy |
+| The lease did not verify ownership after acquiring | The token was taken from the read-back without checking that the stored term was ours | The acquisition verifies holder, epoch and token and refuses the term otherwise |
+| The capability probe only covered the create path | `If-None-Match` was probed, `If-Match` (the renewal path) was not | The probe checks both conditional paths; a create-only backend is rejected |
+| The deletion ledger lost, hid and ignored records | The append was a read-modify-write, a corrupt ledger read as empty, and a missing key only warned | The append is a compare-and-swap, a corrupt ledger is reported and aborts a restore, and a restore without the key is refused |
 
 ## References
 

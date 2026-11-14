@@ -24,8 +24,12 @@ object `consent.json`, `data/anon-audit/<file>` becomes
 ## 1. Inventory (before the move)
 
 ```sh
-bun run storage:migrate -- export --out ./migration-export
+bun run storage:migrate -- export --source local --source-dir ./data --out ./migration-export
 ```
+
+`--source local` reads the old host's `data/` directory. Without it the
+export reads the **configured backend** — that is what the daily backup
+of a bucket needs.
 
 The export contains every object of the local `data/` directory plus
 `manifest.json` (per-object size + sha256). Keep the export directory:
@@ -141,10 +145,12 @@ The old bot is stopped, so no further writes happen. Export the final
 state and import it into the bucket:
 
 ```sh
-# old host
-bun run storage:migrate -- export --out ./migration-final
+# old host — the data still lives on the local disk
+bun run storage:migrate -- export --source local --source-dir ./data --out ./migration-final
+
 export STORAGE_BACKEND=u3 S3_ENDPOINT=... S3_REGION=... S3_BUCKET=ido-bata-bot \
        AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+export DELETION_LEDGER_KEY=...          # required: the restore refuses without it
 bun run storage:migrate -- import --from ./migration-final
 bun run storage:migrate -- verify --from ./migration-final
 ```
@@ -213,38 +219,42 @@ an orchestrator.
 
 ## 7. Backup and restore
 
-### 7.1 The procedure (the tooling, not a checklist)
+### 7.1 The procedure (one command, repeatable)
 
 The primary bucket is the source of truth. A backup is a copy of it in a
 second bucket:
 
 ```sh
-# 1. export the primary bucket
-export S3_BUCKET=ido-bata-bot
-bun run storage:migrate -- export --out ./backup-$(date +%F)
+export S3_BUCKET=ido-bata-bot                 # the bucket to copy FROM
+export BACKUP_AWS_ACCESS_KEY_ID=...          # the backup bucket has its own key
+export BACKUP_AWS_SECRET_ACCESS_KEY=...
+export DELETION_LEDGER_KEY=...               # required: the restore refuses without it
 
-# 2. import that export into the backup bucket
-export S3_BUCKET=ido-bata-bot-backup
-bun run storage:migrate -- import --from ./backup-$(date +%F)
-
-# 3. verify the backup bucket against the export
-bun run storage:migrate -- verify --from ./backup-$(date +%F)
+bun run storage:migrate -- backup \
+  --target-bucket ido-bata-bot-backup \
+  --out ./backups/$(date +%F-%H%M)
 ```
 
-Step 3 must report zero missing and zero mismatched objects.
+The command copies the primary bucket into `--target-bucket` **and
+verifies that same bucket** — the verification cannot drift to another
+bucket because the target is part of the command. The copy overwrites the
+previous one, so a daily backup is repeatable; only the export directory
+has to be new (`--out` with a timestamp).
 
-Schedule steps 1–3 with cron on a host that holds the bucket credentials:
+U3 access keys are scoped per bucket, so the backup bucket needs its own
+key (`BACKUP_AWS_ACCESS_KEY_ID` / `BACKUP_AWS_SECRET_ACCESS_KEY`).
+
+Schedule it with cron on a host that holds the credentials:
 
 ```cron
-# 03:17 daily — backup the primary bucket and verify the copy
+# 03:17 daily — copy the primary bucket into the backup bucket and verify
 17 3 * * * cd /srv/ido-bata && set -a && . /srv/ido-bata/backup.env && set +a && \
-  bun run storage:migrate -- export --out ./backups/$(date +\%F) && \
-  S3_BUCKET=ido-bata-bot-backup bun run storage:migrate -- import --from ./backups/$(date +\%F) && \
-  bun run storage:migrate -- verify --from ./backups/$(date +\%F)
+  bun run storage:migrate -- backup --target-bucket ido-bata-bot-backup \
+  --out ./backups/$(date +\%F-\%H\%M)
 ```
 
-`backup.env` holds the bucket credentials (chmod 600, owned by the bot
-user). The job must fail loudly: a backup that cannot be verified is not a
+`backup.env` holds the credentials (chmod 600, owned by the bot user).
+The job must fail loudly: a backup that cannot be verified is not a
 backup.
 
 ### 7.2 Restore drill (run it before you need it)
@@ -261,14 +271,18 @@ bun run storage:migrate -- verify --from ./restore-drill
 ```
 
 The same drill runs as a regression test
-(`tests/storage-backup-restore.test.ts`), but the *real* bucket must be
-drilled once — the mock only proves the code path, not the backend.
+(`tests/storage-backup-restore.test.ts`, `tests/storage-tooling-review.test.ts`),
+but the *real* bucket must be drilled once — the mock only proves the
+code path, not the backend.
 
 ### 7.3 Restoring over a live store
 
 A restore writes the objects of the export into the target bucket. The
 deletion ledger is **merged**, never replaced (§7.4), and the recorded
-erasures are re-applied to the restored objects.
+erasures are re-applied to the restored objects. The verification then
+compares the **post-erasure** state: an object that differs from the
+backup only because a deletion was re-applied is reported as correct, not
+as a checksum mismatch.
 
 ### 7.4 The deletion ledger
 
@@ -277,8 +291,11 @@ holds an HMAC-SHA256 digest of the subject id, not the id itself.
 
 - `DELETION_LEDGER_KEY` must be configured **before** the first
   `/privacy delete`, and the key must be kept in the secret manager.
-- Without the key the ledger stays empty: a restore of an old backup can
-  resurrect deleted data. The tool prints a warning in that case.
+- Without the key the restore **refuses** (`DELETION_LEDGER_KEY is not
+  configured; refusing to restore data that may contain deleted
+  subjects`). `--allow-missing-deletion-ledger` overrides it explicitly.
+- A **corrupt** ledger aborts the restore; it is never read as "no
+  deletions happened".
 - With the key, a restore re-applies every recorded erasure, so the
   deleted subject does not come back even from an old backup.
 
@@ -296,8 +313,8 @@ bun run restore:state -- --snapshot snapshots/20260401-030000.snap.enc
 | Task | Command / place |
 | --- | --- |
 | Inspect the bucket | Altare console → Storage → U3 → your bucket |
-| Export a backup | `bun run storage:migrate -- export --out ./backup-$(date +%F)` |
-| Verify the bucket | `bun run storage:migrate -- verify --from ./backup-$(date +%F)` |
+| Export a bucket | `bun run storage:migrate -- export --out ./export-<stamp>` |
+| Verify a bucket | `bun run storage:migrate -- verify --from ./export-<stamp>` |
 | Audit-key custodian lookup | `bun run anon:audit:lookup -- --key-file <private.pem> --dir anon-audit --message <id>` |
 | Audit-key custodian delete | `bun run anon:audit:delete -- --key-file <private.pem> --dir anon-audit --user <id>` |
 | Restore a state snapshot | `bun run restore:state -- --snapshot <key>` |
@@ -321,10 +338,14 @@ credentials in the environment.
 - **Region pinning**: U3 buckets are pinned to a region; the app and the
   bucket should live in the same region to keep the round-trip short.
 - **A mock is not a proof of the backend**: the contract tests run against
-  an in-process S3-compatible mock. The exclusivity of the lease against
-  the *real* bucket must be shown by the drill in §7.2 and by the startup
-  probe — the bot refuses to start when the real backend does not enforce
-  conditional writes.
+  an in-process S3-compatible mock. Two things must be kept apart:
+  - *"the bot started"* proves only that the configuration is readable and
+    the probe passed. It does **not** prove exclusivity.
+  - *"exclusivity holds"* is shown by the startup probe
+    (`probeConditionalWrites` — a backend that does not enforce
+    conditional writes makes the bot refuse to start) **and** by the
+    drill in §7.2 against the real bucket. Both are environment-dependent
+    and are not covered by this repository's tests.
 - **Always Free limits**: 10 GB storage, 5 buckets, 3 million reads and
   300 000 writes per month for KV (unused by the bot), 4 servers per team.
   The bot's write volume (a grant, an attendance day, an audit record) is

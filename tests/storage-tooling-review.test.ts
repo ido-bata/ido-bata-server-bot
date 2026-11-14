@@ -217,6 +217,95 @@ describe("storage tooling: export source, repeatable backup, ledger safety", () 
     expect(state.status).toBe("missing");
   });
 
+  it("refuses to restore when the live ledger lost records the backup still has", async () => {
+    const subjectId = "user-lost-record";
+    const dir = join(workDir, "export-with-ledger");
+    mkdirSync(dir, { recursive: true });
+    const seed = mkdtempSync(join(tmpdir(), "storage-review-ledger-seed-"));
+    try {
+      writeFileSync(
+        join(seed, "timekeeper-history.json"),
+        JSON.stringify({ [subjectId]: ["2026-11-01"] }),
+        "utf8",
+      );
+      await exportStorage({ outDir: dir, source: createLocalFileStorage({ root: seed }) });
+    } finally {
+      rmSync(seed, { recursive: true, force: true });
+    }
+
+    // The backup carries the ledger with one record …
+    const backupTarget = createLocalFileStorage({
+      root: mkdtempSync(join(tmpdir(), "storage-review-ledger-backup-")),
+    });
+    await appendDeletionRecord(backupTarget, {
+      at: "2026-11-02T00:00:00.000Z",
+      complete: true,
+      digest: digestSubjectId(subjectId, LEDGER_KEY),
+    });
+    const backupExport = join(workDir, "export-with-ledger-copy");
+    mkdirSync(backupExport, { recursive: true });
+    await exportStorage({ outDir: backupExport, source: backupTarget });
+
+    // … while the live store lost it (the ledger object was truncated).
+    const live = createLocalFileStorage({
+      root: mkdtempSync(join(tmpdir(), "storage-review-ledger-live-")),
+    });
+    await live.write(
+      DELETION_LEDGER_KEY,
+      JSON.stringify({
+        records: [
+          {
+            at: "2026-11-03T00:00:00.000Z",
+            complete: true,
+            digest: digestSubjectId("another-user", LEDGER_KEY),
+          },
+        ],
+        schemaVersion: 1,
+      }),
+    );
+
+    await expect(
+      importStorage({ allowOverwrite: true, dir: backupExport, target: live }),
+    ).rejects.toThrow(/lost 1 record/);
+  });
+
+  it("restores a ledger that disappeared from the live store", async () => {
+    const dir = join(workDir, "export-ledger-present");
+    mkdirSync(dir, { recursive: true });
+    const seed = mkdtempSync(join(tmpdir(), "storage-review-ledger-present-"));
+    try {
+      writeFileSync(join(seed, "timekeeper-history.json"), "{}", "utf8");
+      await exportStorage({ outDir: dir, source: createLocalFileStorage({ root: seed }) });
+      const withLedger = createLocalFileStorage({
+        root: mkdtempSync(join(tmpdir(), "storage-review-ledger-present-backup-")),
+      });
+      await appendDeletionRecord(withLedger, {
+        at: "2026-11-02T00:00:00.000Z",
+        complete: true,
+        digest: digestSubjectId("user-x", LEDGER_KEY),
+      });
+      const exportDir = join(workDir, "export-ledger-present-copy");
+      mkdirSync(exportDir, { recursive: true });
+      await exportStorage({ outDir: exportDir, source: withLedger });
+
+      // The live store has no ledger at all — the backup carries it.
+      const live = createLocalFileStorage({
+        root: mkdtempSync(join(tmpdir(), "storage-review-ledger-absent-")),
+      });
+      const report = await importStorage({ allowOverwrite: true, dir: exportDir, target: live });
+      expect(report.ledgerStatus).toBe("missing");
+
+      const state = await readDeletionLedgerState(live);
+      expect(state.status).toBe("ok");
+      if (state.status === "ok") {
+        expect(state.ledger.records.length).toBeGreaterThan(0);
+      }
+      void dir;
+    } finally {
+      rmSync(seed, { recursive: true, force: true });
+    }
+  });
+
   it("verifies the post-erasure state instead of the raw backup bytes", async () => {
     const subjectId = "user-erased-99";
     const dir = join(workDir, "export-erased");
