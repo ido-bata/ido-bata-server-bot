@@ -246,7 +246,13 @@ previous one, so a daily backup is repeatable; only the export directory
 has to be new (`--out` with a timestamp).
 
 U3 access keys are scoped per bucket, so the backup bucket needs its own
-key (`BACKUP_AWS_ACCESS_KEY_ID` / `BACKUP_AWS_SECRET_ACCESS_KEY`).
+key (`BACKUP_AWS_ACCESS_KEY_ID` / `BACKUP_AWS_SECRET_ACCESS_KEY`). On
+Altare attach it with a dedicated prefix so the primary key is untouched:
+
+```sh
+altr u3 attach ido-bata-bot-backup "<app>" --prefix BACKUP_AWS
+# injects BACKUP_AWS_ENDPOINT / _REGION / _BUCKET / _ACCESS_KEY_ID / _SECRET_ACCESS_KEY
+```
 
 Schedule it with cron on a host that holds the credentials:
 
