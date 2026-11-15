@@ -345,9 +345,13 @@ single Lua script, so exclusivity is real, not probed-and-hoped.
 - Verified live: a second `acquireInstanceLease` on the same key is
   refused with `LeaseConflictError`, and a released term is re-acquirable
   with a bumped epoch.
-- Corruption fails closed: a present-but-unparseable envelope throws
-  (it never reads as "missing"), and compare-and-swap refuses to
-  overwrite it — a damaged lease term cannot be silently replaced.
+- Corruption fails closed at both layers: a present-but-unparseable
+  envelope throws (it never reads as "missing"), the Lua scripts only
+  trust values matching the full envelope shape — a JSON document that
+  merely contains `"v":` cannot donate its version — and compare-and-swap
+  refuses to overwrite either kind of damage. A stored object whose
+  payload is not a lease raises `LeaseCorruptError` instead of being
+  reset to epoch 1, so a damaged term cannot be silently replaced.
 - Every lease-startup failure — bad backend config, probe error,
   unsupported conditional writes, conflict past the retry deadline —
   routes through `LEASE_REFUSED` and exits non-zero. No path leaves a

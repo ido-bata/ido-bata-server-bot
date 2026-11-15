@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -146,11 +146,22 @@ describeContract("u3 (s3-compatible)", async () => {
 // deployment is verified by the runbook drill instead.
 const valkeyTestUrl = process.env.VALKEY_TEST_URL;
 if (valkeyTestUrl) {
+  // Real Altare Valkey serves a self-signed certificate: point the test at
+  // the instance CA the same way production does (VALKEY_TLS_CA_FILE, or
+  // VALKEY_TLS_CA with literal \n escapes).
+  const valkeyTlsCaFile = process.env.VALKEY_TLS_CA_FILE;
+  const valkeyTlsCa = process.env.VALKEY_TLS_CA;
+  const tlsOptions = valkeyTlsCaFile
+    ? { tlsCa: readFileSync(valkeyTlsCaFile, "utf8") }
+    : valkeyTlsCa
+      ? { tlsCa: valkeyTlsCa.replace(/\\n/g, "\n") }
+      : {};
   describeContract("valkey (real instance)", async () => {
     const { createValkeyStorage } = await import("../src/lib/storage/valkey.js");
     return createValkeyStorage({
       prefix: `contract-${Date.now()}-`,
       url: valkeyTestUrl,
+      ...tlsOptions,
     });
   });
 
@@ -161,8 +172,11 @@ if (valkeyTestUrl) {
       const { createValkeyStorage } = await import("../src/lib/storage/valkey.js");
       const { createClient } = await import("redis");
       const prefix = `corrupt-${Date.now()}-`;
-      const driver = createValkeyStorage({ prefix, url: valkeyTestUrl });
-      const client = createClient({ url: valkeyTestUrl });
+      const driver = createValkeyStorage({ prefix, url: valkeyTestUrl, ...tlsOptions });
+      const client = createClient({
+        url: valkeyTestUrl,
+        socket: tlsOptions.tlsCa ? { ca: tlsOptions.tlsCa, tls: true } : undefined,
+      });
       await client.connect();
       try {
         await client.set(`${prefix}bad.json`, "not-an-envelope");

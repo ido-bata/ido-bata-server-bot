@@ -211,10 +211,17 @@ create it once and attach it to the app (`altr valkey create`, then
 `altr valkey attach <instance> "<app>"`, which injects `REDIS_URL` and
 redeploys). The instance's `rediss://` endpoint serves a self-signed
 certificate: download it from the instance page ("Download certificate")
-and set `VALKEY_TLS_CA` (PEM inline, `
-` escapes allowed) so chain and
-hostname verification stay enabled. `VALKEY_TLS_INSECURE=true` is the
-explicit last-resort opt-out; without a CA the connection fails closed:
+and set `VALKEY_TLS_CA` (PEM inline, `\n` escapes allowed) or
+`VALKEY_TLS_CA_FILE` so chain and hostname verification stay enabled.
+`VALKEY_TLS_INSECURE=true` is the explicit last-resort opt-out; without
+a CA the connection fails closed. For the lease backend use the
+`LEASE_VALKEY_TLS_*` overrides. The same variables let the contract
+suite run against the real instance:
+
+```bash
+VALKEY_TEST_URL=<rediss://…> VALKEY_TLS_CA_FILE=<instance-ca.pem> \
+  bun run test -- tests/storage-contract.test.ts
+```
 
 ```text
 the storage backend does not support conditional writes; the instance lease cannot be exclusive
