@@ -1,16 +1,6 @@
-import { randomBytes } from "node:crypto";
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname } from "node:path";
-
+import { getStorageDriver } from "../../lib/storage/index.js";
+import { STORAGE_KEYS } from "../../lib/storage/keys.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
 import type { CalendarCache, CalendarEvent, SourceCalendarEntry } from "./types.js";
 
 const cacheSchemaShape = {
@@ -40,12 +30,15 @@ function isSourceEntry(value: unknown): value is SourceCalendarEntry {
   );
 }
 
-export function loadCache(cachePath: string): CalendarCache {
-  if (!existsSync(cachePath)) {
-    return { sources: [] };
-  }
+export async function loadCache(
+  driver: StorageDriver = getStorageDriver(),
+  key: string = STORAGE_KEYS.calendarCache,
+): Promise<CalendarCache> {
   try {
-    const raw = readFileSync(cachePath, "utf8");
+    const raw = await driver.readText(key);
+    if (raw === null) {
+      return { sources: [] };
+    }
     const parsed: unknown = JSON.parse(raw);
     if (!isCalendarCache(parsed)) {
       return { sources: [] };
@@ -56,28 +49,14 @@ export function loadCache(cachePath: string): CalendarCache {
   }
 }
 
-export function saveCache(cachePath: string, cache: CalendarCache): void {
-  const dir = dirname(cachePath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  // Write atomically: serialise to a uniquely-named temp file via O_EXCL, then rename
-  // it onto the final path. This avoids symlink TOCTOU attacks even when cachePath lives
-  // in a shared directory such as /tmp.
-  const payload = `${JSON.stringify(cache, null, 2)}\n`;
-  const tempPath = `${cachePath}.${randomBytes(8).toString("hex")}.tmp`;
-  const fd = openSync(tempPath, "wx", 0o600);
-  try {
-    writeFileSync(fd, payload, "utf8");
-  } finally {
-    closeSync(fd);
-  }
-  try {
-    renameSync(tempPath, cachePath);
-  } catch (error) {
-    rmSync(tempPath, { force: true });
-    throw error;
-  }
+export async function saveCache(
+  cache: CalendarCache,
+  driver: StorageDriver = getStorageDriver(),
+  key: string = STORAGE_KEYS.calendarCache,
+): Promise<void> {
+  // The storage backend publishes the new object atomically, so a reader
+  // never observes a half-written cache.
+  await driver.write(key, `${JSON.stringify(cache, null, 2)}\n`);
 }
 
 export function upsertSourceEntry(cache: CalendarCache, entry: SourceCalendarEntry): CalendarCache {

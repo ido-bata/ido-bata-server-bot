@@ -1,6 +1,5 @@
 export { type Bootstrap, type BootstrapOptions, bootstrapMultiGuild } from "./bootstrap.js";
 export {
-  buildGuildConfigPath,
   createDefaultGuildConfig,
   type GuildConfig,
   guildConfigSchema,
@@ -23,6 +22,6 @@ export {
 } from "./registry.js";
 export {
   type ConfigStore,
-  createFileConfigStore,
-  type FileSystemLike,
+  type ConfigStoreOptions,
+  createConfigStore,
 } from "./store.js";

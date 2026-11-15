@@ -11,14 +11,49 @@
  * cannot selectively remove audit records on the bot; deletion is an
  * offline custodian operation (`src/scripts/anon-audit-delete.ts`).
  */
-import { constants, createPrivateKey, createPublicKey, publicEncrypt } from "node:crypto";
+import {
+  constants,
+  createPrivateKey,
+  createPublicKey,
+  publicEncrypt,
+  randomBytes,
+} from "node:crypto";
 
-export type AnonAuditPlaintext = {
+/**
+ * Sealed payload written BEFORE the public send (ADR-0003 §3). The
+ * `attemptId` links this record to the later `posted` record; it is
+ * random and never derived from the user id.
+ */
+export type AnonAuditAttemptPlaintext = {
+  v: 2;
+  kind: "attempt";
+  attemptId: string;
   userId: string;
   guildId: string;
   channelId: string;
   postedAt: string;
 };
+
+/**
+ * Sealed payload written AFTER a successful send, carrying the real
+ * Discord `messageId`. Self-contained: `messageId → userId` is
+ * decodable from this record alone (ADR-0003 §3).
+ */
+export type AnonAuditPostedPlaintext = {
+  v: 2;
+  kind: "posted";
+  attemptId: string;
+  messageId: string;
+  userId: string;
+  guildId: string;
+  channelId: string;
+  postedAt: string;
+};
+
+/** Random per-attempt correlation id — never user-derived. */
+export function newAnonAttemptId(): string {
+  return randomBytes(16).toString("hex");
+}
 
 /**
  * Build a sealing function from PEM or base64/base64url SPKI material.

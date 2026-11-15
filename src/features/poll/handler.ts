@@ -5,10 +5,12 @@ import { Events } from "discord.js";
 import type { ConsentScope } from "../../consent/scopes.js";
 import type { ConsentService } from "../../consent/service.js";
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
+import { getStorageDriver } from "../../lib/storage/index.js";
+import { STORAGE_KEYS } from "../../lib/storage/keys.js";
 import { applyVote, buildTallyRows, clearVote } from "./aggregate.js";
 import { buildPollEmbed, buildPollMessageComponents, parsePollButtonCustomId } from "./build.js";
 import {
-  createFilePollStore,
+  createPollStore,
   findPollByMessageId,
   type Poll,
   type PollStateFile,
@@ -88,8 +90,8 @@ export type PollHandlerDependencies = {
 
 export type PollHandler = {
   store: PollStore;
-  loadState: () => PollStateFile;
-  saveState: (state: PollStateFile) => void;
+  loadState: () => Promise<PollStateFile>;
+  saveState: (state: PollStateFile) => Promise<void>;
   handleInteraction: (interaction: unknown) => Promise<void>;
 };
 
@@ -107,7 +109,12 @@ export function toPollConsentAuthorization(service: ConsentService): PollConsent
 }
 
 export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandler {
-  const store = deps.store ?? createFilePollStore("data/polls.json");
+  const store =
+    deps.store ??
+    createPollStore({
+      driver: getStorageDriver(),
+      key: STORAGE_KEYS.polls,
+    });
   const now = deps.now ?? (() => new Date().toISOString());
   const generateId = deps.generateId ?? (() => randomUUID());
   const fetchPollMessage = deps.fetchPollMessage;
@@ -140,12 +147,12 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
     return false;
   }
 
-  function loadState(): PollStateFile {
+  async function loadState(): Promise<PollStateFile> {
     return store.load();
   }
 
-  function saveState(state: PollStateFile): void {
-    store.save(state);
+  async function saveState(state: PollStateFile): Promise<void> {
+    await store.save(state);
   }
 
   async function handleCreate(interaction: PollInteractionLike): Promise<void> {
@@ -176,7 +183,7 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
       return;
     }
 
-    const state = loadState();
+    const state = await loadState();
     const id = generateId();
     const poll: Poll = {
       id,
@@ -197,7 +204,7 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
     });
 
     const finalPoll: Poll = { ...poll, messageId: sent.id };
-    saveState(upsertPoll(state, finalPoll));
+    await saveState(upsertPoll(state, finalPoll));
 
     await interaction.reply({
       content: "Poll を作成しました。",
@@ -213,7 +220,7 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
       return;
     }
 
-    const state = loadState();
+    const state = await loadState();
     const poll = findPollByMessageId(state, messageId);
 
     if (!poll) {
@@ -235,7 +242,7 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
     }
 
     const closed: Poll = { ...poll, closed: true, closedAt: now() };
-    saveState(upsertPoll(state, closed));
+    await saveState(upsertPoll(state, closed));
 
     // Chat-input commands do not carry `interaction.message`, so resolve the
     // Poll's saved channel/message via the DI seam and edit it directly. If
@@ -267,7 +274,7 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
       return;
     }
 
-    const state = loadState();
+    const state = await loadState();
     const poll = state.polls.find((entry) => entry.id === pollId);
 
     if (!poll) {
@@ -297,7 +304,7 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
       return;
     }
 
-    saveState(upsertPoll(state, result.next));
+    await saveState(upsertPoll(state, result.next));
 
     // ButtonInteraction.message is non-null in real discord.js; the guard
     // defends against malformed mocks and the type-narrowed optional.
@@ -334,7 +341,7 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
       return;
     }
 
-    const state = loadState();
+    const state = await loadState();
     const poll = state.polls.find((entry) => entry.id === pollId);
 
     if (!poll) {
@@ -354,7 +361,7 @@ export function createPollHandler(deps: PollHandlerDependencies = {}): PollHandl
       return;
     }
 
-    saveState(upsertPoll(state, result.next));
+    await saveState(upsertPoll(state, result.next));
 
     // ButtonInteraction.message is non-null in real discord.js; the guard
     // defends against malformed mocks and the type-narrowed optional.

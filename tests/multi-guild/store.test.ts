@@ -1,17 +1,27 @@
 import { describe, expect, it } from "vitest";
 
-import { createFileConfigStore } from "../../src/features/multi-guild/store.js";
-import { createMemoryFs } from "./memory-fs.js";
+import { createConfigStore } from "../../src/features/multi-guild/store.js";
+import { createMemoryDriver } from "./memory-driver.js";
 
-describe("multi-guild file store", () => {
+describe("multi-guild storage store", () => {
+  it("stores a guild config under a sanitized key", async () => {
+    const driver = createMemoryDriver();
+    const store = createConfigStore({ driver });
+
+    await store.saveGuild({ guildId: "abc/../def", reactionRoles: [], customEmojis: [] });
+
+    // Path-unsafe characters in the guild id are collapsed to underscores
+    // so the key can never escape the `guilds/` prefix.
+    expect([...driver.files.keys()]).toEqual(["guilds/abc____def/config.json"]);
+  });
+
   it("returns null when a guild config does not exist", async () => {
-    const store = createFileConfigStore({ dataRoot: "data", fs: createMemoryFs() });
+    const store = createConfigStore({ driver: createMemoryDriver() });
     expect(await store.loadGuildIfExists("missing")).toBeNull();
   });
 
   it("persists and reloads a guild config", async () => {
-    const fs = createMemoryFs();
-    const store = createFileConfigStore({ dataRoot: "data", fs });
+    const store = createConfigStore({ driver: createMemoryDriver() });
 
     await store.saveGuild({
       guildId: "g1",
@@ -25,8 +35,7 @@ describe("multi-guild file store", () => {
   });
 
   it("ensureGuild writes a default the first time and returns it", async () => {
-    const fs = createMemoryFs();
-    const store = createFileConfigStore({ dataRoot: "data", fs });
+    const store = createConfigStore({ driver: createMemoryDriver() });
 
     const fresh = await store.ensureGuild("g2");
     expect(fresh.guildId).toBe("g2");
@@ -37,8 +46,7 @@ describe("multi-guild file store", () => {
   });
 
   it("lists guild ids with persisted configs", async () => {
-    const fs = createMemoryFs();
-    const store = createFileConfigStore({ dataRoot: "data", fs });
+    const store = createConfigStore({ driver: createMemoryDriver() });
 
     await store.ensureGuild("g1");
     await store.ensureGuild("g2");
@@ -48,8 +56,7 @@ describe("multi-guild file store", () => {
   });
 
   it("rejects saving a config without a guildId", async () => {
-    const fs = createMemoryFs();
-    const store = createFileConfigStore({ dataRoot: "data", fs });
+    const store = createConfigStore({ driver: createMemoryDriver() });
     await expect(
       store.saveGuild({
         guildId: "",
@@ -60,8 +67,7 @@ describe("multi-guild file store", () => {
   });
 
   it("isolates configs across guilds", async () => {
-    const fs = createMemoryFs();
-    const store = createFileConfigStore({ dataRoot: "data", fs });
+    const store = createConfigStore({ driver: createMemoryDriver() });
 
     await store.saveGuild({
       guildId: "gA",

@@ -3,19 +3,22 @@
  *
  * All values come from env vars read once at boot in `src/index.ts`.
  *
- * Audit modes (ADR-0003 §3):
- *   - `ANON_AUDIT_PUBLIC_KEY` unset → `audit: null` — explicit
- *     ephemeral mode; `/anon` stores nothing.
+ * Audit is MANDATORY (Issue #118, ADR-0003 §3): there is no unlogged
+ * posting mode.
+ *   - `ANON_AUDIT_PUBLIC_KEY` unset → `audit: null` — the service
+ *     reports `auditState: "disabled"` and refuses every post.
  *   - `ANON_AUDIT_PUBLIC_KEY` set → audit configured. If the key
  *     material is invalid the service reports `auditState: "error"`
  *     and refuses to post — a configured audit must never silently
- *     degrade to unlogged anonymous posts.
+ *     degrade.
  */
 
 export type AnonAuditConfig = {
   /** PEM (`-----BEGIN PUBLIC KEY-----`) or base64/base64url SPKI DER. */
   publicKey: string;
-  /** Directory holding per-record `<UTC-ts>-<rand>.jsonl` audit files. */
+  /** Key id written into each record envelope; bump on rotation. */
+  keyId: string;
+  /** Storage key prefix holding the per-record audit files. */
   dir: string;
   /** Record files older than this many days are swept. */
   retentionDays: number;
@@ -28,23 +31,36 @@ export type AnonymousChatConfig = {
   cooldownMs: number;
   /** Maximum trimmed message length accepted by `/anon`. */
   maxMessageLength: number;
-  /** Audit persistence config, or null for ephemeral-only mode. */
+  /** Audit persistence config, or null when no public key is set. */
   audit: AnonAuditConfig | null;
 };
 
 const DEFAULT_COOLDOWN_SECONDS = 30;
 const DEFAULT_MAX_MESSAGE_LENGTH = 1000;
-const DEFAULT_AUDIT_DIR = "data/anon-audit";
+const DEFAULT_AUDIT_DIR = "anon-audit";
 const DEFAULT_AUDIT_RETENTION_DAYS = 90;
+const DEFAULT_AUDIT_KEY_ID = "v1";
 
 /**
- * Resolve the audit directory from raw env input — trim, and fall
- * back to the default for missing/blank values. Shared by the writer
- * config and the privacy consumer so both always inspect the same
- * directory the writer uses.
+ * Resolve the audit storage prefix from raw env input.
+ *
+ * The records live in the storage backend (ADR-0004): the local
+ * `data/anon-audit` directory on a single host, the `anon-audit/`
+ * prefix inside the U3 bucket on Altare. A legacy `data/anon-audit`
+ * value is normalised to the storage prefix so an existing operator
+ * setting keeps pointing at the same records.
  */
 export function resolveAnonAuditDir(raw: string | undefined): string {
-  return raw?.trim() || DEFAULT_AUDIT_DIR;
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return DEFAULT_AUDIT_DIR;
+  }
+  const normalized = trimmed
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/^data\//, "")
+    .replace(/\/+$/, "");
+  return normalized || DEFAULT_AUDIT_DIR;
 }
 
 export type AnonConfigEnv = {
@@ -52,6 +68,7 @@ export type AnonConfigEnv = {
   ANON_COOLDOWN_SECONDS?: string;
   ANON_MAX_MESSAGE_LENGTH?: string;
   ANON_AUDIT_PUBLIC_KEY?: string;
+  ANON_AUDIT_KEY_ID?: string;
   /** Deprecated: the HMAC lookup index was removed (ADR-0003 §3). */
   ANON_AUDIT_INDEX_KEY?: string;
   ANON_AUDIT_DIR?: string;
@@ -85,12 +102,21 @@ function resolveAudit(env: AnonConfigEnv): { audit: AnonAuditConfig | null; warn
   const publicKey = env.ANON_AUDIT_PUBLIC_KEY?.trim() ?? "";
 
   if (!publicKey) {
-    return { audit: null };
+    // Audit is mandatory (Issue #118): an unset key does not mean
+    // "ephemeral mode", it means /anon refuses every post. Warn at
+    // boot so a missing key is an visible ops gap, not a silent
+    // feature outage.
+    return {
+      audit: null,
+      warning:
+        "anonymous-chat: ANON_AUDIT_PUBLIC_KEY is not set; /anon will refuse all posts (audit is required)",
+    };
   }
 
   return {
     audit: {
       publicKey,
+      keyId: env.ANON_AUDIT_KEY_ID?.trim() || DEFAULT_AUDIT_KEY_ID,
       dir: resolveAnonAuditDir(env.ANON_AUDIT_DIR),
       retentionDays: parsePositiveInt(env.ANON_AUDIT_RETENTION_DAYS, DEFAULT_AUDIT_RETENTION_DAYS),
     },

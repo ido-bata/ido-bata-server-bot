@@ -1,5 +1,4 @@
-import { existsSync, unlinkSync } from "node:fs";
-
+import type { StorageDriver } from "../../lib/storage/types.js";
 import type { SnapshotMetadata } from "./snapshot.js";
 
 export type RetentionPolicy = {
@@ -167,22 +166,18 @@ export function isoWeekKeyOfDate(date: Date): string {
   return `${isoYear}-W${String(weekNumber).padStart(2, "0")}`;
 }
 
-export function applyRetentionPlan(
+export async function applyRetentionPlan(
   plan: RetentionPlan,
-  options: { dryRun?: boolean } = {},
+  options: { dryRun?: boolean; driver: StorageDriver },
 ): Promise<void> {
   for (const entry of plan.delete) {
-    if (!existsSync(entry.path)) {
-      continue;
-    }
     if (options.dryRun) {
       continue;
     }
     try {
-      unlinkSync(entry.path);
+      await options.driver.delete(entry.path);
     } catch {
-      // Best-effort: a single unlink failure should not stop the rest of the plan.
+      // Best-effort: a single delete failure should not stop the rest of the plan.
     }
   }
-  return Promise.resolve();
 }

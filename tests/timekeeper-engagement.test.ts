@@ -1,5 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { afterEach, describe, expect, it } from "vitest";
 import {
   __resetTimekeeperPersistenceState,
   attachPersistenceAuthorization,
@@ -11,12 +14,26 @@ import {
   parseCheckInCustomId,
   recordAttendance,
   recordCheckIn,
+  type TimekeeperSessionEngagement,
 } from "../src/features/timekeeper/engagement.js";
+import { createLocalFileStorage } from "../src/lib/storage/local.js";
 
 describe("timekeeper engagement", () => {
+  let workspace: string;
+
   afterEach(() => {
     __resetTimekeeperPersistenceState();
+    if (workspace) {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
+
+  async function newSession(): Promise<TimekeeperSessionEngagement> {
+    workspace = mkdtempSync(join(tmpdir(), "timekeeper-engagement-"));
+    return createSessionEngagement("2026-04-01T21:00", {
+      driver: createLocalFileStorage({ root: join(workspace, "data") }),
+    });
+  }
 
   it("encodes and decodes phase check-in button ids", () => {
     const customId = buildCheckInCustomId("2026-04-01T21:00", 6);
@@ -35,7 +52,7 @@ describe("timekeeper engagement", () => {
       () => () => undefined,
     );
     try {
-      const session = createSessionEngagement("2026-04-01T21:00");
+      const session = await newSession();
       recordCheckIn(session, "100", 2);
       recordCheckIn(session, "100", 6);
       recordCheckIn(session, "200", 4);
@@ -82,8 +99,8 @@ describe("timekeeper engagement", () => {
     }
   });
 
-  it("provides natural button labels and distinct participant counts", () => {
-    const session = createSessionEngagement("2026-04-01T21:00");
+  it("provides natural button labels and distinct participant counts", async () => {
+    const session = await newSession();
     recordCheckIn(session, "100", 2);
     recordCheckIn(session, "100", 6);
     recordCheckIn(session, "200", 2);

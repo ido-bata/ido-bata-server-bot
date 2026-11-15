@@ -36,6 +36,17 @@ We also confirmed during this re-init that the public `main` branch protection o
 - **Per-ticket merge via closing keywords alone.** Rejected — the project-init policy forbids relying on closing keywords for non-default-branch merges, and stacked tickets in particular need the trunk-landing check.
 - **Skip documenting the public `main` protection.** Rejected — the repo is public and the project-init policy explicitly requires the doc / enforcement pair. Documenting the requirement is what lets a future maintainer (or a future agent) flag the gap as a blocker rather than discovering it after the fact.
 
+## Revision (2026-11-15) — merge-authorization boundary narrowed
+
+The user revised the merge-authorization rule: **ticket PRs
+(`<issue> → release-x-y-z`) may be merged autonomously** once the
+integration gate is green, blocking review is resolved, and the ticket's
+acceptance conditions are met. The explicit-authorization requirement now
+applies **only to `release-x-y-z → main`** (the release PR). Everything
+else in this ADR — the readiness/authorization separation, the stacked
+Done boundary, merge-commit-only landing — is unchanged.
+`docs/process.md` § "Merge authorization boundary" is the operative text.
+
 ## References
 
 - `docs/process.md` — Agile cadence, Branch-start contract, Merge authorization boundary, Stacked ticket Done boundary, Release branch Draft release PR, Public `main` protection

@@ -77,7 +77,7 @@ export const CONSUMERS: readonly ConsumerEntry[] = [
     scope: "message-history",
     dataFile: "data/anon-audit/",
     rationale:
-      "RSA-OAEP ciphertext-only author↔message mapping (public key only on bot, no searchable index); selective deletion is offline-custodian-only and reported honestly by the adapter; 90-day retention, excluded from state snapshots",
+      "RSA-OAEP ciphertext-only author↔message mapping in attempt + posted (messageId-linked) records (public key only on bot, no searchable index); audit is MANDATORY — /anon refuses all posts without it; selective deletion is offline-custodian-only and reported honestly by the adapter; 90-day retention, excluded from state snapshots",
   },
 
   // Operational (5)
@@ -150,7 +150,8 @@ export const CONSUMERS: readonly ConsumerEntry[] = [
     id: "anonymous-chat",
     label: "Anonymous chat (/anon)",
     bucket: "ephemeral",
-    rationale: "In-memory cooldown only; no user-keyed persistence unless audit key configured",
+    rationale:
+      "In-memory cooldown only; the encrypted audit mapping is always persisted for acknowledged posts (mandatory audit — see anonymous-chat-audit)",
   },
   { id: "shutdown", label: "Signal-handler teardown", bucket: "ephemeral" },
 ];

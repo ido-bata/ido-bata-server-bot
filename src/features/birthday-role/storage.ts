@@ -2,12 +2,16 @@
 // Discord user id. The on-disk format is intentionally simple so it can be
 // inspected and edited by hand during recovery.
 
+import { basename, dirname } from "node:path";
+
 import { z } from "zod";
 import {
-  type MutateJsonFileResult,
-  mutateJsonFile,
-  readJsonFile,
-} from "../../lib/storage/atomic-json.js";
+  type MutateJsonObjectResult,
+  mutateJsonObject,
+  readJsonObject,
+} from "../../lib/storage/json.js";
+import { createLocalFileStorage } from "../../lib/storage/local.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
 
 export type BirthdayEntry = {
   // Discord user id (snowflake).
@@ -29,7 +33,7 @@ export type BirthdayStorage = {
    * underlying result so callers can distinguish mutation success from a
    * schema mismatch on the on-disk file.
    */
-  save: (store: BirthdayStore) => Promise<MutateJsonFileResult>;
+  save: (store: BirthdayStore) => Promise<MutateJsonObjectResult>;
 };
 
 const birthdayEntrySchema = z.object({
@@ -44,26 +48,38 @@ const birthdayStoreSchema = z.object({
 
 const EMPTY_STORE: BirthdayStore = { birthdays: {} };
 
-export function createFileBirthdayStorage(filePath: string): BirthdayStorage {
+export type BirthdayStorageOptions = {
+  /** Storage backend holding the registry. */
+  driver: StorageDriver;
+  /** Storage key of the registry (e.g. `birthdays.json`). */
+  key: string;
+};
+
+export function createStorageBirthdayStorage(options: BirthdayStorageOptions): BirthdayStorage {
   async function load(): Promise<BirthdayStore> {
-    const result = readJsonFile({ filePath, schema: birthdayStoreSchema });
+    const result = await readJsonObject({
+      driver: options.driver,
+      key: options.key,
+      schema: birthdayStoreSchema,
+    });
     if (!result.ok) {
       if (result.error === "ENOENT") {
         return EMPTY_STORE;
       }
       // A non-ENOENT read failure (corrupt JSON, schema mismatch, permission
       // error, etc.) must surface — silent swallowing would let a bot
-      // restart with a truncated file nuke the persisted registry.
+      // restart with a truncated registry nuke the persisted data.
       throw new Error(`birthday storage: load failed: ${result.error}`);
     }
     return result.value;
   }
 
-  async function save(store: BirthdayStore): Promise<MutateJsonFileResult> {
-    return mutateJsonFile({
-      filePath,
+  async function save(store: BirthdayStore): Promise<MutateJsonObjectResult> {
+    return mutateJsonObject({
+      driver: options.driver,
+      key: options.key,
       schema: birthdayStoreSchema,
-      // Create the file on first write; a missing registry must not
+      // Create the registry on first write; a missing registry must not
       // silently succeed. Otherwise the very first birthday
       // registration after deployment would be acknowledged but never
       // persisted.
@@ -74,6 +90,14 @@ export function createFileBirthdayStorage(filePath: string): BirthdayStorage {
   }
 
   return { load, save };
+}
+
+/** Registry pinned to one file on the local filesystem (tests, operators). */
+export function createFileBirthdayStorage(filePath: string): BirthdayStorage {
+  return createStorageBirthdayStorage({
+    driver: createLocalFileStorage({ root: dirname(filePath) }),
+    key: basename(filePath),
+  });
 }
 
 export function createInMemoryBirthdayStorage(

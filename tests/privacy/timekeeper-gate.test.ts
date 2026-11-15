@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
 import {
   __resetTimekeeperPersistenceState,
   attachPersistenceAuthorization,
@@ -13,6 +12,8 @@ import {
   persistSessionAttendance,
   recordAttendance,
 } from "../../src/features/timekeeper/engagement.js";
+import { createLocalFileStorage } from "../../src/lib/storage/local.js";
+import type { StorageDriver } from "../../src/lib/storage/types.js";
 
 function permitAuth(): PersistenceAuthorization {
   return { authorize: async () => ({ ok: true }) };
@@ -31,10 +32,12 @@ describe("timekeeper consent gate", () => {
   // a deleted path into later tests in the same worker (any subsequent
   // file lookup that resolves a relative path would ENOENT).
   let originalCwd: string;
+  let driver: StorageDriver;
 
   beforeEach(() => {
     originalCwd = process.cwd();
     dir = mkdtempSync(join(tmpdir(), "timekeeper-gate-"));
+    driver = createLocalFileStorage({ root: join(dir, "data") });
     cleanup = () => rmSync(dir, { recursive: true, force: true });
     process.chdir(dir);
     __resetTimekeeperPersistenceState();
@@ -52,7 +55,7 @@ describe("timekeeper consent gate", () => {
   it("does not persist attendance when authorize returns ok:false", async () => {
     detach = attachPersistenceAuthorization(denyAuth(), () => () => undefined);
 
-    const session = createSessionEngagement("session-1");
+    const session = await createSessionEngagement("session-1", { driver });
     await recordAttendance(session, "user-1", "2026-04-01");
 
     // In-memory map is gated; nothing should land.
@@ -62,7 +65,7 @@ describe("timekeeper consent gate", () => {
   it("persists attendance when authorize returns ok:true", async () => {
     detach = attachPersistenceAuthorization(permitAuth(), () => () => undefined);
 
-    const session = createSessionEngagement("session-1");
+    const session = await createSessionEngagement("session-1", { driver });
     await recordAttendance(session, "user-1", "2026-04-01");
 
     expect(session.attendanceDatesByUserId.get("user-1")?.has("2026-04-01")).toBe(true);
@@ -70,7 +73,7 @@ describe("timekeeper consent gate", () => {
 
   it("skips persistence when there is no auth wired (fail-closed)", async () => {
     // Intentionally NOT calling attachPersistenceAuthorization.
-    const session = createSessionEngagement("session-1");
+    const session = await createSessionEngagement("session-1", { driver });
     await recordAttendance(session, "user-1", "2026-04-01");
     expect(session.attendanceDatesByUserId.has("user-1")).toBe(false);
   });
@@ -90,7 +93,7 @@ describe("timekeeper consent gate", () => {
       return () => undefined;
     });
 
-    const session = createSessionEngagement("session-1");
+    const session = await createSessionEngagement("session-1", { driver });
     await recordAttendance(session, "user-1", "2026-04-01");
     expect(session.attendanceDatesByUserId.has("user-1")).toBe(true);
 
@@ -124,7 +127,7 @@ describe("timekeeper consent gate", () => {
       () => () => undefined,
     );
 
-    const session = createSessionEngagement("session-1");
+    const session = await createSessionEngagement("session-1", { driver });
     session.checkInsByUserId.set("user-1", new Set([2]));
     session.checkInsByUserId.set("user-2", new Set([2]));
 
@@ -140,7 +143,7 @@ describe("timekeeper consent gate", () => {
 
   it("persistSessionAttendance is a no-op without an auth wired", async () => {
     // No attachPersistenceAuthorization.
-    const session = createSessionEngagement("session-1");
+    const session = await createSessionEngagement("session-1", { driver });
     session.checkInsByUserId.set("user-1", new Set([2]));
     await persistSessionAttendance(session, "2026-04-01");
     const exists = await import("node:fs").then((fs) =>

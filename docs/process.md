@@ -93,15 +93,16 @@ Quality/readiness is one thing; merge authority is another. An agent (Coordinato
 - Open, push to, and update Draft / Ready PRs
 - Respond to review, resolve conflicts, rebase, re-validate
 - Mark a PR ready when the integration gate is green
+- **Merge a ticket PR (`<issue> → release-x-y-z`) once the integration gate is green, blocking review comments are resolved, and the ticket's acceptance conditions are met** — no per-merge user authorization is required for this landing (revised 2026-11-15; see ADR-0002 revision)
 
 An agent **may not** execute any of these without an explicit user authorization naming the target PR (or a clearly bounded set):
 
-- Merge / squash-merge / rebase-merge
-- Native stacked-PR contiguous landing or equivalent
+- Merge / squash-merge / rebase-merge **of `release-x-y-z → main`** (the release PR is the only path to `main`, and it always needs explicit approval)
+- Native stacked-PR contiguous landing or equivalent that lands on `main`
 - Auto-merge enablement
-- Any landing side-effect that mutates the integration target
+- Any landing side-effect that mutates `main`
 
-Repository policy, Issue/PR metadata, green CI, resolved review, approval, mergeable state, and a successful release gate are not authorization. "対応して", "レビューして", "コンフリクトを解消して", "リリース準備して", "最後まで進めて" are not authorization. "この PR をマージして" or "問題がなければ #123 をマージして" — naming the PR and the merge action — is.
+Repository policy, Issue/PR metadata, green CI, resolved review, approval, mergeable state, and a successful release gate are not authorization for a `main` landing. "対応して", "レビューして", "コンフリクトを解消して", "リリース準備して", "最後まで進めて" are not authorization. "この PR をマージして" or "問題がなければ #123 をマージして" — naming the PR and the merge action — is.
 
 Authorization is scoped to the PR (or set) named in the request. After landing-ready fixups or rebases change the head SHA, re-run the gate against the current SHA before reusing an old authorization. If base, target release, scope, or included changes move materially, do not reuse the old authorization — re-confirm.
 

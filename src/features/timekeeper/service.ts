@@ -445,7 +445,7 @@ async function runSession(
   }
 
   activeTimeline = timeline;
-  activeSession = createSessionEngagement(startAt.toISOString());
+  activeSession = await createSessionEngagement(startAt.toISOString());
 
   const minuteMs = process.env.TIMEKEEPER_RUN_ON_READY === "true" ? 1_000 : 60_000;
   const clock = createSessionClock(timeline, startAt, startIndex, minuteMs, Date.now());

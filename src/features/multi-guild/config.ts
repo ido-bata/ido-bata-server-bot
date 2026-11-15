@@ -55,8 +55,3 @@ export function parseGuildConfig(raw: unknown, guildIdHint?: string): GuildConfi
 export function serializeGuildConfig(config: GuildConfig): string {
   return JSON.stringify(config, null, 2);
 }
-
-export function buildGuildConfigPath(dataRoot: string, guildId: string): string {
-  const safeGuildId = guildId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  return `${dataRoot}/guilds/${safeGuildId}/config.json`;
-}

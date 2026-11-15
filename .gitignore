@@ -53,3 +53,10 @@ data/calendar-cache.json
 # eslint / vitest already exclude this path; .gitignore keeps biome in sync.
 .claude/worktrees/
 .worktrees/
+
+# Migration artifacts — may contain personal data; never commit.
+migration-export/
+migration-merged/
+data-merged/
+backups/
+restore-check/
