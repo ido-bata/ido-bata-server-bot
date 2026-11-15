@@ -271,18 +271,37 @@ altr u3 attach ido-bata-bot-backup "<app>" --prefix BACKUP_AWS
 # injects BACKUP_AWS_ENDPOINT / _REGION / _BUCKET / _ACCESS_KEY_ID / _SECRET_ACCESS_KEY
 ```
 
-Schedule it with cron on a host that holds the credentials:
+Schedule it daily on a host that holds the credentials. As deployed on
+2026-11-15, the scheduler is **Windows Task Scheduler** (`IdoBata-U3-Backup`,
+04:30 local) on the ops workstation, running
+`D:\1_projects\discord\run-ido-backup.cmd` → `run-ido-backup.sh`, which
+sources `D:\1_projects\discord\ido-bata-backup.env` (credentials — never
+commit it) and executes:
+
+```sh
+bun run storage:migrate -- backup --source u3 \
+  --target-bucket ido-bata-bot-backup \
+  --out ./backups/$(date +%Y-%m-%d-%H%M)
+```
+
+On a Linux host the equivalent is a cron entry:
 
 ```cron
 # 03:17 daily — copy the primary bucket into the backup bucket and verify
 17 3 * * * cd /srv/ido-bata && set -a && . /srv/ido-bata/backup.env && set +a && \
-  bun run storage:migrate -- backup --target-bucket ido-bata-bot-backup \
+  bun run storage:migrate -- backup --source u3 --target-bucket ido-bata-bot-backup \
   --out ./backups/$(date +\%F-\%H\%M)
 ```
 
 `backup.env` holds the credentials (chmod 600, owned by the bot user).
 The job must fail loudly: a backup that cannot be verified is not a
-backup.
+backup — the command exits non-zero and the runner appends a `FAILED`
+line to `ido-bata-backup.log`. **Failure detection**: check
+`D:\1_projects\discord\ido-bata-backup.log` for a trailing `backup ok`
+line newer than 24 h, or `schtasks /query /tn IdoBata-U3-Backup /v`
+for the last result. Caveat: the workstation must be powered on at
+04:30 — a missed run shows up as a stale log and must be re-run by
+hand (`schtasks /run /tn IdoBata-U3-Backup`).
 
 ### 7.2 Restore drill (run it before you need it)
 

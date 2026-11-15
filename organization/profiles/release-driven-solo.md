@@ -43,7 +43,7 @@ ido-bata-server-bot の current release-driven development で使用する Opera
 - repository merge settings: `allow_merge_commit=true` / `allow_squash_merge=false` / `allow_rebase_merge=false`
 - squash merge / rebase mergeは使用しない。branch-local `git rebase` はstack maintenance等のbranch mechanicsとして別扱い
 - stacked/native landingはmerge commit semanticsを保持できる場合だけ使用する
-- merge/landingはADR-0012のexplicit authorization boundaryを維持する
+- merge/landingは明示的authorization boundaryを維持する。2026-11-15改訂: ticket PR (`<issue> → release-*`) はgate green・review解消・受入条件充足で自律マージ可。明示承認が必要なのは `release-* → main` のみ (docs/process.md § Merge authorization boundary, ADR-0002 revision)
 
 ### Workspace/runtime defaults
 
