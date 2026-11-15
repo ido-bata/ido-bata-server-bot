@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { deleteAnonAuditUserRecords } from "../src/features/anonymous-chat/audit-delete.js";
 import { createAnonAuditSink } from "../src/features/anonymous-chat/audit-store.js";
 import type { AnonAuditConfig } from "../src/features/anonymous-chat/config.js";
+import { createLocalFileStorage } from "../src/lib/storage/local.js";
+import type { StorageDriver } from "../src/lib/storage/types.js";
 
 const { publicKey, privateKey } = generateKeyPairSync("rsa", {
   modulusLength: 2048,
@@ -14,17 +16,19 @@ const { publicKey, privateKey } = generateKeyPairSync("rsa", {
 });
 
 let dir: string;
+let driver: StorageDriver;
 let cleanup: () => void;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "anon-audit-del-"));
+  driver = createLocalFileStorage({ root: dir });
   cleanup = () => rmSync(dir, { recursive: true, force: true });
 });
 
 afterEach(() => cleanup());
 
 function auditConfig(overrides: Partial<AnonAuditConfig> = {}): AnonAuditConfig {
-  return { publicKey, keyId: "v1", dir, retentionDays: 90, ...overrides };
+  return { publicKey, keyId: "v1", dir: "", retentionDays: 90, ...overrides };
 }
 
 type SealInput = Parameters<ReturnType<typeof createAnonAuditSink>["seal"]>[0];
@@ -48,7 +52,7 @@ function legacyPlaintext(userId: string) {
 }
 
 async function seed(userIds: string[]): Promise<void> {
-  const sink = createAnonAuditSink(auditConfig());
+  const sink = createAnonAuditSink(auditConfig(), { driver });
   for (const userId of userIds) {
     await sink.record({
       kind: "attempt",
@@ -68,7 +72,8 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     await seed(["u1", "u2", "u1"]);
     expect(recordFiles()).toHaveLength(3);
     const result = await deleteAnonAuditUserRecords({
-      dir,
+      dir: "",
+      driver,
       privateKey,
       userId: "u1",
     });
@@ -79,7 +84,8 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
   it("removes every file when all records belong to the user", async () => {
     await seed(["u1", "u1"]);
     const result = await deleteAnonAuditUserRecords({
-      dir,
+      dir: "",
+      driver,
       privateKey,
       userId: "u1",
     });
@@ -90,7 +96,8 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
   it("succeeds with zero removals when nothing matches", async () => {
     await seed(["u2"]);
     const result = await deleteAnonAuditUserRecords({
-      dir,
+      dir: "",
+      driver,
       privateKey,
       userId: "u1",
     });
@@ -104,7 +111,8 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     writeFileSync(file, "not-json\n");
 
     const result = await deleteAnonAuditUserRecords({
-      dir,
+      dir: "",
+      driver,
       privateKey,
       userId: "u1",
     });
@@ -121,7 +129,7 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     // A valid ciphertext whose plaintext lacks the sealed schema must
     // not be treated as "another user's record" — it might be the
     // target's, so the whole run aborts before any removal.
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     const malformed = JSON.stringify({
       v: 1,
       gid: "g",
@@ -131,7 +139,8 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     writeFileSync(join(dir, "2026-11-13T12-00-00-000Z-deadbeef.jsonl"), `${malformed}\n`);
 
     const result = await deleteAnonAuditUserRecords({
-      dir,
+      dir: "",
+      driver,
       privateKey,
       userId: "u1",
     });
@@ -149,7 +158,8 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     writeFileSync(join(dir, ".2026-11-13T12-00-00-000Z-aaaabbbb.tmp"), "partial");
 
     const result = await deleteAnonAuditUserRecords({
-      dir,
+      dir: "",
+      driver,
       privateKey,
       userId: "u1",
     });
@@ -165,7 +175,8 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     writeFileSync(join(dir, "2026-11-13T99-99-99-999Z-empty.jsonl"), "");
 
     const result = await deleteAnonAuditUserRecords({
-      dir,
+      dir: "",
+      driver,
       privateKey,
       userId: "u1",
     });
@@ -178,7 +189,7 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
 
   it("rewrites a legacy daily file keeping other users' records", async () => {
     // Legacy format: YYYY-MM-DD.jsonl, one record per line.
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     const lines: string[] = [];
     for (const userId of ["u1", "u2"]) {
       lines.push(
@@ -194,7 +205,8 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     writeFileSync(join(dir, "2026-11-01.jsonl"), `${lines.join("\n")}\n`);
 
     const result = await deleteAnonAuditUserRecords({
-      dir,
+      dir: "",
+      driver,
       privateKey,
       userId: "u1",
     });
@@ -211,7 +223,7 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
   });
 
   it("removes a legacy daily file entirely when all records match", async () => {
-    const sink = createAnonAuditSink(auditConfig());
+    const sink = createAnonAuditSink(auditConfig(), { driver });
     const line = JSON.stringify({
       v: 1,
       gid: "g",
@@ -221,7 +233,8 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     writeFileSync(join(dir, "2026-11-01.jsonl"), `${line}\n${line}\n`);
 
     const result = await deleteAnonAuditUserRecords({
-      dir,
+      dir: "",
+      driver,
       privateKey,
       userId: "u1",
     });
@@ -238,7 +251,8 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     writeFileSync(file, `${readFileSync(file, "utf8")}{"v":1,"ct":"x"}\n`);
 
     const result = await deleteAnonAuditUserRecords({
-      dir,
+      dir: "",
+      driver,
       privateKey,
       userId: "u1",
     });
@@ -256,7 +270,7 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
       privateKeyEncoding: { format: "pem", type: "pkcs8" },
     });
     // Write a record sealed under a DIFFERENT key — undecryptable here.
-    const foreign = createAnonAuditSink(auditConfig({ publicKey: otherPub }));
+    const foreign = createAnonAuditSink(auditConfig({ publicKey: otherPub }), { driver });
     await foreign.record({
       kind: "attempt",
       guildId: "g",
@@ -265,7 +279,8 @@ describe("deleteAnonAuditUserRecords (offline custodian)", () => {
     });
 
     const result = await deleteAnonAuditUserRecords({
-      dir,
+      dir: "",
+      driver,
       privateKey,
       userId: "u1",
     });

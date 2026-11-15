@@ -67,7 +67,9 @@ describe("privacy consumer delete adapters", () => {
       const outcome = await deleteTimekeeper("u1", { filePath });
       expect(outcome.ok).toBe(false);
       if (!outcome.ok) {
-        expect(outcome.error).toMatch(/read failed|temp file open failed|rename failed/);
+        expect(outcome.error).toMatch(
+          /read failed|write failed|temp file open failed|rename failed/,
+        );
       }
       chmodSync(filePath, 0o600);
     });

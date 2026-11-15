@@ -76,8 +76,22 @@ import {
   getRootLogger,
   subscribe as subscribeLogger,
 } from "./lib/logger/index.js";
+import { getLeaseDriver } from "./lib/storage/index.js";
+import {
+  acquireInstanceLease,
+  DEFAULT_LEASE_TTL_MS,
+  type InstanceLease,
+  LeaseConflictError,
+  LeaseUnsupportedError,
+} from "./lib/storage/lease.js";
+import type { StorageDriver } from "./lib/storage/types.js";
 import { createRuntimeStatusStore } from "./runtime/status-store.js";
 import { mountTui, resolveTuiMode } from "./tui/render.jsx";
+
+/** Extra time past the lease TTL the acquire loop waits for the old term to expire. */
+const LEASE_ACQUIRE_MARGIN_MS = 30_000;
+/** Delay between lease-acquire attempts while another instance holds the term. */
+const LEASE_CONFLICT_RETRY_DELAY_MS = 5_000;
 
 async function main(): Promise<void> {
   const config = readConfig(process.env);
@@ -96,6 +110,11 @@ async function main(): Promise<void> {
 
   // Runtime status store. The TUI is a read-only consumer of this store;
   // feature handlers / event listeners below write into it.
+  // The storage lease is acquired before the bot connects; the shutdown
+  // hook releases it. Declared here so the hook can run even when the
+  // acquisition failed.
+  let lease: InstanceLease | null = null;
+
   const statusStore = createRuntimeStatusStore();
   statusStore.setEventsCap(config.logRingSize);
   statusStore.set({
@@ -322,12 +341,13 @@ async function main(): Promise<void> {
   const configStore = registerConfigHotReload({
     filePath: join(process.cwd(), "data", "config.json"),
   });
-  registerShutdownHandler(
+  const shutdownRunner = registerShutdownHandler(
     client,
     {
       onAfterTeardown: async () => {
         clearInterval(metricsTimer);
         configStore.stop();
+        await lease?.release();
         if (tuiInstance) {
           // Drain pending renders before the process exits so the
           // operator sees the final state instead of a truncated frame.
@@ -458,7 +478,7 @@ async function main(): Promise<void> {
     },
   });
   registerTimekeeperCommandHandlers(client);
-  await registerHealthMetrics(client);
+  const healthMetrics = await registerHealthMetrics(client);
   statusStore.set({
     features: {
       ...statusStore.snapshot.features,
@@ -535,7 +555,7 @@ async function main(): Promise<void> {
     },
   });
 
-  const icalService = registerIcalCalendar(client, {
+  const icalService = await registerIcalCalendar(client, {
     onReady: (service) => {
       service.startScheduler();
       void service.fetchAndCacheAll().catch((error: unknown) => {
@@ -597,6 +617,106 @@ async function main(): Promise<void> {
       },
     });
   }
+
+  // Single-instance guard (ADR-0004): the lease lives in a storage backend
+  // that both hosts share, so a second bot — the old host during a
+  // migration cutover, or a duplicated Altare deployment — refuses to
+  // start instead of processing the same events twice.
+  // A refused start must actually terminate: returning from main() leaves
+  // the health server (and the event loop) alive, so the platform would
+  // see a live-but-unserving instance. Routing through the shutdown
+  // runner tears down and exits non-zero; `/ready` reports 503 meanwhile.
+  const refuseToStart = async (error: unknown, message: string): Promise<void> => {
+    healthMetrics.registry.setStorageLeaseHeld(false);
+    rootLogger.error({ err: error }, message);
+    await shutdownRunner.run("LEASE_REFUSED");
+  };
+  let leaseDriver: StorageDriver;
+  try {
+    leaseDriver = getLeaseDriver();
+  } catch (error) {
+    await refuseToStart(error, "storage lease backend configuration failed; refusing to start");
+    return;
+  }
+  let conditionalWrites: boolean;
+  try {
+    conditionalWrites = await leaseDriver.probeConditionalWrites();
+  } catch (error) {
+    await refuseToStart(error, "storage lease backend probe failed; refusing to start");
+    return;
+  }
+  if (!conditionalWrites && process.env.LEASE_ALLOW_UNCONDITIONAL !== "true") {
+    // The lease's exclusivity depends on conditional writes. Without them
+    // two instances could both believe they own the lease, so the bot
+    // refuses to start (fail closed) instead of pretending to be safe.
+    await refuseToStart(
+      new Error(`lease backend '${leaseDriver.kind}' does not support conditional writes`),
+      "the storage backend does not support conditional writes; the instance lease cannot be exclusive. " +
+        "Set LEASE_ALLOW_UNCONDITIONAL=true only after verifying the backend's behaviour manually.",
+    );
+    return;
+  }
+  if (!conditionalWrites) {
+    rootLogger.warn(
+      { backend: leaseDriver.kind },
+      "conditional writes are unavailable; the lease falls back to read-back verification (LEASE_ALLOW_UNCONDITIONAL=true)",
+    );
+  }
+
+  // A redeploy starts the new instance while the old one's lease term is
+  // still valid (its release races the platform's SIGTERM), so a conflict
+  // is retried until the term can expire — bounded by the lease TTL plus
+  // margin. A genuinely running second instance still loses: it exits
+  // after the deadline instead of ever sharing the runtime.
+  const leaseRetryDeadlineMs = Date.now() + DEFAULT_LEASE_TTL_MS + LEASE_ACQUIRE_MARGIN_MS;
+  for (;;) {
+    try {
+      lease = await acquireInstanceLease({
+        driver: leaseDriver,
+        // Losing the lease means another instance owns the runtime: stop
+        // instead of processing events unowned.
+        onLost: (error) => {
+          healthMetrics.registry.setStorageLeaseHeld(false);
+          rootLogger.error({ err: error }, "storage lease lost; shutting the bot down");
+          void shutdownRunner.run("LEASE_LOST");
+        },
+      });
+      break;
+    } catch (error) {
+      if (error instanceof LeaseConflictError) {
+        if (Date.now() >= leaseRetryDeadlineMs) {
+          // Fail closed: a second instance must never process the same
+          // events as the running one.
+          await refuseToStart(
+            error,
+            "another bot instance holds the storage lease; refusing to start",
+          );
+          return;
+        }
+        rootLogger.warn(
+          { err: error, holderId: error.holderId, expiresAt: error.expiresAt },
+          "storage lease held by another instance; retrying until it expires",
+        );
+        await new Promise((resolve) => setTimeout(resolve, LEASE_CONFLICT_RETRY_DELAY_MS));
+        continue;
+      }
+      if (error instanceof LeaseUnsupportedError) {
+        await refuseToStart(
+          error,
+          "the storage backend cannot hold an exclusive lease; refusing to start",
+        );
+        return;
+      }
+      // Any other failure (backend unreachable, corrupt lease object, …)
+      // must also terminate the process: falling through to main()'s catch
+      // would leave the health server alive and the instance looking
+      // live-but-unserving.
+      await refuseToStart(error, "storage lease acquisition failed; refusing to start");
+      return;
+    }
+  }
+  healthMetrics.registry.setStorageLeaseHeld(true);
+  rootLogger.info({ epoch: lease.epoch, holderId: lease.holderId }, "storage lease acquired");
 
   await client.login(config.discordToken);
 }

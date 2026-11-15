@@ -1,4 +1,6 @@
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
+import { getStorageDriver } from "../../lib/storage/index.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
 import { isStale, loadCache, mergeSourceEvents, saveCache } from "./cache.js";
 import { findSource, type IcalCalendarConfig, readConfig } from "./config.js";
 import { type CalendarFetcher, createCalendarFetcher } from "./fetcher.js";
@@ -26,15 +28,25 @@ export type CalendarServiceOptions = {
   fetcher?: CalendarFetcher;
   logger?: Logger;
   now?: () => Date;
+  /** Storage backend holding the calendar cache. */
+  driver?: StorageDriver;
+  /** Storage key of the calendar cache. */
+  cacheKey?: string;
 };
 
-export function createCalendarService(options: CalendarServiceOptions = {}): CalendarService {
-  const config = options.config ?? readConfig();
+export async function createCalendarService(
+  options: CalendarServiceOptions = {},
+): Promise<CalendarService> {
+  const config = options.config ?? (await readConfig({ driver: options.driver }));
   const fetcher = options.fetcher ?? createCalendarFetcher({ rateLimitMs: config.rateLimitMs });
   const logger: Logger = options.logger ?? defaultLogger;
   const now = options.now ?? (() => new Date());
 
-  let cache: CalendarCache = loadCache(config.cachePath);
+  const driver = options.driver ?? getStorageDriver();
+  const cacheKey = options.cacheKey ?? config.cacheKey;
+  // The cache is loaded asynchronously (ADR-0004); the in-memory copy is
+  // refreshed before every fetch so a restart picks up the persisted state.
+  let cache: CalendarCache = { sources: [] };
   let timer: ReturnType<typeof setInterval> | null = null;
 
   function sourceNameFor(id: string): string {
@@ -51,6 +63,7 @@ export function createCalendarService(options: CalendarServiceOptions = {}): Cal
   }
 
   async function fetchAndCacheAll() {
+    cache = await loadCache(driver, cacheKey);
     const result = await fetcher.fetchAll(config.sources);
     const grouped = groupEventsBySource(result.events);
     // Sources that failed to fetch keep their previous cached events (and timestamp);
@@ -66,7 +79,7 @@ export function createCalendarService(options: CalendarServiceOptions = {}): Cal
       nextCache = mergeSourceEvents(nextCache, source.id, events, result.fetchedAt);
     }
     cache = nextCache;
-    saveCache(config.cachePath, cache);
+    await saveCache(cache, driver, cacheKey);
     if (result.failedSources.length > 0) {
       for (const failed of result.failedSources) {
         logger.warn(`[ical-calendar] failed to fetch ${failed.id}: ${failed.reason}`);

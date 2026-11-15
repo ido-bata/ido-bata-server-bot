@@ -1,9 +1,9 @@
 /**
- * On-disk store for `/anon` audit records (ADR-0003 §3).
+ * Audit record store for `/anon` (ADR-0003 §3).
  *
- * Layout: `data/anon-audit/<UTC timestamp>-<random>.jsonl` — ONE
- * immutable file per audit record. Two records are written per
- * anonymous post (ADR-0003 §3, Issue #118):
+ * Layout: `<audit-prefix>/<UTC timestamp>-<random>.jsonl` — ONE
+ * immutable record per anonymous post attempt that passed consent. Two
+ * records are written per anonymous post (ADR-0003 §3, Issue #118):
  *
  *   attempt — BEFORE the public send:
  *     { v: 2, kid, kind: "attempt", gid, cid, ct }
@@ -11,7 +11,7 @@
  *                channelId, postedAt }
  *
  *   posted — immediately AFTER a successful send, carrying the real
- *   Discord messageId:
+ *     Discord messageId:
  *     { v: 2, kid, kind: "posted", gid, cid, ct }
  *     ct seals { v: 2, kind:"posted", attemptId, messageId, userId,
  *                guildId, channelId, postedAt }
@@ -37,25 +37,21 @@
  * (`src/scripts/anon-audit-delete.ts`); the bot-side privacy consumer
  * reports that honestly instead of claiming a deletion it cannot do.
  *
- * Concurrency: every record is published by writing a hidden
- * `.<name>.tmp` file and atomically `link`-ing it to the final name
- * (hard link — fails `EEXIST` rather than overwriting), then
- * unlinking the temp. Readers never observe a partial record and a
- * name collision can never silently replace an existing record.
- * Appends are independent file creations and cannot interleave or
- * lose each other's data — no lock is required. The retention sweep only
- * removes files whose UTC date prefix is older than `retentionDays`
- * (plus stale `.tmp` orphans), which can never include a file being
- * appended (appends always carry today's date). The custodian
- * deletion script removes whole per-record files — or rewrites
- * legacy daily files, which no writer targets anymore — so a
- * concurrent append can never be lost.
+ * Durability (ADR-0004): records live in the storage backend — the
+ * local `data/` directory on a single host, object storage (U3) on
+ * Altare. A record is published with a create-if-absent write, so a
+ * reader never observes a partial record and a name collision can
+ * never silently replace an existing record. The write only resolves
+ * after the backend confirmed the record is durable, which is what
+ * allows the public send to happen right after `record()` resolves.
+ * Any storage failure aborts the publish and fails closed — the post
+ * is refused rather than sent unaudited.
  */
 import { randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync } from "node:fs";
-import { link, mkdir, open, readdir, rm, stat, unlink } from "node:fs/promises";
-import { dirname, join, parse, resolve } from "node:path";
 
+import { getStorageDriver } from "../../lib/storage/index.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
+import { joinStorageKey } from "../../lib/storage/types.js";
 import {
   type AnonAuditAttemptPlaintext,
   type AnonAuditPostedPlaintext,
@@ -89,10 +85,15 @@ export type AnonAuditSink = {
   sweep: () => Promise<void>;
 };
 
+export type AnonAuditSinkOptions = {
+  /** Storage backend the records are written to. */
+  driver?: StorageDriver;
+};
+
 /**
  * Record file name: UTC timestamp + random suffix. The leading
  * `YYYY-MM-DD` date drives retention; the random suffix makes every
- * append an independent immutable file.
+ * append an independent immutable record.
  */
 function recordFileName(date: Date): string {
   const stamp = date.toISOString().replace(/[:.]/g, "-");
@@ -104,30 +105,26 @@ function fileDay(name: string): string | null {
   return match?.[1] ?? null;
 }
 
-async function sweepExpired(dir: string, retentionDays: number, nowMs: number): Promise<void> {
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return;
-    }
-    throw error;
-  }
-
+async function sweepExpired(
+  driver: StorageDriver,
+  prefix: string,
+  retentionDays: number,
+  nowMs: number,
+): Promise<void> {
+  const entries = await driver.list(prefix === "" ? "" : `${prefix}/`);
   const cutoff = nowMs - retentionDays * DAY_MS;
-  for (const name of entries) {
-    // Orphaned temp files from interrupted writes: hidden `.*.tmp`
-    // names never match FILE_NAME_PATTERN, so remove them once they
-    // are clearly stale (an in-flight write is never this old).
+
+  for (const entry of entries) {
+    const name = prefix === "" ? entry.key : entry.key.slice(`${prefix}/`.length);
+    if (!name) {
+      continue;
+    }
+    // Orphaned temp files from an interrupted local write: hidden
+    // `.*.tmp` names never match FILE_NAME_PATTERN, so remove them once
+    // they are clearly stale (an in-flight write is never this old).
     if (name.endsWith(".tmp")) {
-      try {
-        const info = await stat(join(dir, name));
-        if (nowMs - info.mtimeMs > TMP_STALE_MS) {
-          await rm(join(dir, name), { force: true });
-        }
-      } catch {
-        // Vanished or unreadable — nothing to do.
+      if (nowMs - entry.lastModifiedMs > TMP_STALE_MS) {
+        await driver.delete(entry.key);
       }
       continue;
     }
@@ -137,55 +134,29 @@ async function sweepExpired(dir: string, retentionDays: number, nowMs: number): 
     }
     const dayStart = Date.parse(`${day}T00:00:00.000Z`);
     if (Number.isFinite(dayStart) && dayStart < cutoff) {
-      await rm(join(dir, name), { force: true });
+      await driver.delete(entry.key);
     }
-  }
-}
-
-/**
- * fsync every ancestor directory of `dir` so a newly created audit
- * directory (and any intermediate component `mkdir -p` had to make)
- * survives a host crash. `dirHandle.sync()` inside `record()` only
- * covers dirents INSIDE the audit dir — the audit dir's own dirent
- * lives in its parent. Called once at sink creation; a failure throws
- * so the service fails closed (`auditState: "error"`) rather than
- * accept records whose directory entry is not durable.
- */
-function syncAncestorDirs(dir: string): void {
-  let current = resolve(dir);
-  const { root } = parse(current);
-  while (current !== root) {
-    const parent = dirname(current);
-    const handle = openSync(parent, "r");
-    try {
-      fsyncSync(handle);
-    } finally {
-      closeSync(handle);
-    }
-    current = parent;
   }
 }
 
 /**
  * Build the audit sink for a resolved config. Throws when the public
- * key material is invalid or the audit directory cannot be created —
- * the caller treats that as "audit broken" and must refuse to post
- * rather than degrade to unlogged anonymity.
+ * key material is invalid — the caller treats that as "audit broken" and
+ * must refuse to post rather than degrade to unlogged anonymity.
  */
-export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
+export function createAnonAuditSink(
+  config: AnonAuditConfig,
+  options: AnonAuditSinkOptions = {},
+): AnonAuditSink {
   const sealFn = createAnonCipher(config.publicKey);
-  const dir = config.dir;
-  // Eagerly create the audit dir so a fresh deployment or bad
-  // permissions fails HERE — the service maps that to
-  // `auditState: "error"` instead of discovering it on the first post.
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  syncAncestorDirs(dir);
+  const driver = options.driver ?? getStorageDriver();
+  const prefix = config.dir;
 
   return {
     seal: (plaintext) => sealFn(JSON.stringify(plaintext)),
+
     record: async (input) => {
-      await mkdir(dir, { recursive: true, mode: 0o700 });
-      await sweepExpired(dir, config.retentionDays, Date.now());
+      await sweepExpired(driver, prefix, config.retentionDays, Date.now());
       const line = `${JSON.stringify({
         v: 2,
         kid: config.keyId,
@@ -194,135 +165,53 @@ export function createAnonAuditSink(config: AnonAuditConfig): AnonAuditSink {
         cid: input.channelId,
         ct: input.ciphertext,
       })}\n`;
-      // Publish atomically with no-replace semantics: write a hidden
-      // temp file, hard-link it to the final name, then unlink the
-      // temp. `link` fails EEXIST if the final name is taken (rename
-      // would silently overwrite an existing record), and readers
-      // (privacy detection, custodian deletion) only ever see
-      // complete records — never a partial or empty file at a
-      // record name.
+      // Publish with no-replace semantics: the record name carries 8
+      // random bytes, and the create-if-absent write guarantees an
+      // existing record is never overwritten. A collision is retried
+      // with a fresh name; any other storage failure fails closed.
       let lastError: unknown;
       for (let attempt = 0; attempt < 3; attempt++) {
-        const finalName = recordFileName(new Date());
-        const tempPath = join(dir, `.${finalName}-${randomBytes(4).toString("hex")}.tmp`);
-        const finalPath = join(dir, finalName);
-        // Ownership tracking: a temp is removed on failure ONLY when
-        // this attempt created it (open wx succeeded); a published
-        // final is withdrawn when a post-publish step fails, so
-        // record() never reports success with a half-published or
-        // alias-carrying record.
-        let tempOwned = false;
-        let finalPublished = false;
-        try {
-          // Crash durability (ADR-0003 §3): the record must be on
-          // stable storage BEFORE it becomes visible under its final
-          // name, because the public send happens right after
-          // record() resolves. fsync the temp file, publish, then
-          // fsync the directory so the new dirent itself survives a
-          // crash. Any failure aborts the publish and fails closed —
-          // the post is refused rather than sent unaudited.
-          const handle = await open(tempPath, "wx", 0o600);
-          tempOwned = true;
-          try {
-            await handle.writeFile(line);
-            await handle.sync();
-          } finally {
-            await handle.close();
-          }
-          await link(tempPath, finalPath);
-          try {
-            await unlink(tempPath);
-            tempOwned = false; // the temp name is gone; final is the only name
-          } catch {
-            // The temp name is a second hard link to the published
-            // ciphertext. Leaving it would let a custodian delete the
-            // record file while this alias keeps the data readable, so
-            // withdraw the publish and fail rather than report success
-            // with a surviving alias. `record()` throwing maps to
-            // `audit_failed` — no public post is sent.
-            await rm(finalPath, { force: true }).catch(() => {});
-            await rm(tempPath, { force: true }).catch(() => {});
-            throw new Error("anon-audit temp unlink failed");
-          }
-          finalPublished = true;
-          const dirHandle = await open(dir, "r");
-          try {
-            await dirHandle.sync();
-          } finally {
-            await dirHandle.close();
-          }
+        const key = joinStorageKey(prefix, recordFileName(new Date()));
+        const created = await driver.writeExclusive(key, line);
+        if (created) {
           return;
-        } catch (error) {
-          if (tempOwned) {
-            await rm(tempPath, { force: true }).catch(() => {});
-          }
-          if (finalPublished) {
-            // Directory durability could not be confirmed — withdraw
-            // the published record rather than leave an unconfirmed
-            // audit entry behind a failed post.
-            await rm(finalPath, { force: true }).catch(() => {});
-          }
-          // EEXIST means another attempt owns that temp name (open wx)
-          // or the final name (link) — never remove a file we did not
-          // create; our own temp was already cleaned up above.
-          if (isNodeError(error) && error.code === "EEXIST") {
-            lastError = error;
-            continue;
-          }
-          throw error;
         }
+        lastError = new Error(`anon-audit record name already exists: ${key}`);
       }
       throw lastError;
     },
+
     sweep: async () => {
-      await mkdir(dir, { recursive: true, mode: 0o700 });
-      await sweepExpired(dir, config.retentionDays, Date.now());
+      await sweepExpired(driver, prefix, config.retentionDays, Date.now());
     },
   };
 }
 
 /**
- * Whether the audit directory currently holds any non-empty record
- * file. Used by the `/privacy delete` consumer: the bot cannot
- * selectively delete ciphertext-only records, so it must at least
- * detect that records exist and report the honest outcome.
+ * Whether the audit prefix currently holds any non-empty record.
+ * Used by the `/privacy delete` consumer: the bot cannot selectively
+ * delete ciphertext-only records, so it must at least detect that
+ * records exist and report the honest outcome.
  */
-export async function hasAnonAuditRecords(dir: string): Promise<boolean> {
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-  for (const name of entries) {
-    // A `.tmp` file may be an unpublished partial record or a hard-link
-    // alias to published ciphertext — either way records may exist.
+export async function hasAnonAuditRecords(
+  dir: string,
+  options: AnonAuditSinkOptions = {},
+): Promise<boolean> {
+  const driver = options.driver ?? getStorageDriver();
+  const entries = await driver.list(dir === "" ? "" : `${dir}/`);
+  for (const entry of entries) {
+    const name = dir === "" ? entry.key : entry.key.slice(`${dir}/`.length);
+    // A leftover temp file may be an unpublished partial record — treat
+    // it as "records may exist" (fail closed).
     if (name.endsWith(".tmp")) {
       return true;
     }
     if (!FILE_NAME_PATTERN.test(name)) {
       continue;
     }
-    try {
-      const info = await stat(join(dir, name));
-      if (info.size > 0) {
-        return true;
-      }
-    } catch {
-      // Unreadable file → treat as "records may exist" (fail closed).
+    if (entry.size > 0) {
       return true;
     }
   }
   return false;
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    typeof (error as NodeJS.ErrnoException).code === "string"
-  );
 }

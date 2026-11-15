@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 const snapshotConfigSchema = z.object({
-  snapshotDir: z.string().min(1),
-  sourcePaths: z.array(z.string().min(1)).min(1),
+  snapshotPrefix: z.string().min(1),
+  sourceKeys: z.array(z.string().min(1)).min(1),
   dailyRetention: z.number().int().positive(),
   weeklyRetention: z.number().int().positive(),
   monthlyRetention: z.number().int().positive(),
@@ -16,8 +16,8 @@ const snapshotConfigSchema = z.object({
 export type SnapshotConfig = z.infer<typeof snapshotConfigSchema>;
 
 export type SnapshotRuntimeOptions = {
-  snapshotDir?: string;
-  sourcePaths?: string[];
+  snapshotPrefix?: string;
+  sourceKeys?: string[];
   dailyRetention?: number;
   weeklyRetention?: number;
   monthlyRetention?: number;
@@ -36,20 +36,22 @@ export type SnapshotRuntimeOptions = {
  * encrypted snapshot — otherwise a snapshot restored to a fresh host
  * would resurrect data the user already deleted. Add new persistent
  * consent-gated files here too.
+ *
+ * The entries are storage keys (ADR-0004): the local backend resolves
+ * them under `data/`, object storage under the bucket root.
  */
-export const DEFAULT_SNAPSHOT_SOURCE_PATHS: ReadonlyArray<string> = [
-  "data/bot.db",
-  "data/consent.json",
-  "data/birthdays.json",
-  "data/polls.json",
-  "data/reminders.json",
-  "data/timekeeper-history.json",
+export const DEFAULT_SNAPSHOT_SOURCE_KEYS: ReadonlyArray<string> = [
+  "consent.json",
+  "birthdays.json",
+  "polls.json",
+  "reminders.json",
+  "timekeeper-history.json",
 ];
 
 export function readSnapshotConfig(options: SnapshotRuntimeOptions = {}): SnapshotConfig {
   return snapshotConfigSchema.parse({
-    snapshotDir: options.snapshotDir ?? "data/snapshots",
-    sourcePaths: options.sourcePaths ?? [...DEFAULT_SNAPSHOT_SOURCE_PATHS],
+    snapshotPrefix: options.snapshotPrefix ?? "snapshots",
+    sourceKeys: options.sourceKeys ?? [...DEFAULT_SNAPSHOT_SOURCE_KEYS],
     dailyRetention: options.dailyRetention ?? 7,
     weeklyRetention: options.weeklyRetention ?? 4,
     monthlyRetention: options.monthlyRetention ?? 12,

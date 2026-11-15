@@ -7,18 +7,20 @@
  * (or user id) to an author. The audit-key custodian runs this
  * OFFLINE with the private key (`src/scripts/anon-audit-lookup.ts`).
  *
- * Every record file is decrypted and inspected before results are
- * returned — same fail-closed posture as the deletion tool: a corrupt
- * file, missing `ct`, undecryptable record, or unreadable file aborts
- * the run rather than risk reporting an incomplete correlation.
+ * Every record is decrypted and inspected before results are returned —
+ * same fail-closed posture as the deletion tool: a corrupt record,
+ * missing `ct`, undecryptable record, or unreadable object aborts the
+ * run rather than risk reporting an incomplete correlation.
  *
  * Rotation: `privateKeys` may hold several PEM keys; each record is
  * tried against them in order so records sealed under an older `kid`
  * still resolve during the overlap window.
  */
 import { constants, createPrivateKey, privateDecrypt } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+
+import { getStorageDriver } from "../../lib/storage/index.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
+import { joinStorageKey } from "../../lib/storage/types.js";
 
 const FILE_NAME_PATTERN = /^\d{4}-\d{2}-\d{2}(?:T.*)?\.jsonl$/;
 
@@ -43,7 +45,7 @@ export type AnonAuditLookupFilter = {
 };
 
 export type AnonAuditLookupMatch = {
-  /** Record file name — operational handle, not sensitive. */
+  /** Record key — operational handle, not sensitive. */
   file: string;
   plaintext: AnonAuditPlaintextRecord;
 };
@@ -60,14 +62,6 @@ export type AnonAuditLookupResult =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    typeof (error as NodeJS.ErrnoException).code === "string"
-  );
 }
 
 function decryptRecord(
@@ -147,23 +141,20 @@ export async function lookupAnonAuditRecords(options: {
   /** PEM private keys (PKCS8) — custodian material, never on the bot. */
   privateKeys: string[];
   filter: AnonAuditLookupFilter;
+  /** Storage backend to read from. Defaults to the configured backend. */
+  driver?: StorageDriver;
 }): Promise<AnonAuditLookupResult> {
   const { dir, filter } = options;
   if (options.privateKeys.length === 0) {
     return { ok: false, error: "at least one private key is required" };
   }
   const keys = options.privateKeys.map((pem) => createPrivateKey(pem));
+  const driver = options.driver ?? getStorageDriver();
 
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return { ok: true, scanned: 0, matched: [], unmatchedAttempts: [] };
-    }
-    return { ok: false, error: `cannot read audit directory: ${dir}` };
-  }
-  const names = entries.filter((name) => FILE_NAME_PATTERN.test(name));
+  const entries = await driver.list(dir === "" ? "" : `${dir}/`);
+  const names = entries
+    .map((entry) => (dir === "" ? entry.key : entry.key.slice(`${dir}/`.length)))
+    .filter((name) => FILE_NAME_PATTERN.test(name));
 
   const matched: AnonAuditLookupMatch[] = [];
   const attempts: AnonAuditPlaintextRecord[] = [];
@@ -177,15 +168,9 @@ export async function lookupAnonAuditRecords(options: {
 
   try {
     for (const name of names) {
-      const path = join(dir, name);
-      let raw: string;
-      try {
-        raw = await readFile(path, "utf8");
-      } catch (error) {
-        if (isNodeError(error) && error.code === "ENOENT") {
-          continue; // swept between listing and reading
-        }
-        return { ok: false, error: `unreadable record file; nothing returned: ${name}` };
+      const raw = await driver.readText(joinStorageKey(dir, name));
+      if (raw === null) {
+        continue; // swept between listing and reading
       }
       const lines = raw.split("\n").filter((line) => line.trim() !== "");
       if (lines.length === 0) {

@@ -1,7 +1,8 @@
 import { existsSync, type FSWatcher, watch } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
+import { createLocalFileStorage } from "../../lib/storage/local.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
 import type { HotReloadConfig } from "./schema.js";
 import { safeParseHotReloadConfig } from "./schema.js";
 
@@ -29,7 +30,16 @@ export type TimerFactory = {
 };
 
 export type ConfigStoreOptions = {
+  /**
+   * Local path watched for operator edits. The configuration itself is
+   * read through the storage backend (ADR-0004); on the local backend the
+   * two point at the same file.
+   */
   filePath: string;
+  /** Storage backend holding the configuration. */
+  driver?: StorageDriver;
+  /** Storage key of the configuration. */
+  key?: string;
   debounceMs?: number;
   logger?: ConfigStoreLogger;
   watcherFactory?: FileWatcherFactory;
@@ -131,6 +141,8 @@ function defaultTimerFactory(): TimerFactory {
 
 export class ConfigStore {
   private readonly filePath: string;
+  private readonly driver: StorageDriver;
+  private readonly key: string;
   private readonly debounceMs: number;
   private readonly logger: ConfigStoreLogger;
   private readonly watcherFactory: FileWatcherFactory;
@@ -145,6 +157,11 @@ export class ConfigStore {
 
   constructor(options: ConfigStoreOptions) {
     this.filePath = options.filePath;
+    // A `filePath` keeps the store pinned to one file on the local
+    // filesystem (tests, operators); otherwise the configuration is read
+    // from the shared storage backend.
+    this.driver = options.driver ?? createLocalFileStorage({ root: dirname(options.filePath) });
+    this.key = options.key ?? basename(options.filePath);
     this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
     this.logger = options.logger ?? defaultLogger;
     this.watcherFactory = options.watcherFactory ?? defaultWatcherFactory;
@@ -255,7 +272,12 @@ export class ConfigStore {
   }
 
   private async readAndParse(): Promise<HotReloadConfig> {
-    const raw = await readFile(this.filePath, "utf8");
+    const raw = await this.driver.readText(this.key);
+    if (raw === null) {
+      const error = new Error(`config not found: ${this.key}`) as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      throw error;
+    }
     let json: unknown;
     try {
       json = JSON.parse(raw);

@@ -4,13 +4,14 @@
 
 import type { ConsentScope } from "../../consent/scopes.js";
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
+import { getStorageDriver } from "../../lib/storage/index.js";
 import { type BirthdayRoleConfig, isBirthdayRoleConfigured } from "./config.js";
 import { type JstDate, parseBirthdayDate } from "./date.js";
 import { selectBirthdaysOnDate } from "./schedule.js";
 import {
   type BirthdayEntry,
   type BirthdayStorage,
-  createFileBirthdayStorage,
+  createStorageBirthdayStorage,
   listBirthdays,
   removeBirthday,
   setBirthday,
@@ -85,7 +86,12 @@ export type RemoveTickResult = {
 
 export function createBirthdayRoleHandler(deps: HandlerDependencies): BirthdayRoleHandler {
   const config = deps.config;
-  const storage: BirthdayStorage = deps.storage ?? createFileBirthdayStorage(config.dataFile);
+  const storage: BirthdayStorage =
+    deps.storage ??
+    createStorageBirthdayStorage({
+      driver: getStorageDriver(),
+      key: config.dataFile,
+    });
   const now = deps.now ?? (() => new Date());
 
   if (!isBirthdayRoleConfigured(config)) {

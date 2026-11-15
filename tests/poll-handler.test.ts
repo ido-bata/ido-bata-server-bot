@@ -124,7 +124,7 @@ describe("poll handler", () => {
       ephemeral: true,
     });
 
-    const state = handler.loadState();
+    const state = await handler.loadState();
     expect(state.polls).toHaveLength(1);
     expect(state.polls[0]?.id).toBe("poll-id-fixed");
     expect(state.polls[0]?.messageId).toBe("message-1");
@@ -146,7 +146,7 @@ describe("poll handler", () => {
 
     const replied = interaction.__getReplied();
     expect(replied.content).toMatch(/選択肢の形式が不正です/);
-    expect(handler.loadState().polls).toHaveLength(0);
+    expect((await handler.loadState()).polls).toHaveLength(0);
   });
 
   it("rejects too few options", async () => {
@@ -201,7 +201,7 @@ describe("poll handler", () => {
       }),
     );
 
-    const state: PollStateFile = handler.loadState();
+    const state: PollStateFile = await handler.loadState();
     const poll = state.polls[0];
     expect(poll?.votes["voter-1"]).toBe(1);
   });
@@ -236,7 +236,7 @@ describe("poll handler", () => {
     });
     await handler.handleInteraction(secondVote);
 
-    const poll = handler.loadState().polls[0];
+    const poll = (await handler.loadState()).polls[0];
     expect(poll?.votes["voter-1"]).toBe(1);
     expect(secondVote.reply).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -266,7 +266,7 @@ describe("poll handler", () => {
       customId: buildPollButtonCustomId("poll-id", 0),
     });
     await handler.handleInteraction(vote);
-    expect(handler.loadState().polls[0]?.votes["voter-1"]).toBe(0);
+    expect((await handler.loadState()).polls[0]?.votes["voter-1"]).toBe(0);
 
     const clear = makeInteraction({
       commandName: "ignored",
@@ -276,7 +276,7 @@ describe("poll handler", () => {
     });
     await handler.handleInteraction(clear);
 
-    expect(handler.loadState().polls[0]?.votes["voter-1"]).toBeUndefined();
+    expect((await handler.loadState()).polls[0]?.votes["voter-1"]).toBeUndefined();
     expect(clear.reply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringMatching(/投票を取り消しました/),
@@ -334,7 +334,7 @@ describe("poll handler", () => {
     expect(fetchPollMessage).toHaveBeenCalledWith("channel-1", "message-1");
     const editMock = await fetchPollMessage.mock.results[0]?.value;
     expect(editMock.edit).toHaveBeenCalled();
-    const poll = handler.loadState().polls[0];
+    const poll = (await handler.loadState()).polls[0];
     expect(poll?.closed).toBe(true);
     expect(poll?.closedAt).toBe("2026-09-13T12:00:00.000Z");
   });
@@ -366,7 +366,7 @@ describe("poll handler", () => {
     await handler.handleInteraction(closeInteraction);
 
     expect(fetchPollMessage).toHaveBeenCalledWith("channel-1", "message-1");
-    expect(handler.loadState().polls[0]?.closed).toBe(true);
+    expect((await handler.loadState()).polls[0]?.closed).toBe(true);
     expect(closeInteraction.reply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringMatching(/元のメッセージを更新できませんでした/),
@@ -398,7 +398,7 @@ describe("poll handler", () => {
     });
     await handler.handleInteraction(closeInteraction);
 
-    expect(handler.loadState().polls[0]?.closed).toBe(false);
+    expect((await handler.loadState()).polls[0]?.closed).toBe(false);
     expect(closeInteraction.reply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringMatching(/作成者のみ/),
@@ -413,7 +413,7 @@ describe("poll handler", () => {
     await handler.handleInteraction(interaction);
 
     expect(interaction.reply).not.toHaveBeenCalled();
-    expect(handler.loadState().polls).toHaveLength(0);
+    expect((await handler.loadState()).polls).toHaveLength(0);
   });
 });
 

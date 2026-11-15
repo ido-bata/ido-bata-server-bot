@@ -11,6 +11,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Fixed** — bug fixes
 - **Security** — vulnerability fixes
 
+## [Unreleased]
+
+### Added
+
+- **Storage port and U3 backend (#121)**: `src/lib/storage/` defines the
+  `StorageDriver` port with two adapters — `LocalFileStorage` (files under
+  `data/`, the previous behaviour) and `U3Storage` (S3-compatible object
+  storage, the source of truth on Altare). `STORAGE_BACKEND=local|u3`
+  selects the backend; the storage layout is identical in both, so a
+  migration is a straight copy.
+- **Instance lease**: the bot takes `locks/instance.json` (create-if-absent)
+  before it connects to Discord and renews it while it runs. A live lease
+  held by another instance aborts the startup, so the old host and the
+  Altare deployment cannot process the same event twice.
+- **Migration tooling**: `bun run storage:migrate -- export|import|verify`
+  moves the persisted state between the local `data/` directory and the
+  configured backend, verifying per-object size + sha256. The source is
+  never deleted.
+- **Operational runbook**: `docs/operations/altare-migration.md` covers the
+  inventory, bucket provisioning, app configuration, cutover, backup and
+  restore, and the known constraints (voice egress, app-disk cache
+  semantics, Always Free limits).
+- **Compare-and-swap in the storage port**: `readVersioned`,
+  `compareAndSwap` and `probeConditionalWrites` give the backends a
+  conditional write, which the instance lease needs to be exclusive.
+- **Deletion ledger**: `privacy/deletions.json` records every privacy
+  deletion as an HMAC-SHA256 digest of the subject id. A restore merges the
+  ledger and re-applies the recorded erasures, so an old backup cannot
+  resurrect data a user asked to forget.
+- **Restore drill**: the backup procedure (export → import → verify) is
+  executable with the migration tooling and rehearsed as a regression test.
+- **Backup command**: `storage:migrate -- backup --target-bucket <name>`
+  copies the configured bucket into a second bucket and verifies *that*
+  bucket in the same run, so a daily backup is repeatable and can never be
+  verified against the wrong bucket. The export source is selectable
+  (`--source local` for the old host's `data/` directory).
+- **Fail-closed deletion ledger**: the append is a compare-and-swap, a
+  corrupt ledger is reported (and aborts a restore) instead of reading as
+  empty, a restore without `DELETION_LEDGER_KEY` is refused, and the
+  verification compares the post-erasure state so a correct final state
+  is not reported as a checksum mismatch.
+
+### Changed
+
+- Every persisted artefact now goes through the storage port instead of a
+  direct `node:fs` path: consent registry, timekeeper attendance and
+  session log, `/anon` audit records and the custodian operation log,
+  state-snapshot bundles, birthday registry, polls, reminders, scheduled
+  announcements, per-guild configuration, calendar configuration and cache,
+  and hot-reload configuration. The on-disk format is unchanged.
+- **Instance lease hardening** (independent review): every lease mutation
+  is a compare-and-swap, releasing expires the term instead of deleting
+  the object, the backend is probed for conditional-write support (the bot
+  refuses to start without it), a lost lease shuts the bot down with exit
+  code 1, and the lease backend is configured independently
+  (`LEASE_STORAGE_BACKEND`) so the old host and the new deployment contend
+  for the same lease during a cutover.
+
 ## [0.2.0] — 2026-09-21
 
 ### Added

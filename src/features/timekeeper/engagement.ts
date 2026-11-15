@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-
 import type { ConsentEvent } from "../../consent/types.js";
+import { getStorageDriver } from "../../lib/storage/index.js";
+import { STORAGE_KEYS } from "../../lib/storage/keys.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
 import type { TimekeeperEventKind } from "./timeline.js";
 import { fetchRandomWikipediaTopic, type WikipediaTopic } from "./wikipedia.js";
 
@@ -18,27 +18,26 @@ export type TimekeeperSessionRecord = {
 export type TimekeeperSessionEngagement = {
   attendanceDatesByUserId: Map<string, Set<string>>;
   checkInsByUserId: Map<string, Set<number>>;
+  /** Storage backend the session persists through. */
+  driver: StorageDriver;
   id: string;
 };
 
 type PersistedAttendance = Record<string, string[]>;
 type PersistedSessionLog = TimekeeperSessionRecord[];
 
-function getHistoryPath(): string {
-  return join(process.cwd(), "data", "timekeeper-history.json");
-}
-
-function getSessionLogPath(): string {
-  return join(process.cwd(), "data", "timekeeper-sessions.json");
-}
-
 type FortuneDependencies = {
   fetchRandomTopic?: () => Promise<WikipediaTopic>;
 };
 
-export function createSessionEngagement(id: string): TimekeeperSessionEngagement {
+export async function createSessionEngagement(
+  id: string,
+  options: { driver?: StorageDriver } = {},
+): Promise<TimekeeperSessionEngagement> {
+  const driver = options.driver ?? getStorageDriver();
   return {
-    attendanceDatesByUserId: loadAttendanceHistory(),
+    attendanceDatesByUserId: await loadAttendanceHistory(driver),
+    driver,
     id,
     checkInsByUserId: new Map(),
   };
@@ -191,9 +190,8 @@ export async function persistSessionAttendance(
     serialized[userId] = [...dates].sort();
   }
 
-  const historyPath = getHistoryPath();
-  mkdirSync(dirname(historyPath), { recursive: true });
-  writeFileSync(historyPath, JSON.stringify(serialized, null, 2), "utf8");
+  const historyKey = STORAGE_KEYS.timekeeperHistory;
+  await session.driver.write(historyKey, `${JSON.stringify(serialized, null, 2)}\n`);
 }
 
 /**
@@ -215,7 +213,7 @@ export async function markSessionInterrupted(
     await persistSessionAttendance(session, date);
   }
 
-  const log = loadSessionLog();
+  const log = await loadSessionLog(session.driver);
   log.push({
     endedAt: new Date().toISOString(),
     id: session.id,
@@ -224,18 +222,17 @@ export async function markSessionInterrupted(
     status,
   });
 
-  const logPath = getSessionLogPath();
-  mkdirSync(dirname(logPath), { recursive: true });
-  writeFileSync(logPath, JSON.stringify(log, null, 2), "utf8");
+  await session.driver.write(STORAGE_KEYS.timekeeperSessions, `${JSON.stringify(log, null, 2)}\n`);
 }
 
-export function loadSessionLog(): TimekeeperSessionRecord[] {
-  const logPath = getSessionLogPath();
-  if (!existsSync(logPath)) {
+export async function loadSessionLog(
+  driver: StorageDriver = getStorageDriver(),
+): Promise<TimekeeperSessionRecord[]> {
+  const raw = await driver.readText(STORAGE_KEYS.timekeeperSessions);
+  if (raw === null) {
     return [];
   }
 
-  const raw = readFileSync(logPath, "utf8");
   try {
     const parsed = JSON.parse(raw) as PersistedSessionLog;
     return Array.isArray(parsed) ? parsed : [];
@@ -259,13 +256,12 @@ function formatSessionDateFromId(id: string): string {
   return formatter.format(parsed);
 }
 
-function loadAttendanceHistory(): Map<string, Set<string>> {
-  const historyPath = getHistoryPath();
-  if (!existsSync(historyPath)) {
+async function loadAttendanceHistory(driver: StorageDriver): Promise<Map<string, Set<string>>> {
+  const raw = await driver.readText(STORAGE_KEYS.timekeeperHistory);
+  if (raw === null) {
     return new Map();
   }
 
-  const raw = readFileSync(historyPath, "utf8");
   const parsed = JSON.parse(raw) as PersistedAttendance;
   return new Map(Object.entries(parsed).map(([userId, dates]) => [userId, new Set(dates)]));
 }

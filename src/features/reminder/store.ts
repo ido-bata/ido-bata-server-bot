@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-
 import { z } from "zod";
+
+import { STORAGE_KEYS } from "../../lib/storage/keys.js";
+import { resolveStorageTarget } from "../../lib/storage/target.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
 
 const reminderSchema = z.object({
   id: z.string().min(1),
@@ -21,50 +22,63 @@ export type PersistedReminder = z.infer<typeof reminderSchema>;
 
 export type LoadOptions = {
   /**
-   * Override the file path. Tests inject a temp file here.
+   * Override the filesystem path. Tests inject a temp file here; the
+   * store is then served by a local filesystem driver rooted at its
+   * directory.
    */
   filePath?: string;
+  /** Storage backend holding the reminders. */
+  driver?: StorageDriver;
+  /** Storage key of the reminder list. */
+  key?: string;
 };
 
 export type LoadResult = {
   reminders: PersistedReminder[];
-  filePath: string;
+  /** Storage key of the reminder list. */
+  key: string;
 };
 
-const DEFAULT_RELATIVE_PATH = join("data", "reminders.json");
+function resolveStore(options: LoadOptions): { driver: StorageDriver; key: string } {
+  return resolveStorageTarget({
+    defaultKey: STORAGE_KEYS.reminders,
+    driver: options.driver,
+    filePath: options.filePath,
+    key: options.key,
+  });
+}
 
-export function loadReminders(options: LoadOptions = {}): LoadResult {
-  const filePath = options.filePath ?? join(process.cwd(), DEFAULT_RELATIVE_PATH);
+export async function loadReminders(options: LoadOptions = {}): Promise<LoadResult> {
+  const { driver, key } = resolveStore(options);
 
-  if (!existsSync(filePath)) {
-    return { reminders: [], filePath };
+  const raw = await driver.readText(key);
+  if (raw === null) {
+    return { key, reminders: [] };
   }
 
-  const raw = readFileSync(filePath, "utf8");
   // Defensive: treat unreadable / malformed JSON as an empty store so a
-  // corrupted file doesn't crash the bot on boot (matches the timekeeper
+  // corrupted object doesn't crash the bot on boot (matches the timekeeper
   // history pattern from `features/timekeeper/engagement.ts`).
   let payload: unknown;
   try {
     payload = JSON.parse(raw);
   } catch {
-    return { reminders: [], filePath };
+    return { key, reminders: [] };
   }
   const parsed = storeSchema.safeParse(payload);
   if (!parsed.success) {
-    return { reminders: [], filePath };
+    return { key, reminders: [] };
   }
 
-  return { reminders: parsed.data.reminders, filePath };
+  return { key, reminders: parsed.data.reminders };
 }
 
-export function saveReminders(
+export async function saveReminders(
   reminders: readonly PersistedReminder[],
   options: LoadOptions = {},
-): string {
-  const filePath = options.filePath ?? join(process.cwd(), DEFAULT_RELATIVE_PATH);
+): Promise<string> {
+  const { driver, key } = resolveStore(options);
   const payload = { reminders: [...reminders] };
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-  return filePath;
+  await driver.write(key, `${JSON.stringify(payload, null, 2)}\n`);
+  return key;
 }

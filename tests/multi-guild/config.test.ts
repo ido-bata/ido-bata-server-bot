@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildGuildConfigPath,
   createDefaultGuildConfig,
   guildConfigSchema,
   parseGuildConfig,
@@ -47,15 +46,5 @@ describe("multi-guild config schema", () => {
       customEmojis: [],
     };
     expect(() => guildConfigSchema.parse(raw)).toThrow();
-  });
-
-  it("builds a safe filesystem path under data/guilds", () => {
-    expect(buildGuildConfigPath("data", "1234")).toBe("data/guilds/1234/config.json");
-  });
-
-  it("sanitizes path-unsafe characters in the guild id", () => {
-    // `abc/../def` has four unsafe characters (two slashes and two dots),
-    // each of which is collapsed to an underscore.
-    expect(buildGuildConfigPath("data", "abc/../def")).toBe("data/guilds/abc____def/config.json");
   });
 });

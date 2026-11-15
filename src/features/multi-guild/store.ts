@@ -1,10 +1,6 @@
-import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-
+import { getStorageDriver } from "../../lib/storage/index.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
 import {
-  buildGuildConfigPath,
   createDefaultGuildConfig,
   type GuildConfig,
   parseGuildConfig,
@@ -21,77 +17,45 @@ export type ConfigStore = {
   ensureGuild(guildId: string): Promise<GuildConfig>;
 };
 
-export type FileSystemLike = {
-  existsSync(path: string): boolean;
-  mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
-  readFile(path: string, encoding: "utf8"): Promise<string>;
-  writeFile(path: string, data: string): Promise<void>;
-  readdir(path: string): Promise<string[]>;
-  rename(from: string, to: string): Promise<void>;
+export type ConfigStoreOptions = {
+  /** Storage backend holding the per-guild configuration. */
+  driver?: StorageDriver;
+  /** Storage key prefix that holds the per-guild configuration. */
+  prefix?: string;
 };
 
-const defaultFs: FileSystemLike = {
-  existsSync,
-  async mkdir(path, options) {
-    await mkdir(path, options);
-  },
-  readFile,
-  writeFile,
-  async rename(from, to) {
-    await rename(from, to);
-  },
-  async readdir(path) {
-    const fs = await import("node:fs/promises");
-    return fs.readdir(path);
-  },
-};
+function safeGuildSegment(guildId: string): string {
+  return guildId.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
 
-export function createFileConfigStore(
-  options: { dataRoot?: string; fs?: FileSystemLike } = {},
-): ConfigStore {
-  const dataRoot = options.dataRoot ?? "data";
-  const fs = options.fs ?? defaultFs;
+/**
+ * Per-guild configuration store.
+ *
+ * The configuration lives in the storage backend (ADR-0004): the local
+ * `data/guilds/<guildId>/config.json` directory on a single host, the
+ * `guilds/<guildId>/config.json` prefix inside the U3 bucket on Altare.
+ */
+export function createConfigStore(options: ConfigStoreOptions = {}): ConfigStore {
+  const driver = options.driver ?? getStorageDriver();
+  const prefix = options.prefix ?? "guilds";
+
+  function guildKey(guildId: string): string {
+    return `${prefix}/${safeGuildSegment(guildId)}/config.json`;
+  }
 
   async function readGuildFile(guildId: string): Promise<string> {
-    const path = buildGuildConfigPath(dataRoot, guildId);
-    return fs.readFile(path, "utf8");
+    const raw = await driver.readText(guildKey(guildId));
+    if (raw === null) {
+      throw new Error(`guild config not found: ${guildId}`);
+    }
+    return raw;
   }
 
   async function writeGuildFile(guildId: string, contents: string): Promise<void> {
-    const path = buildGuildConfigPath(dataRoot, guildId);
-    // Write to a sibling temp file, then `rename(2)` over the destination.
-    // rename is atomic on POSIX, so concurrent readers always see either
-    // the previous full file or the new full file — never a half-written
-    // one. Temp lives next to the target so the rename stays within the
-    // same filesystem.
-    await fs.mkdir(dirname(path), { recursive: true });
-    const tempPath = `${path}.tmp-${randomSuffix()}`;
-    try {
-      await fs.writeFile(tempPath, contents);
-      await fs.rename(tempPath, path);
-    } catch (error) {
-      // Best-effort cleanup so a failed write does not leave orphan .tmp
-      // files lying around. Errors here are swallowed — the original
-      // failure is what callers need to see.
-      try {
-        const fsPromises = await import("node:fs/promises");
-        await fsPromises.unlink(tempPath);
-      } catch {
-        // ignore — temp file may not exist
-      }
-      throw error;
-    }
-  }
-
-  function guildConfigDir(): string {
-    return `${dataRoot}/guilds`;
-  }
-
-  function randomSuffix(): string {
-    // 8 random bytes hex-encoded = 16 chars. Two concurrent writers are
-    // overwhelmingly unlikely to collide; collisions just cause one of
-    // them to fail the rename and surface the error to the caller.
-    return randomBytes(8).toString("hex");
+    // The storage backend publishes the new object atomically, so a
+    // concurrent reader always sees either the previous full document or
+    // the new full document — never a half-written one.
+    await driver.write(guildKey(guildId), contents);
   }
 
   return {
@@ -101,11 +65,10 @@ export function createFileConfigStore(
     },
 
     async loadGuildIfExists(guildId) {
-      const path = buildGuildConfigPath(dataRoot, guildId);
-      if (!fs.existsSync(path)) {
+      const raw = await driver.readText(guildKey(guildId));
+      if (raw === null) {
         return null;
       }
-      const raw = await readGuildFile(guildId);
       return parseGuildConfig(JSON.parse(raw), guildId);
     },
 
@@ -117,43 +80,36 @@ export function createFileConfigStore(
     },
 
     async removeGuild(guildId) {
-      const path = buildGuildConfigPath(dataRoot, guildId);
-      if (!fs.existsSync(path)) {
-        return;
-      }
-      const fsPromises = await import("node:fs/promises");
-      await fsPromises.unlink(path);
+      await driver.delete(guildKey(guildId));
     },
 
     async listGuildIds() {
-      const dir = guildConfigDir();
-      if (!fs.existsSync(dir)) {
-        return [];
-      }
-      const entries = await fs.readdir(dir);
+      const entries = await driver.list(`${prefix}/`);
       const guildIds: string[] = [];
       for (const entry of entries) {
-        if (!fs.existsSync(`${dir}/${entry}/config.json`)) {
+        if (!entry.key.endsWith("/config.json")) {
+          continue;
+        }
+        const segment = entry.key.slice(`${prefix}/`.length).split("/")[0] ?? "";
+        if (!segment) {
           continue;
         }
         try {
-          const raw = await fs.readFile(`${dir}/${entry}/config.json`, "utf8");
-          const parsed = JSON.parse(raw) as { guildId?: unknown };
-          if (typeof parsed.guildId === "string") {
-            guildIds.push(parsed.guildId);
-          } else {
-            guildIds.push(entry);
+          const raw = await driver.readText(entry.key);
+          if (raw === null) {
+            continue;
           }
+          const parsed = JSON.parse(raw) as { guildId?: unknown };
+          guildIds.push(typeof parsed.guildId === "string" ? parsed.guildId : segment);
         } catch {
-          guildIds.push(entry);
+          guildIds.push(segment);
         }
       }
       return guildIds;
     },
 
     async exists(guildId) {
-      const path = buildGuildConfigPath(dataRoot, guildId);
-      return fs.existsSync(path);
+      return driver.exists(guildKey(guildId));
     },
 
     async ensureGuild(guildId) {

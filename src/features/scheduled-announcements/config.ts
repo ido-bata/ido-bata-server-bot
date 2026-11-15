@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-
 import { z } from "zod";
+
+import { STORAGE_KEYS } from "../../lib/storage/keys.js";
+import { resolveStorageTarget } from "../../lib/storage/target.js";
+import type { StorageDriver } from "../../lib/storage/types.js";
 
 const JST_OFFSET_MINUTES = 9 * 60;
 
@@ -33,41 +34,53 @@ export const scheduledAnnouncementsFileSchema = z.object({
 
 export type ScheduledAnnouncementEntry = z.infer<typeof entrySchema>;
 
-const DEFAULT_RELATIVE_PATH = join("data", "scheduled-announcements.json");
-
 export type LoadOptions = {
   /**
-   * Override the file path. Tests inject a temp file here.
+   * Override the filesystem path. Tests inject a temp file here; the
+   * store is then served by a local filesystem driver rooted at its
+   * directory.
    */
   filePath?: string;
+  /** Storage backend holding the cadence configuration. */
+  driver?: StorageDriver;
+  /** Storage key of the cadence configuration. */
+  key?: string;
 };
 
 export type LoadResult = {
   entries: ScheduledAnnouncementEntry[];
-  filePath: string;
+  /** Storage key of the cadence configuration. */
+  key: string;
 };
 
-export function loadScheduledAnnouncements(options: LoadOptions = {}): LoadResult {
-  const filePath = options.filePath ?? join(process.cwd(), DEFAULT_RELATIVE_PATH);
-
-  if (!existsSync(filePath)) {
-    return { entries: [], filePath };
-  }
-
-  const raw = readFileSync(filePath, "utf8");
-  const parsed = scheduledAnnouncementsFileSchema.parse(JSON.parse(raw));
-  return { entries: parsed.entries, filePath };
+function resolveStore(options: LoadOptions): { driver: StorageDriver; key: string } {
+  return resolveStorageTarget({
+    defaultKey: STORAGE_KEYS.scheduledAnnouncements,
+    driver: options.driver,
+    filePath: options.filePath,
+    key: options.key,
+  });
 }
 
-export function saveScheduledAnnouncements(
+export async function loadScheduledAnnouncements(options: LoadOptions = {}): Promise<LoadResult> {
+  const { driver, key } = resolveStore(options);
+  const raw = await driver.readText(key);
+  if (raw === null) {
+    return { entries: [], key };
+  }
+
+  const parsed = scheduledAnnouncementsFileSchema.parse(JSON.parse(raw));
+  return { entries: parsed.entries, key };
+}
+
+export async function saveScheduledAnnouncements(
   entries: ScheduledAnnouncementEntry[],
   options: LoadOptions = {},
-): string {
-  const filePath = options.filePath ?? join(process.cwd(), DEFAULT_RELATIVE_PATH);
+): Promise<string> {
+  const { driver, key } = resolveStore(options);
   const payload = { entries };
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-  return filePath;
+  await driver.write(key, `${JSON.stringify(payload, null, 2)}\n`);
+  return key;
 }
 
 export function getJstOffsetMinutes(): number {

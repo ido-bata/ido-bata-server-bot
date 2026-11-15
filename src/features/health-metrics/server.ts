@@ -24,6 +24,7 @@ export type CreateHealthMetricsServerOptions = {
  * Spins up a minimal HTTP/1.1 server that exposes:
  *
  * - `GET /health`  → JSON liveness probe
+ * - `GET /ready`   → JSON readiness probe (503 until lease + gateway are up)
  * - `GET /metrics` → Prometheus text format
  *
  * The server binds to `host:port`. Pass `port: 0` to bind an ephemeral
@@ -89,8 +90,27 @@ async function handleRequest(
       status: "ok",
       uptime_sec: Math.max(0, Math.floor(snap.uptimeSec)),
       discord_ws: snap.discordWsConnected ? "connected" : "disconnected",
+      storage_lease: snap.storageLeaseHeld ? "held" : "not_held",
     };
     sendJson(res, 200, body, { "cache-control": "no-store" });
+    return;
+  }
+
+  if (path === "/ready") {
+    const snap = registry.snapshot();
+    // Readiness means "safe to serve": the storage lease is held (no other
+    // instance owns the runtime) AND the Discord gateway is connected.
+    // A lease-conflicted instance that is still alive for teardown must
+    // not look ready to a load balancer or orchestrator.
+    const ready = snap.discordWsConnected && snap.storageLeaseHeld;
+    const body = ready
+      ? { status: "ready" }
+      : {
+          status: "not_ready",
+          discord_ws: snap.discordWsConnected ? "connected" : "disconnected",
+          storage_lease: snap.storageLeaseHeld ? "held" : "not_held",
+        };
+    sendJson(res, ready ? 200 : 503, body, { "cache-control": "no-store" });
     return;
   }
 
