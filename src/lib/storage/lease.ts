@@ -76,6 +76,14 @@ export class LeaseUnsupportedError extends Error {
   }
 }
 
+/** The lease object exists but its payload is not a lease — corruption, not absence. */
+export class LeaseCorruptError extends Error {
+  constructor() {
+    super("the storage lease object exists but its payload cannot be parsed");
+    this.name = "LeaseCorruptError";
+  }
+}
+
 /** The lease was taken over by another instance. */
 export class LeaseLostError extends Error {
   readonly holderId: string;
@@ -180,6 +188,12 @@ export async function acquireInstanceLease(options: AcquireLeaseOptions): Promis
 
   const current = await driver.readVersioned(key);
   const currentLease = current ? parseLease(new TextDecoder().decode(current.data)) : null;
+  if (current && !currentLease) {
+    // A stored object we cannot parse is corruption, not an absent lease:
+    // resetting it to epoch 1 could overwrite a term another instance
+    // still believes it owns. Fail closed instead.
+    throw new LeaseCorruptError();
+  }
 
   if (currentLease && Date.parse(currentLease.expiresAt) > now()) {
     throw new LeaseConflictError(currentLease.holderId, currentLease.expiresAt);
@@ -200,6 +214,9 @@ export async function acquireInstanceLease(options: AcquireLeaseOptions): Promis
     // Another instance won the race. Report whoever holds it now.
     const winner = await driver.readVersioned(key);
     const winnerLease = winner ? parseLease(new TextDecoder().decode(winner.data)) : null;
+    if (winner && !winnerLease) {
+      throw new LeaseCorruptError();
+    }
     throw new LeaseConflictError(
       winnerLease?.holderId ?? "unknown",
       winnerLease?.expiresAt ?? new Date(now()).toISOString(),
@@ -213,6 +230,11 @@ export async function acquireInstanceLease(options: AcquireLeaseOptions): Promis
   // instances run.
   const stored = await driver.readVersioned(key);
   const storedLease = stored ? parseLease(new TextDecoder().decode(stored.data)) : null;
+  if (stored && !storedLease) {
+    // Our own write came back unreadable — the backend is not behaving
+    // the way the lease contract assumes. Do not hand out the term.
+    throw new LeaseCorruptError();
+  }
   if (!storedLease || storedLease.holderId !== holderId || storedLease.epoch !== epoch) {
     throw new LeaseConflictError(
       storedLease?.holderId ?? "unknown",

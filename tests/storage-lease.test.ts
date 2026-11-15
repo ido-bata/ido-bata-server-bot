@@ -3,9 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { STORAGE_KEYS } from "../src/lib/storage/keys.js";
 import {
   acquireInstanceLease,
   LeaseConflictError,
+  LeaseCorruptError,
   LeaseLostError,
   LeaseUnsupportedError,
 } from "../src/lib/storage/lease.js";
@@ -31,6 +33,24 @@ describe("instance lease (local backend)", () => {
         LeaseConflictError,
       );
       await first.release();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("refuses to reset a lease object whose payload is not a lease", async () => {
+    const { cleanup, driver } = tempDriver();
+    try {
+      // Corruption is not absence: overwriting it with epoch 1 could
+      // destroy a term another instance still owns.
+      await driver.write(STORAGE_KEYS.instanceLease, "not-a-lease-payload");
+      await expect(acquireInstanceLease({ driver, holderId: "instance-a" })).rejects.toBeInstanceOf(
+        LeaseCorruptError,
+      );
+      // The corrupt object must still be there — nothing was overwritten.
+      await expect(driver.readText(STORAGE_KEYS.instanceLease)).resolves.toBe(
+        "not-a-lease-payload",
+      );
     } finally {
       cleanup();
     }

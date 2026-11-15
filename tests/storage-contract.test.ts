@@ -174,8 +174,23 @@ if (valkeyTestUrl) {
         // Unconditional write still replaces the corrupt value.
         await driver.write("bad.json", "ok");
         await expect(driver.readText("bad.json")).resolves.toBe("ok");
+
+        // JSON that merely contains a "v" member must not donate its
+        // version to the CAS script — not even when the caller guesses it.
+        await client.set(`${prefix}vonly.json`, '{"v":5,"unrelated":true}');
+        await expect(driver.read("vonly.json")).rejects.toThrow(/corrupt storage object/);
+        await expect(driver.compareAndSwap("vonly.json", "x", "5")).resolves.toBe("conflict");
+        await expect(driver.compareAndSwap("vonly.json", "x", null)).resolves.toBe("conflict");
+
+        // A well-formed envelope still CASes normally.
+        await client.set(`${prefix}good.json`, '{"v":3,"m":1,"s":1,"d":"aGVsbG8="}');
+        await expect(driver.readText("good.json")).resolves.toBe("hello");
+        await expect(driver.compareAndSwap("good.json", "world", "3")).resolves.toBe("written");
+        await expect(driver.compareAndSwap("good.json", "again", "3")).resolves.toBe("conflict");
       } finally {
-        await client.del(`${prefix}bad.json`).catch(() => undefined);
+        await client
+          .del([`${prefix}bad.json`, `${prefix}vonly.json`, `${prefix}good.json`])
+          .catch(() => undefined);
         await client.quit().catch(() => undefined);
       }
     });

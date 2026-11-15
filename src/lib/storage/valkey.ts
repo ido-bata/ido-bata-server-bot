@@ -65,12 +65,18 @@ export type ValkeyStorageOptions = {
   tlsInsecure?: boolean;
 };
 
+// Envelope shape every writer emits: {"v":N,"m":N,"s":N,"d":"<base64>"}.
+// The Lua scripts only trust a value that matches this shape in full —
+// a JSON document that merely contains a `"v":` member, or an envelope
+// missing fields, is corruption and must never donate its version.
+const ENVELOPE_VERSION_PATTERN = '^%s*{"v":(%d+),"m":%d+,"s":%d+,"d":"[A-Za-z0-9+/=]*"}%s*$';
+
 // Increment the envelope version and store the new payload atomically.
 const WRITE_SCRIPT = `
 local cur = redis.call('GET', KEYS[1])
 local v = 0
 if cur then
-  v = tonumber(string.match(cur, '"v":(%d+)')) or 0
+  v = tonumber(string.match(cur, '${ENVELOPE_VERSION_PATTERN}')) or 0
 end
 local env = '{"v":' .. (v + 1) .. ',"m":' .. ARGV[2] .. ',"s":' .. ARGV[3] .. ',"d":"' .. ARGV[1] .. '"}'
 redis.call('SET', KEYS[1], env)
@@ -79,13 +85,14 @@ return v + 1
 
 // Compare-and-swap: ARGV[1] = expected version (-1 = must not exist),
 // ARGV[2] = base64 payload, ARGV[3] = mtime, ARGV[4] = size. An existing
-// value whose envelope cannot be parsed is never overwritten: it reports
-// as a conflict so callers fail closed instead of clobbering state.
+// value that is not a well-formed envelope is never overwritten: it
+// reports as a conflict so callers fail closed instead of clobbering
+// state.
 const CAS_SCRIPT = `
 local cur = redis.call('GET', KEYS[1])
 local cv = nil
 if cur then
-  cv = tonumber(string.match(cur, '"v":(%d+)'))
+  cv = tonumber(string.match(cur, '${ENVELOPE_VERSION_PATTERN}'))
   if cv == nil then
     return 0
   end
@@ -124,11 +131,13 @@ function parseEnvelope(raw: string | null): Envelope | null {
 }
 
 function envelopeFor(data: Uint8Array, version: number, mtimeMs: number): string {
+  // Key order must match ENVELOPE_VERSION_PATTERN — the Lua scripts
+  // validate the literal shape, not just parseable JSON.
   return JSON.stringify({
-    d: Buffer.from(data).toString("base64"),
+    v: version,
     m: mtimeMs,
     s: data.byteLength,
-    v: version,
+    d: Buffer.from(data).toString("base64"),
   });
 }
 
