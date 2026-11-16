@@ -11,6 +11,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Fixed** — bug fixes
 - **Security** — vulnerability fixes
 
+## [0.3.2] - 2026-11-16
+
+Second hotfix for the same outage: v0.3.1 fixed the entrypoint, but the app
+still came up unreachable from the platform.
+
+### Fixed
+
+- **The health server bound to loopback on a platform deployment**: after
+  v0.3.1 the process started (it wrote `calendar-cache.json`), but
+  `https://ido-bata-server-bot.go.altare.global` kept returning 502.
+  `readHealthMetricsConfig` only switched to `0.0.0.0` when `CONTAINER` was
+  set — and Altare starts `node dist/index.js` directly without any
+  container, so the server stayed on `127.0.0.1` where the platform proxy
+  cannot connect. A platform-assigned `PORT` is itself the signal that an
+  external proxy will connect, so that now selects `0.0.0.0` too; a
+  bare-metal run with no `PORT` keeps loopback. Verified by probing the
+  bound port from the machine's network interface: loopback gives
+  `ECONNREFUSED`, `0.0.0.0` gives 200.
+
 ## [0.3.1] - 2026-11-16
 
 Hotfix for a deployment outage: the compiled entrypoint the platform starts

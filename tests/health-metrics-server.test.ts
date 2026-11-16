@@ -316,6 +316,14 @@ describe("health-metrics config", () => {
     expect(readHealthMetricsConfig(env)).toMatchObject({ port: 8080 });
   });
 
+  it("binds 0.0.0.0 by default when the platform assigns a PORT", async () => {
+    // A platform-assigned PORT means an external proxy will connect, so
+    // loopback is always wrong — even when no container runtime is involved
+    // (Altare starts `node dist/index.js` directly without CONTAINER).
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
+    expect(readHealthMetricsConfig({ PORT: "8080" })).toMatchObject({ host: "0.0.0.0" });
+  });
+
   it("binds 0.0.0.0 by default inside a container", async () => {
     // A published port is reached through the container interface, never
     // its loopback: binding 127.0.0.1 makes the exposed port unreachable.
