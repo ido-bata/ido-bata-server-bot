@@ -75,7 +75,12 @@ RUN bun install --frozen-lockfile
 
 # ---- build ----
 FROM deps AS build
-COPY tsconfig.json ./
+# `tsconfig.build.json` extends the root config but pins `rootDir` to `src/`
+# so the emitted entrypoint is `dist/index.js`. Compiling with the root
+# `tsconfig.json` (which also includes `tests/` and `*.config.ts`) derives a
+# common root of the repository and writes `dist/src/index.js` instead — the
+# runtime `CMD` then fails with MODULE_NOT_FOUND on every start.
+COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN bun run build
 

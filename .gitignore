@@ -43,6 +43,10 @@ data/anon-audit/
 data/calendars.json
 data/calendar-cache.json
 
+# Instance lease (ADR-0004) when the lease backend is `local`. Holds a
+# per-term token — runtime state only, never committed.
+data/locks/
+
 # Editor / OS / tooling
 .DS_Store
 .idea/

@@ -122,6 +122,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Fixed
 
+- **The deployed entrypoint did not exist**: `bun run build` compiled the
+  root `tsconfig.json`, whose `include` covers `tests/` — that widened the
+  common root to the repository, so `tsc` emitted `dist/src/index.js` while
+  the Containerfile, compose and the Altare runbook all start
+  `node dist/index.js`. Every deployment died at start with
+  `MODULE_NOT_FOUND`. A new `tsconfig.build.json` pins `rootDir: "src"` and
+  `bun run build` (and the `build` stage) use it.
+- **The compiled entrypoint imported a source file that is never emitted**:
+  `src/index.ts` imported `./tui/render.jsx`. `tsx` resolves that against
+  the TSX source, but `node dist/index.js` needs `render.js`, so even at the
+  right path the image would have failed with `ERR_MODULE_NOT_FOUND`.
+- **The CI container smoke never ran the image**: it measured the image
+  size and validated compose, so both defects above passed CI. It now
+  starts the built `runtime` image and waits for `/health` on port 8080.
+  `tests/build-layout.test.ts` additionally asserts the emitted layout, the
+  `main`/`CMD` agreement, and that no `src/` file imports a `.jsx`/`.ts`
+  extension.
+- **The health server ignored the platform-assigned port and bound to
+  loopback**: `readHealthMetricsConfig` read only `HEALTH_PORT`, while
+  hosting platforms assign the listening port through `PORT`, and it
+  defaulted `HEALTH_HOST` to `127.0.0.1` — unreachable through a published
+  container port. It now falls back to `PORT` and defaults to `0.0.0.0`
+  when `CONTAINER=true`, keeping loopback for a bare-metal run.
+- **A rejected Discord login left the process running-but-dead**: a bad or
+  rotated token threw out of `client.login()`, `main()`'s catch only set
+  `process.exitCode`, and the health server plus the lease renewal timer
+  kept the event loop alive — the container answered `/health` while never
+  serving Discord. The login is now routed through the shutdown runner with
+  a new `FATAL` reason, so the process exits non-zero and the platform
+  reports the failure.
+- **Consent registry ignored `STORAGE_BACKEND`**: the composition root
+  built the repository with a hard-coded `data/consent.json` path, so on
+  Altare the registry lived on the app disk that a redeploy wipes instead
+  of in U3. It now uses the process-wide storage driver.
+- `data/locks/` (the local instance lease, which holds a per-term token) is
+  gitignored.
 - `tests/timekeeper-session-clock.test.ts` import sorting + formatting.
 - `tests/timekeeper-timeline.test.ts` formatting.
 - **Consent logger crash (`src/consent/logger.ts`)**: pino's internal `LOG` helper reads `this[Symbol(pino.msgPrefix)]` and `this[Symbol(pino.write)]`; forwarding a level method without binding `this` (the original `fn(first, second, ...rest)` shape) crashed every consent-scoped log call with `TypeError: Cannot read properties of undefined (reading 'Symbol(pino.msgPrefix)')`. Switched to `fn.call(logger, first, second, ...rest)` so the wrapper preserves the underlying pino logger identity. New `tests/consent/logger.test.ts` pins the contract (info / warn / error / child().info()) and would fail loudly if the regression returns.

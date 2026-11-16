@@ -12,12 +12,17 @@ import { cancelActiveSession } from "../timekeeper/service.js";
  * immediately. `LEASE_REFUSED` is the startup counterpart: another
  * instance already holds the lease, so this process never owned the
  * runtime and must exit non-zero instead of lingering on the health port.
- * Both exit with a non-zero code so the platform restarts them (and the
- * supervisor notices).
+ * `FATAL` is any other unrecoverable startup failure (Discord rejected the
+ * token, a required intent is disabled, …): the process must exit non-zero
+ * so the platform reports the failure instead of showing a container that
+ * answers `/health` but never serves Discord.
+ * All three exit with a non-zero code so the platform restarts them (and
+ * the supervisor notices).
  */
-type ShutdownSignal = "SIGINT" | "SIGTERM" | "LEASE_LOST" | "LEASE_REFUSED";
+type ShutdownSignal = "SIGINT" | "SIGTERM" | "LEASE_LOST" | "LEASE_REFUSED" | "FATAL";
 
 const SHUTDOWN_EXIT_CODES: Record<ShutdownSignal, number> = {
+  FATAL: 1,
   LEASE_LOST: 1,
   LEASE_REFUSED: 1,
   SIGINT: 0,

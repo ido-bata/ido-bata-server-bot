@@ -67,3 +67,42 @@ jobs:
         run: |
           touch .env
           docker compose --file compose.yml config > /dev/null
+
+      - name: Smoke-start the runtime image
+        # A size check proves nothing about starting. The deployed commands
+        # are `node dist/index.js`; until this step existed, a build that
+        # emitted `dist/src/index.js` (or imported a non-emitted `.jsx`)
+        # passed CI and failed on every real deployment with
+        # MODULE_NOT_FOUND.
+        #
+        # `BOT_TUI=off` keeps the container non-interactive, and a dummy
+        # token is enough: config validation, the health server and the
+        # storage lease all run before Discord rejects the login.
+        run: |
+          set -euo pipefail
+          docker run --rm --detach \
+            --name bot-smoke \
+            --env DISCORD_TOKEN=smoke-token \
+            --env DISCORD_CLIENT_ID=1 \
+            --env DISCORD_GUILD_ID=2 \
+            --env DISCORD_ENABLE_MESSAGE_CONTENT=true \
+            --env BOT_TUI=off \
+            --env STORAGE_BACKEND=local \
+            --env DATA_DIR=/app/data \
+            --env HEALTH_PORT=8080 \
+            --env HEALTH_HOST=0.0.0.0 \
+            ido-bata-server-bot:ci-smoke
+          trap 'docker logs bot-smoke || true; docker rm --force bot-smoke || true' EXIT
+
+          # Wait for the liveness endpoint the deployed healthcheck uses.
+          for attempt in $(seq 1 30); do
+            if docker exec bot-smoke node -e "require('http').get('http://127.0.0.1:8080/health',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"; then
+              echo "runtime image reached /health on attempt ${attempt}"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::runtime image never served /health"
+          docker logs bot-smoke
+          exit 1

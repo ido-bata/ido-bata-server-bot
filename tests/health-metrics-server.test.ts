@@ -299,6 +299,42 @@ describe("health-metrics config", () => {
     expect(readHealthMetricsConfig(process.env)).toEqual({ port: 9090, host: "0.0.0.0" });
   });
 
+  it("falls back to the platform-assigned PORT when HEALTH_PORT is unset", async () => {
+    // Hosting platforms (Altare included) assign the listening port via PORT.
+    // Ignoring it left the server on 8080 while the platform probed elsewhere.
+    delete process.env.HEALTH_PORT;
+    delete process.env.HEALTH_HOST;
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
+    expect(readHealthMetricsConfig({ ...process.env, PORT: "3000" })).toMatchObject({ port: 3000 });
+  });
+
+  it("prefers HEALTH_PORT over PORT", async () => {
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
+    const env = { ...process.env, PORT: "3000", HEALTH_PORT: "8080" };
+    expect(readHealthMetricsConfig(env)).toMatchObject({ port: 8080 });
+  });
+
+  it("binds 0.0.0.0 by default inside a container", async () => {
+    // A published port is reached through the container interface, never
+    // its loopback: binding 127.0.0.1 makes the exposed port unreachable.
+    delete process.env.HEALTH_HOST;
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
+    expect(readHealthMetricsConfig({ ...process.env, CONTAINER: "true" })).toMatchObject({
+      host: "0.0.0.0",
+    });
+    // An explicit value still wins.
+    expect(
+      readHealthMetricsConfig({ ...process.env, CONTAINER: "true", HEALTH_HOST: "127.0.0.1" }),
+    ).toMatchObject({ host: "127.0.0.1" });
+  });
+
+  it("keeps loopback as the default outside a container", async () => {
+    delete process.env.HEALTH_HOST;
+    delete process.env.CONTAINER;
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
+    expect(readHealthMetricsConfig({ ...process.env })).toMatchObject({ host: "127.0.0.1" });
+  });
+
   it("rejects invalid HEALTH_PORT values", async () => {
     const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
     expect(() => readHealthMetricsConfig({ ...process.env, HEALTH_PORT: "not-a-number" })).toThrow(
