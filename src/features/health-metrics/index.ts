@@ -2,7 +2,10 @@ import type { Client } from "discord.js";
 import { Events } from "discord.js";
 
 import { childFor, getRootLogger } from "../../lib/logger/index.js";
-import { getActiveTimekeeperSessionCount } from "../timekeeper/service.js";
+import {
+  getActiveTimekeeperSessionCount,
+  getTimekeeperSessionSnapshot,
+} from "../timekeeper/service.js";
 import { type HealthMetricsConfig, readHealthMetricsConfig } from "./config.js";
 import { MetricsRegistry } from "./metrics.js";
 import { createHealthMetricsServer, type HealthMetricsServerHandle } from "./server.js";
@@ -101,6 +104,10 @@ function attachDiscordGatewayListeners(client: Client, registry: MetricsRegistry
 function attachTimekeeperSessionPoller(registry: MetricsRegistry): void {
   const refresh = () => {
     registry.setTimekeeperActiveSessions(getActiveTimekeeperSessionCount());
+    // File a 0-byte metrics surface with the schedule: without this the only
+    // way to tell "disabled" from "scheduled for tonight" from "the timer was
+    // lost across a redeploy" is to read the process logs.
+    registry.setTimekeeperNextSessionAt(getTimekeeperSessionSnapshot().pendingStartAt);
   };
   refresh();
   const timer = setInterval(refresh, 1000);
