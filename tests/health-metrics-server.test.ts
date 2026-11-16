@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MetricsRegistry } from "../src/features/health-metrics/metrics.js";
 import {
@@ -299,6 +301,42 @@ describe("health-metrics config", () => {
     expect(readHealthMetricsConfig(process.env)).toEqual({ port: 9090, host: "0.0.0.0" });
   });
 
+  it("falls back to the platform-assigned PORT when HEALTH_PORT is unset", async () => {
+    // Hosting platforms (Altare included) assign the listening port via PORT.
+    // Ignoring it left the server on 8080 while the platform probed elsewhere.
+    delete process.env.HEALTH_PORT;
+    delete process.env.HEALTH_HOST;
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
+    expect(readHealthMetricsConfig({ ...process.env, PORT: "3000" })).toMatchObject({ port: 3000 });
+  });
+
+  it("prefers HEALTH_PORT over PORT", async () => {
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
+    const env = { ...process.env, PORT: "3000", HEALTH_PORT: "8080" };
+    expect(readHealthMetricsConfig(env)).toMatchObject({ port: 8080 });
+  });
+
+  it("binds 0.0.0.0 by default inside a container", async () => {
+    // A published port is reached through the container interface, never
+    // its loopback: binding 127.0.0.1 makes the exposed port unreachable.
+    delete process.env.HEALTH_HOST;
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
+    expect(readHealthMetricsConfig({ ...process.env, CONTAINER: "true" })).toMatchObject({
+      host: "0.0.0.0",
+    });
+    // An explicit value still wins.
+    expect(
+      readHealthMetricsConfig({ ...process.env, CONTAINER: "true", HEALTH_HOST: "127.0.0.1" }),
+    ).toMatchObject({ host: "127.0.0.1" });
+  });
+
+  it("keeps loopback as the default outside a container", async () => {
+    delete process.env.HEALTH_HOST;
+    delete process.env.CONTAINER;
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
+    expect(readHealthMetricsConfig({ ...process.env })).toMatchObject({ host: "127.0.0.1" });
+  });
+
   it("rejects invalid HEALTH_PORT values", async () => {
     const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
     expect(() => readHealthMetricsConfig({ ...process.env, HEALTH_PORT: "not-a-number" })).toThrow(
@@ -310,5 +348,23 @@ describe("health-metrics config", () => {
     expect(() => readHealthMetricsConfig({ ...process.env, HEALTH_PORT: "99999" })).toThrow(
       /Invalid HEALTH_PORT/,
     );
+  });
+});
+
+describe("container health probes", () => {
+  // The image HEALTHCHECK and the compose healthcheck each embed a tiny probe
+  // script. A probe that hard-codes 8080 probes a port the app may not be
+  // listening on (platforms assign one via PORT), so the container is reported
+  // unhealthy while the bot is fine. Pin both to the app's resolution order.
+  const probes: Array<[string, string]> = [
+    ["Containerfile", "Containerfile"],
+    ["compose.yml", "compose.yml"],
+  ];
+
+  it.each(probes)("%s resolves the port like the app does", (_label, file) => {
+    const text = readFileSync(join(process.cwd(), file), "utf8");
+    // HEALTH_PORT first, then PORT, then 8080 — never a bare :8080 literal.
+    expect(text).toMatch(/HEALTH_PORT\s*\|\|\s*process\.env\.PORT\s*\|\|\s*'8080'/);
+    expect(text).not.toMatch(/127\.0\.0\.1:8080\/health/);
   });
 });

@@ -75,7 +75,12 @@ RUN bun install --frozen-lockfile
 
 # ---- build ----
 FROM deps AS build
-COPY tsconfig.json ./
+# `tsconfig.build.json` extends the root config but pins `rootDir` to `src/`
+# so the emitted entrypoint is `dist/index.js`. Compiling with the root
+# `tsconfig.json` (which also includes `tests/` and `*.config.ts`) derives a
+# common root of the repository and writes `dist/src/index.js` instead — the
+# runtime `CMD` then fails with MODULE_NOT_FOUND on every start.
+COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN bun run build
 
@@ -121,8 +126,12 @@ COPY tmp-audio ./tmp-audio
 # is intentionally tolerant of a not-yet-implemented endpoint: the curl call
 # is wrapped so an ECONNREFUSED during the very first few seconds still maps
 # to a clean exit (compose will retry up to `retries` times).
+# Healthcheck hits the `/health` endpoint. The port is resolved the same way
+# the app resolves it (HEALTH_PORT, then the platform-assigned PORT, then
+# 8080) — a hard-coded 8080 would probe the wrong port on any platform that
+# assigns one through PORT.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD node -e "require('http').get('http://127.0.0.1:8080/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+    CMD node -e "const p = process.env.HEALTH_PORT || process.env.PORT || '8080'; require('http').get('http://127.0.0.1:' + p + '/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 EXPOSE 8080
 
 CMD ["node", "dist/index.js"]
