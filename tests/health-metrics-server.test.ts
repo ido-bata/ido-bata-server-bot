@@ -287,18 +287,25 @@ describe("health-metrics config", () => {
   });
 
   // Lazy import to keep the describe block self-contained.
-  it("defaults HEALTH_PORT to 8080 and HEALTH_HOST to 127.0.0.1", async () => {
-    delete process.env.HEALTH_PORT;
-    delete process.env.HEALTH_HOST;
+  it("defaults to port 8080 on 127.0.0.1 with no PORT or HEALTH_* set", async () => {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env.PORT;
+    delete env.HEALTH_PORT;
+    delete env.HEALTH_HOST;
+    delete env.CONTAINER;
     const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
-    expect(readHealthMetricsConfig(process.env)).toEqual({ port: 8080, host: "127.0.0.1" });
+    expect(readHealthMetricsConfig(env)).toEqual({ port: 8080, host: "127.0.0.1" });
   });
 
   it("honors HEALTH_PORT and HEALTH_HOST overrides", async () => {
-    process.env.HEALTH_PORT = "9090";
-    process.env.HEALTH_HOST = "0.0.0.0";
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HEALTH_PORT: "9090",
+      HEALTH_HOST: "0.0.0.0",
+    };
+    delete env.PORT;
     const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
-    expect(readHealthMetricsConfig(process.env)).toEqual({ port: 9090, host: "0.0.0.0" });
+    expect(readHealthMetricsConfig(env)).toEqual({ port: 9090, host: "0.0.0.0" });
   });
 
   it("falls back to the platform-assigned PORT when HEALTH_PORT is unset", async () => {
@@ -310,10 +317,19 @@ describe("health-metrics config", () => {
     expect(readHealthMetricsConfig({ ...process.env, PORT: "3000" })).toMatchObject({ port: 3000 });
   });
 
-  it("prefers HEALTH_PORT over PORT", async () => {
+  it("prefers the platform-assigned PORT over HEALTH_PORT", async () => {
+    // App Hosting's proxy dials PORT. A stale HEALTH_PORT must not shadow it,
+    // or the app listens where nothing connects and every request is a 502.
     const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
     const env = { ...process.env, PORT: "3000", HEALTH_PORT: "8080" };
-    expect(readHealthMetricsConfig(env)).toMatchObject({ port: 8080 });
+    expect(readHealthMetricsConfig(env)).toMatchObject({ port: 3000 });
+  });
+
+  it("honors HEALTH_PORT on a bare-metal run with no PORT", async () => {
+    const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
+    const env: NodeJS.ProcessEnv = { ...process.env, HEALTH_PORT: "9090" };
+    delete env.PORT;
+    expect(readHealthMetricsConfig(env)).toMatchObject({ port: 9090 });
   });
 
   it("binds 0.0.0.0 by default when the platform assigns a PORT", async () => {
@@ -345,16 +361,21 @@ describe("health-metrics config", () => {
     expect(readHealthMetricsConfig({ ...process.env })).toMatchObject({ host: "127.0.0.1" });
   });
 
-  it("rejects invalid HEALTH_PORT values", async () => {
+  it("rejects invalid port values", async () => {
     const { readHealthMetricsConfig } = await import("../src/features/health-metrics/config.js");
-    expect(() => readHealthMetricsConfig({ ...process.env, HEALTH_PORT: "not-a-number" })).toThrow(
-      /Invalid HEALTH_PORT/,
+    const bare: NodeJS.ProcessEnv = { ...process.env };
+    delete bare.PORT;
+    expect(() => readHealthMetricsConfig({ ...bare, HEALTH_PORT: "not-a-number" })).toThrow(
+      /Invalid health port/,
     );
-    expect(() => readHealthMetricsConfig({ ...process.env, HEALTH_PORT: "-1" })).toThrow(
-      /Invalid HEALTH_PORT/,
+    expect(() => readHealthMetricsConfig({ ...bare, HEALTH_PORT: "-1" })).toThrow(
+      /Invalid health port/,
     );
-    expect(() => readHealthMetricsConfig({ ...process.env, HEALTH_PORT: "99999" })).toThrow(
-      /Invalid HEALTH_PORT/,
+    expect(() => readHealthMetricsConfig({ ...bare, HEALTH_PORT: "99999" })).toThrow(
+      /Invalid health port/,
+    );
+    expect(() => readHealthMetricsConfig({ ...process.env, PORT: "nope" })).toThrow(
+      /Invalid health port/,
     );
   });
 });
@@ -371,8 +392,9 @@ describe("container health probes", () => {
 
   it.each(probes)("%s resolves the port like the app does", (_label, file) => {
     const text = readFileSync(join(process.cwd(), file), "utf8");
-    // HEALTH_PORT first, then PORT, then 8080 — never a bare :8080 literal.
-    expect(text).toMatch(/HEALTH_PORT\s*\|\|\s*process\.env\.PORT\s*\|\|\s*'8080'/);
+    // PORT first (the platform's contract with its proxy), then HEALTH_PORT,
+    // then 8080 — never a bare :8080 literal.
+    expect(text).toMatch(/process\.env\.PORT\s*\|\|\s*process\.env\.HEALTH_PORT\s*\|\|\s*'8080'/);
     expect(text).not.toMatch(/127\.0\.0\.1:8080\/health/);
   });
 });
