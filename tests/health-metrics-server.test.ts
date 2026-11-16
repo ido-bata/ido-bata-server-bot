@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MetricsRegistry } from "../src/features/health-metrics/metrics.js";
 import {
@@ -346,5 +348,23 @@ describe("health-metrics config", () => {
     expect(() => readHealthMetricsConfig({ ...process.env, HEALTH_PORT: "99999" })).toThrow(
       /Invalid HEALTH_PORT/,
     );
+  });
+});
+
+describe("container health probes", () => {
+  // The image HEALTHCHECK and the compose healthcheck each embed a tiny probe
+  // script. A probe that hard-codes 8080 probes a port the app may not be
+  // listening on (platforms assign one via PORT), so the container is reported
+  // unhealthy while the bot is fine. Pin both to the app's resolution order.
+  const probes: Array<[string, string]> = [
+    ["Containerfile", "Containerfile"],
+    ["compose.yml", "compose.yml"],
+  ];
+
+  it.each(probes)("%s resolves the port like the app does", (_label, file) => {
+    const text = readFileSync(join(process.cwd(), file), "utf8");
+    // HEALTH_PORT first, then PORT, then 8080 — never a bare :8080 literal.
+    expect(text).toMatch(/HEALTH_PORT\s*\|\|\s*process\.env\.PORT\s*\|\|\s*'8080'/);
+    expect(text).not.toMatch(/127\.0\.0\.1:8080\/health/);
   });
 });

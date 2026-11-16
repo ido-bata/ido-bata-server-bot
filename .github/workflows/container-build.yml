@@ -9,7 +9,11 @@ on:
       - Containerfile
       - compose.yml
       - .dockerignore
-      - src/features/container/**
+      - src/**
+      - tsconfig.json
+      - tsconfig.build.json
+      - package.json
+      - bun.lock
       - .github/workflows/container-build.yml
 
 # Cancel superseded runs on the same PR / branch.
@@ -82,6 +86,7 @@ jobs:
         # ERR_MODULE_NOT_FOUND, which the assertions below reject.
         run: |
           set -uo pipefail
+          status=0
           docker run --rm \
             --name bot-smoke \
             --env DISCORD_TOKEN=ci-smoke-not-a-real-token \
@@ -94,7 +99,7 @@ jobs:
             --env DATA_DIR=/app/data \
             --env HEALTH_HOST=127.0.0.1 \
             --env HEALTH_PORT=8080 \
-            ido-bata-server-bot:ci-smoke > /tmp/bot-smoke.log 2>&1 || true
+            ido-bata-server-bot:ci-smoke > /tmp/bot-smoke.log 2>&1 || status=$?
 
           echo "--- container log ---"
           cat /tmp/bot-smoke.log
@@ -124,4 +129,10 @@ jobs:
           grep -q "Received FATAL" /tmp/bot-smoke.log \
             || fail "a rejected login did not route through the shutdown runner"
 
-          echo "runtime image started, acquired the lease and failed loudly on the invalid token"
+          # The shutdown runner exits 1 for FATAL. Any other status means the
+          # process died some other way (and a 0 would mean it kept running).
+          if [ "${status}" -ne 1 ]; then
+            fail "expected exit status 1 from the rejected login, got ${status}"
+          fi
+
+          echo "runtime image started, acquired the lease and exited 1 on the invalid token"
