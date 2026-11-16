@@ -69,40 +69,59 @@ jobs:
           docker compose --file compose.yml config > /dev/null
 
       - name: Smoke-start the runtime image
-        # A size check proves nothing about starting. The deployed commands
-        # are `node dist/index.js`; until this step existed, a build that
-        # emitted `dist/src/index.js` (or imported a non-emitted `.jsx`)
-        # passed CI and failed on every real deployment with
-        # MODULE_NOT_FOUND.
+        # A size check proves nothing about starting. The deployed command is
+        # `node dist/index.js`; until this step existed, a build that emitted
+        # `dist/src/index.js` (or imported a non-emitted `.jsx`) passed CI and
+        # failed on every real deployment with MODULE_NOT_FOUND.
         #
-        # `BOT_TUI=off` keeps the container non-interactive, and a dummy
-        # token is enough: config validation, the health server and the
-        # storage lease all run before Discord rejects the login.
+        # No Discord token is available in CI, so the run is expected to end
+        # at the login step. That is exactly what we want to observe: reaching
+        # `failed to log in` proves the entrypoint resolved, every module
+        # loaded, config validated, the health server bound and the storage
+        # lease was acquired. A broken entrypoint stops much earlier with
+        # ERR_MODULE_NOT_FOUND, which the assertions below reject.
         run: |
-          set -euo pipefail
-          docker run --rm --detach \
+          set -uo pipefail
+          docker run --rm \
             --name bot-smoke \
-            --env DISCORD_TOKEN=smoke-token \
+            --env DISCORD_TOKEN=ci-smoke-not-a-real-token \
             --env DISCORD_CLIENT_ID=1 \
             --env DISCORD_GUILD_ID=2 \
             --env DISCORD_ENABLE_MESSAGE_CONTENT=true \
             --env BOT_TUI=off \
+            --env LOG_LEVEL=info \
             --env STORAGE_BACKEND=local \
             --env DATA_DIR=/app/data \
+            --env HEALTH_HOST=127.0.0.1 \
             --env HEALTH_PORT=8080 \
-            --env HEALTH_HOST=0.0.0.0 \
-            ido-bata-server-bot:ci-smoke
-          trap 'docker logs bot-smoke || true; docker rm --force bot-smoke || true' EXIT
+            ido-bata-server-bot:ci-smoke > /tmp/bot-smoke.log 2>&1 || true
 
-          # Wait for the liveness endpoint the deployed healthcheck uses.
-          for attempt in $(seq 1 30); do
-            if docker exec bot-smoke node -e "require('http').get('http://127.0.0.1:8080/health',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"; then
-              echo "runtime image reached /health on attempt ${attempt}"
-              exit 0
-            fi
-            sleep 2
-          done
+          echo "--- container log ---"
+          cat /tmp/bot-smoke.log
+          echo "--------------------"
 
-          echo "::error::runtime image never served /health"
-          docker logs bot-smoke
-          exit 1
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          # A missing entrypoint or an unresolvable import is the failure this
+          # step exists to catch.
+          if grep -qE "ERR_MODULE_NOT_FOUND|Cannot find module" /tmp/bot-smoke.log; then
+            fail "runtime image cannot resolve its own modules (entrypoint or import is wrong)"
+          fi
+
+          # Startup milestones, in the order the composition root reaches them.
+          grep -q "health/metrics server listening" /tmp/bot-smoke.log \
+            || fail "health server never bound — the entrypoint did not complete startup"
+          grep -q "storage lease acquired" /tmp/bot-smoke.log \
+            || fail "storage lease was never acquired"
+          grep -q "failed to log in to Discord" /tmp/bot-smoke.log \
+            || fail "process never reached the Discord login (startup did not run to completion)"
+
+          # The invalid token must terminate the process instead of leaving a
+          # container that answers /health while serving nothing.
+          grep -q "Received FATAL" /tmp/bot-smoke.log \
+            || fail "a rejected login did not route through the shutdown runner"
+
+          echo "runtime image started, acquired the lease and failed loudly on the invalid token"
