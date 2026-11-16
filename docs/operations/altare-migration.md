@@ -81,11 +81,16 @@ App variables (Settings → Variables):
 
 **Do not set `HEALTH_PORT` or `HEALTH_HOST` on Altare.** App Hosting assigns
 `PORT` and its proxy dials that port, so the app must listen there — the
-server reads `PORT` first for exactly that reason. A leftover
-`HEALTH_PORT=8080` makes the app listen on 8080 while the proxy dials `PORT`,
-which surfaces as a 502 on `/health` while the bot itself runs fine. The bind
-address also follows `PORT` (it switches to `0.0.0.0`), so `HEALTH_HOST` is
-not needed either. Both remain useful for a bare-metal run with no `PORT`.
+server reads `PORT` first for exactly that reason. The bind address also
+follows `PORT` (it switches to `0.0.0.0`), so `HEALTH_HOST` is not needed
+either. Both remain useful for a bare-metal run with no `PORT`.
+
+> **Before v0.3.3** the resolver preferred `HEALTH_PORT`, so a leftover
+> `HEALTH_PORT=8080` made the app listen on 8080 while the proxy dialled
+> `PORT` — a 502 on `/health` while the bot itself ran fine. That precedence
+> is gone: on v0.3.3+ a stray `HEALTH_PORT` is harmless because `PORT` wins.
+> Do not use that old mismatch to diagnose a current 502; check the deploy
+> log and `/health` reachability instead.
 
 ## 4. Migrate the data
 
