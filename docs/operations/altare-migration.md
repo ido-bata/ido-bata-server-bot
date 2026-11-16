@@ -71,8 +71,6 @@ App variables (Settings → Variables):
 | `DISCORD_CLIENT_ID` | secret | |
 | `DISCORD_GUILD_ID` | id | |
 | `CONSENT_CHANNEL_ID` | id | enables the consent registry |
-| `HEALTH_PORT` | `8080` | must match the app's exposed port |
-| `HEALTH_HOST` | `0.0.0.0` | the health endpoint must be reachable from outside |
 | `STORAGE_BACKEND` | `u3` | selects the object store |
 | `LEASE_STORAGE_BACKEND` | `valkey` | the lease backend — U3 cannot hold an exclusive lease (no conditional writes); attach a Valkey instance to inject `REDIS_URL` |
 | `DELETION_LEDGER_KEY` | secret (≥16 bytes) | HMAC key for the deletion ledger; without it a restore of an old backup can resurrect deleted data |
@@ -80,6 +78,19 @@ App variables (Settings → Variables):
 | `BOT_TUI` | `off` | headless host: the structured logger keeps writing JSON Lines |
 
 `S3_*` / `AWS_*` are injected by the U3 connection — do not set them by hand.
+
+**Do not set `HEALTH_PORT` or `HEALTH_HOST` on Altare.** App Hosting assigns
+`PORT` and its proxy dials that port, so the app must listen there — the
+server reads `PORT` first for exactly that reason. The bind address also
+follows `PORT` (it switches to `0.0.0.0`), so `HEALTH_HOST` is not needed
+either. Both remain useful for a bare-metal run with no `PORT`.
+
+> **Before v0.3.3** the resolver preferred `HEALTH_PORT`, so a leftover
+> `HEALTH_PORT=8080` made the app listen on 8080 while the proxy dialled
+> `PORT` — a 502 on `/health` while the bot itself ran fine. That precedence
+> is gone: on v0.3.3+ a stray `HEALTH_PORT` is harmless because `PORT` wins.
+> Do not use that old mismatch to diagnose a current 502; check the deploy
+> log and `/health` reachability instead.
 
 ## 4. Migrate the data
 

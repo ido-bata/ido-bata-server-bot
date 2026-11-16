@@ -11,6 +11,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Fixed** — bug fixes
 - **Security** — vulnerability fixes
 
+## [0.3.3] - 2026-11-16
+
+Third hotfix for the same outage: v0.3.2 bound `0.0.0.0`, but the app was
+listening on the wrong port.
+
+### Fixed
+
+- **`HEALTH_PORT` shadowed the platform's `PORT`**: v0.3.2 made the server
+  bind `0.0.0.0`, yet the deployment still returned 502 while the bot was
+  demonstrably running (it wrote `calendar-cache.json`). App Hosting's
+  contract is that the app listens on **the port in `PORT`**; the runbook
+  also sets `HEALTH_PORT=8080`, and the old precedence preferred it, so the
+  app listened on 8080 while the platform proxy dialled `PORT`. `PORT` now
+  wins and `HEALTH_PORT` only applies to a bare-metal run that has no
+  `PORT`. Verified with both variables set as in production: the server
+  listens on `PORT` on `0.0.0.0` and answers 200 from the machine's network
+  interface, while the stale 8080 is closed.
+
 ## [0.3.2] - 2026-11-16
 
 Second hotfix for the same outage: v0.3.1 fixed the entrypoint, but the app

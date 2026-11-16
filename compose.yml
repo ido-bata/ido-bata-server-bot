@@ -39,12 +39,12 @@ services:
       # overriding the image copy in the production compose file.
     healthcheck:
       # Same port resolution as the app and the image HEALTHCHECK:
-      # HEALTH_PORT, then PORT, then 8080.
+      # PORT, then HEALTH_PORT, then 8080.
       test:
         - "CMD"
         - "node"
         - "-e"
-        - "const p = process.env.HEALTH_PORT || process.env.PORT || '8080'; require('http').get('http://127.0.0.1:' + p + '/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+        - "const p = process.env.PORT || process.env.HEALTH_PORT || '8080'; require('http').get('http://127.0.0.1:' + p + '/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
       interval: 30s
       timeout: 5s
       retries: 3

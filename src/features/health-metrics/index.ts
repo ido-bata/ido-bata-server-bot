@@ -10,7 +10,7 @@ import { createHealthMetricsServer, type HealthMetricsServerHandle } from "./ser
 const logger = childFor(getRootLogger(), "health-metrics");
 
 export type RegisterHealthMetricsOptions = {
-  /** Override the parsed HEALTH_PORT/HEALTH_HOST config. */
+  /** Override the parsed PORT/HEALTH_PORT/HEALTH_HOST config. */
   config?: HealthMetricsConfig;
   /** Inject a pre-built registry (used by tests). */
   registry?: MetricsRegistry;

@@ -98,7 +98,7 @@ jobs:
             --env STORAGE_BACKEND=local \
             --env DATA_DIR=/app/data \
             --env HEALTH_HOST=127.0.0.1 \
-            --env HEALTH_PORT=8080 \
+            --env PORT=8080 \
             ido-bata-server-bot:ci-smoke > /tmp/bot-smoke.log 2>&1 || status=$?
 
           echo "--- container log ---"
