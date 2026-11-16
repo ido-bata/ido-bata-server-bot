@@ -8,7 +8,7 @@
     "audit": "bun audit --production",
     "biome": "biome check .",
     "biome:fix": "biome check --write .",
-    "build": "tsc --project tsconfig.json",
+    "build": "tsc --project tsconfig.build.json",
     "dev": "tsx watch src/index.ts",
     "knip": "knip",
     "lint": "eslint .",

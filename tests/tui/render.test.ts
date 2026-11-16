@@ -282,7 +282,7 @@ async function mountTuiWithInjectedRender(
       };
     }),
   }));
-  const mod = await import("../../src/tui/render.jsx");
+  const mod = await import("../../src/tui/render.js");
   // Restore `process.env` controls for `resolveTuiMode`.
   return mod.mountTui(store, {
     env,

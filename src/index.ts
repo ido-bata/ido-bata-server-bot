@@ -86,7 +86,7 @@ import {
 } from "./lib/storage/lease.js";
 import type { StorageDriver } from "./lib/storage/types.js";
 import { createRuntimeStatusStore } from "./runtime/status-store.js";
-import { mountTui, resolveTuiMode } from "./tui/render.jsx";
+import { mountTui, resolveTuiMode } from "./tui/render.js";
 
 /** Extra time past the lease TTL the acquire loop waits for the old term to expire. */
 const LEASE_ACQUIRE_MARGIN_MS = 30_000;
@@ -718,7 +718,18 @@ async function main(): Promise<void> {
   healthMetrics.registry.setStorageLeaseHeld(true);
   rootLogger.info({ epoch: lease.epoch, holderId: lease.holderId }, "storage lease acquired");
 
-  await client.login(config.discordToken);
+  try {
+    await client.login(config.discordToken);
+  } catch (error) {
+    // A rejected login (bad/rotated token, disabled intent) leaves the
+    // health server and the lease renewal timer alive, so returning here
+    // would look like a healthy container that never serves Discord.
+    // Route through the shutdown runner so the process exits non-zero and
+    // the platform reports the failure instead of restarting into a
+    // silently dead state.
+    rootLogger.error({ err: error }, "failed to log in to Discord; shutting down");
+    await shutdownRunner.run("FATAL");
+  }
 }
 
 main().catch((error: unknown) => {
@@ -726,7 +737,9 @@ main().catch((error: unknown) => {
     { err: error },
     "failed to start Discord bot",
   );
-  process.exitCode = 1;
+  // Non-zero exit is the only signal the platform understands; leaving the
+  // event loop alive would show a running-but-unserving instance.
+  process.exit(1);
 });
 
 /**
@@ -737,9 +750,11 @@ main().catch((error: unknown) => {
 function buildConsentService(options: { config: ConsentConfig; client: Client }): ConsentService {
   const emojiToScope = new Map<string, ConsentScope>(Object.entries(options.config.emojiToScope));
   return createConsentService({
-    repository: createJsonConsentRepository({
-      filePath: join(process.cwd(), "data", "consent.json"),
-    }),
+    // Use the process-wide storage driver rather than a hard-coded
+    // `data/consent.json` path: on Altare the app disk is a cache that a
+    // redeploy wipes, so the registry must live in the configured backend
+    // (`STORAGE_BACKEND=u3`) exactly like the runbook and ADR-0004 state.
+    repository: createJsonConsentRepository(),
     fetcher: createDiscordReactionFetcher(options.client),
     logger: createConsentLogger(),
     policyVersion: options.config.policyVersion,

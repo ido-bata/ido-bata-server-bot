@@ -130,15 +130,15 @@ The bot ships a multi-stage `Containerfile` and a single-service `compose.yml`. 
 Containerfile (multi-stage)
 ├── base       node:22-slim + Bun + tsx on PATH
 ├── deps       base + `bun install --frozen-lockfile` (production deps)
-├── build      deps + `bun run build` → dist/
-└── runtime    node:22-slim + dist/ (from build) + node_modules (from deps)
+├── build      deps + `bun run build` → dist/ (via `tsconfig.build.json`)
+└── runtime    node:22-alpine + dist/ (from build) + node_modules (from prod-deps)
 ```
 
-The `runtime` stage is what `compose.yml` builds. Its entrypoint is `node dist/index.js`, so the runtime image does not need TypeScript or `tsx`. The `runtime` image exposes port `8080` for the `/health` endpoint added by issue #26; the bundled `HEALTHCHECK` and the compose-level `healthcheck:` both probe it on a 30s interval.
+The `runtime` stage is what `compose.yml` builds. Its entrypoint is `node dist/index.js`, so the runtime image does not need TypeScript or `tsx`. That path is produced by `tsconfig.build.json` (`rootDir: "src"`), not by the root `tsconfig.json` — the root config also compiles `tests/`, which widens the common root and would emit `dist/src/index.js`. The `runtime` image exposes port `8080` for the `/health` endpoint added by issue #26; the bundled `HEALTHCHECK` and the compose-level `healthcheck:` both probe it on a 30s interval.
 
 Compose loads secrets from `.env` via `env_file:` — `DISCORD_TOKEN` and friends are never `COPY`'d into a layer, and `.dockerignore` blocks `.env`/`.env.*` from the build context. Local persisted state (`data/timekeeper-history.json`) is mounted from a named volume (`bot-data`) so the attendance log survives container restarts.
 
-The CI workflow builds the `runtime` image on every PR that touches `Containerfile` / `compose.yml` / `.dockerignore`, asserts the image is under the 300 MB budget, and validates `compose.yml` with `docker compose config`. Container changes must keep that gate green.
+The CI workflow builds the `runtime` image on every PR that touches `Containerfile` / `compose.yml` / `.dockerignore`, asserts the image is under the 300 MB budget, validates `compose.yml` with `docker compose config`, and **starts the built image** and waits for `/health` on port 8080. The start step is what catches a broken entrypoint: a size check alone passed a build that emitted `dist/src/index.js` and a compiled import of `render.jsx`.
 
 ## Timekeeper timeline model
 
