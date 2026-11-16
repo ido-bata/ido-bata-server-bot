@@ -102,6 +102,34 @@ describe("MetricsRegistry", () => {
     const registry = new MetricsRegistry();
     expect(registry.toPrometheusText().endsWith("\n")).toBe(true);
   });
+
+  it("omits the next-session series until a session is scheduled", () => {
+    const registry = new MetricsRegistry({ getUptimeSec: () => 0 });
+    expect(registry.toPrometheusText()).not.toMatch(/^bot_timekeeper_next_session_at /m);
+  });
+
+  it("exposes the scheduled session start as a Unix timestamp", () => {
+    const registry = new MetricsRegistry({ getUptimeSec: () => 0 });
+    // 2026-11-17T12:00:00Z — the next 21:00 JST slot.
+    const at = new Date("2026-11-17T12:00:00Z");
+    registry.setTimekeeperNextSessionAt(at);
+
+    const text = registry.toPrometheusText();
+    expect(text).toMatch(/^# TYPE bot_timekeeper_next_session_at gauge$/m);
+    expect(text).toMatch(
+      new RegExp(`^bot_timekeeper_next_session_at ${Math.floor(at.getTime() / 1000)}$`, "m"),
+    );
+    expect(registry.getTimekeeperNextSessionAt()).toBe(Math.floor(at.getTime() / 1000));
+  });
+
+  it("drops the series again when the schedule is cleared", () => {
+    const registry = new MetricsRegistry({ getUptimeSec: () => 0 });
+    registry.setTimekeeperNextSessionAt(new Date("2026-11-17T12:00:00Z"));
+    registry.setTimekeeperNextSessionAt(null);
+
+    expect(registry.toPrometheusText()).not.toMatch(/^bot_timekeeper_next_session_at /m);
+    expect(registry.getTimekeeperNextSessionAt()).toBeNull();
+  });
 });
 
 describe("escapeLabelValue", () => {

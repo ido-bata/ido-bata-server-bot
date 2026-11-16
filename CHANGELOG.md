@@ -11,6 +11,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Fixed** — bug fixes
 - **Security** — vulnerability fixes
 
+## [0.3.4] - 2026-11-17
+
+### Added
+
+- **`bot_timekeeper_next_session_at`** (`/metrics`): the scheduled start of
+  the next timekeeper session as a Unix timestamp, absent while nothing is
+  scheduled. Throughout the v0.3.0–v0.3.3 outage, answering "did the session
+  get scheduled, or was the timer lost?" meant reading the process logs; the
+  live endpoint exposed nothing about the schedule, so a missing run looked
+  identical to a run that was never queued. Paired with
+  `bot_timekeeper_active_sessions` (a session in flight) this makes a missed
+  session checkable from outside the process. Verified against the real
+  scheduler: a process started after midnight publishes the coming 21:00 JST
+  slot.
+
 ## [0.3.3] - 2026-11-16
 
 Third hotfix for the same outage: v0.3.2 bound `0.0.0.0`, but the app was
