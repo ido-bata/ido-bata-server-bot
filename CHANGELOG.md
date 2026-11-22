@@ -11,6 +11,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Fixed** — bug fixes
 - **Security** — vulnerability fixes
 
+## [0.3.5] - 2026-11-22
+
+Hotfix for a production outage: the timekeeper silently stopped firing for
+multiple days because a wedged session could hang the daily scheduler
+forever without logging anything.
+
+### Fixed
+
+- **A hung `runSession` disarmed the daily schedule permanently**: the
+  reschedule only ran in `.finally`, which never fires for a promise that
+  never settles, and the pre-flight Discord REST calls (`channels.fetch`,
+  voice connect, engagement load) had no timeout — a zombie gateway left
+  the session waiting silently and every following day unarmed. Pre-flight
+  steps are now bounded, a session watchdog (session budget + 10 min
+  margin) force-aborts a wedged run via a generation counter, destroys the
+  tracked voice connection, persists the interrupted session, and always
+  re-arms the next day. The schedule timer now also logs
+  `timekeeper session timer fired` so timer-vs-session hangs are
+  distinguishable.
+- **Zero-delay reschedule hot loop**: a session failing during the
+  pre-start window re-armed the same start slot with `delayMs = 0` and
+  retried immediately forever. Post-session rescheduling now skips the
+  already-attempted slot.
+- **Session errors could leak the voice connection**: `runSession` now
+  releases the connection in `finally` on every exit path, and
+  cancellation/watchdog aborts invalidate the in-flight event loop so it
+  cannot keep playing audio or editing progress messages.
+
+### Changed
+
+- **`scheduled-announcements` idle log spam**: the idle re-check logged
+  "entering idle loop" every 60 s (~1440 lines/day), which evicted useful
+  history from log retention within ~2.5 days — exactly the window needed
+  to diagnose the incident above. The message now logs once on the
+  transition into idle.
+
 ## [0.3.4] - 2026-11-17
 
 ### Added

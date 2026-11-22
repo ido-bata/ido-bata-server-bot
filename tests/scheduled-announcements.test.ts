@@ -669,4 +669,36 @@ describe("scheduled-announcements service", () => {
     setTimeoutSpy.mockRestore();
     service.stop();
   });
+
+  it("logs the idle transition once instead of every re-check tick", async () => {
+    writeFileSync(filePath, JSON.stringify({ entries: [] }), "utf8");
+
+    const client = { channels: { fetch: vi.fn() } } as unknown as Parameters<
+      typeof createScheduledAnnouncementsService
+    >[0];
+    const infoMessages: string[] = [];
+
+    const service = createScheduledAnnouncementsService(client, {
+      loadOptions: { filePath },
+      logger: {
+        info: (message) => infoMessages.push(message),
+        warn: () => undefined,
+        error: () => undefined,
+      },
+    });
+
+    service.start();
+    await service.ready();
+
+    // The idle re-check fires every 60s; several ticks must not repeat the
+    // "entering idle loop" line (it flooded ~1440 lines/day in production).
+    for (let tick = 0; tick < 5; tick += 1) {
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
+
+    const idleLogs = infoMessages.filter((message) => message.includes("entering idle loop"));
+    expect(idleLogs).toHaveLength(1);
+
+    service.stop();
+  });
 });
