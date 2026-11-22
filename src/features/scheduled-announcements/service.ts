@@ -84,6 +84,10 @@ export function createScheduledAnnouncementsService(
   let entries: ScheduledAnnouncementEntry[] = [];
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
+  // The idle re-check runs every 60s; log only the transition into idle so a
+  // quiet schedule does not flood the log (~1440 lines/day) and evict useful
+  // history from retention.
+  let idleNotified = false;
 
   function resolveChannel(channelId: string): Promise<SendableTextChannel | null> {
     if (options.resolveChannel) {
@@ -158,13 +162,18 @@ export function createScheduledAnnouncementsService(
     const next = pickNextFires(entries, now, 1)[0] ?? null;
 
     if (!next) {
-      logger.info("No enabled entries left to schedule; entering idle loop.");
+      if (!idleNotified) {
+        logger.info("No enabled entries left to schedule; entering idle loop.");
+        idleNotified = true;
+      }
       // Re-check periodically so config edits followed by a restart can be
       // picked up; also handles a future case where entries get re-enabled
       // via edit-and-restart.
       timer = setTimeout(scheduleNext, 60_000);
       return;
     }
+
+    idleNotified = false;
 
     const rawDelayMs = next.fireAt.getTime() - now.getTime();
     const delayMs = Math.max(0, rawDelayMs);
