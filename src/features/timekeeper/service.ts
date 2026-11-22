@@ -33,7 +33,11 @@ import {
 } from "./engagement.js";
 import type { PlaybackTimeouts } from "./playback-budget.js";
 import { resolvePlaybackTimeouts } from "./playback-budget.js";
-import { getCurrentOrNextDailyStartAt, getTimekeeperPreparationStartAt } from "./schedule.js";
+import {
+  getCurrentOrNextDailyStartAt,
+  getNextDailyStartAt,
+  getTimekeeperPreparationStartAt,
+} from "./schedule.js";
 import {
   clampTimeToEvent,
   createSessionClock,
@@ -70,6 +74,25 @@ let activePaused = false;
 let activeSkipResolver: (() => void) | null = null;
 let pendingScheduledStartAt: Date | null = null;
 let skipFlag = false;
+// Incremented every time a session run starts or is aborted. The event loop
+// captures the value at start and aborts once it no longer matches, which is
+// how the watchdog stops a wedged runSession without waiting for it to settle.
+let sessionGeneration = 0;
+// The in-flight voice connection, tracked at module level so the watchdog can
+// destroy it when the owning runSession is wedged inside an unbounded await.
+let activeVoiceConnection: Awaited<ReturnType<typeof connectForPlayback>> | null = null;
+
+/**
+ * Upper bound for each pre-flight step in `runSession` (channel resolution,
+ * voice connect, engagement load). Discord REST / storage calls have no
+ * built-in timeout; without this a wedged gateway leaves the session — and
+ * therefore the whole daily scheduler — silently stuck forever.
+ */
+const PREFLIGHT_STEP_TIMEOUT_MS = 30_000;
+/** Hard cap for the whole voice-connect sequence including stage retries. */
+const VOICE_CONNECT_TIMEOUT_MS = 5 * 60_000;
+/** Extra wall-clock allowed past the nominal session length before the watchdog fires. */
+const SESSION_WATCHDOG_MARGIN_MS = 10 * 60_000;
 
 /**
  * Snapshot of the currently running (or just-scheduled) timekeeper session.
@@ -203,6 +226,8 @@ export function __resetTimekeeperRuntimeState(): void {
   activeSkipResolver = null;
   pendingScheduledStartAt = null;
   skipFlag = false;
+  sessionGeneration += 1;
+  activeVoiceConnection = null;
 }
 
 /**
@@ -230,18 +255,63 @@ export async function cancelActiveSession(
     status: options.status ?? "interrupted",
   });
 
+  // Invalidate any in-flight runSession so its event loop aborts at the next
+  // generation check instead of continuing to play audio after cancellation.
+  sessionGeneration += 1;
+  const wedgedConnection = activeVoiceConnection;
+  activeVoiceConnection = null;
+  if (wedgedConnection) {
+    safeDestroy(wedgedConnection);
+  }
+
+  resetSessionRuntimeState();
+  pendingScheduledStartAt = null;
+  return true;
+}
+
+/**
+ * Clear the per-session runtime singletons without touching scheduler state
+ * (`pendingScheduledStartAt` belongs to `scheduleNextSession`). Shared by the
+ * normal session tail, cancellation, and the watchdog abort path.
+ */
+function resetSessionRuntimeState(): void {
   activeSession = null;
   activeTimeline = [];
   activeClock = null;
-  // Mirror the normal completion path's reset so a cancelled session does
-  // not leak pause/skip state into the next one. Without this the next
-  // session starts already paused (suppressing every phase-ending-soon
-  // announcement) and a pending skip resolver hangs forever.
   activePaused = false;
   activeSkipResolver = null;
   skipFlag = false;
-  pendingScheduledStartAt = null;
-  return true;
+}
+
+/**
+ * Force-abort a session whose `runSession` promise has not settled within the
+ * watchdog budget. Bumps the generation so the orphaned loop exits at its next
+ * check, destroys the tracked voice connection to unblock any voice awaits,
+ * persists the interrupted session when one exists, and resets module state so
+ * the scheduler can arm the next day cleanly.
+ */
+async function abortWedgedSession(): Promise<void> {
+  sessionGeneration += 1;
+
+  const wedgedConnection = activeVoiceConnection;
+  activeVoiceConnection = null;
+  if (wedgedConnection) {
+    safeDestroy(wedgedConnection);
+  }
+
+  const session = activeSession;
+  if (session) {
+    try {
+      await markSessionInterrupted(session, {
+        reason: "watchdog",
+        status: "interrupted",
+      });
+    } catch (error) {
+      logger.error({ err: error }, "failed to persist interrupted session during watchdog abort");
+    }
+  }
+
+  resetSessionRuntimeState();
 }
 
 /**
@@ -341,7 +411,12 @@ export function registerTimekeeper(
   return { detachConsent };
 }
 
-function scheduleNextSession(client: Client, config: TimekeeperConfig, botConfig: BotConfig): void {
+function scheduleNextSession(
+  client: Client,
+  config: TimekeeperConfig,
+  botConfig: BotConfig,
+  notBeforeStartAt: Date | null = null,
+): void {
   if (!isTimekeeperConfigured(config)) {
     logger.warn(
       "Timekeeper is disabled. Set voiceChannelId and textChannelId in timekeeper config.",
@@ -350,12 +425,23 @@ function scheduleNextSession(client: Client, config: TimekeeperConfig, botConfig
     return;
   }
 
-  const nextStartAt = getCurrentOrNextDailyStartAt(
+  let nextStartAt = getCurrentOrNextDailyStartAt(
     new Date(),
     config.startHourJst,
     config.startMinuteJst,
     config.phases,
   );
+  // A session that just ran (or failed) for `notBeforeStartAt` must not be
+  // re-armed for the same slot: during the pre-start window the candidate
+  // would be identical, producing a zero-delay hot loop of immediate
+  // retries. Skipping to the next day keeps one attempt per day.
+  if (notBeforeStartAt && nextStartAt.getTime() <= notBeforeStartAt.getTime()) {
+    nextStartAt = getNextDailyStartAt(
+      new Date(notBeforeStartAt.getTime() + 1),
+      config.startHourJst,
+      config.startMinuteJst,
+    );
+  }
   const preparationStartAt = getTimekeeperPreparationStartAt(nextStartAt);
   const delayMs = Math.max(0, preparationStartAt.getTime() - Date.now());
   pendingScheduledStartAt = nextStartAt;
@@ -368,24 +454,56 @@ function scheduleNextSession(client: Client, config: TimekeeperConfig, botConfig
     "next timekeeper session scheduled",
   );
 
+  const sessionBudgetMs = getSessionDurationMinutes(config) * 60_000;
+  const watchdogMs = sessionBudgetMs + SESSION_WATCHDOG_MARGIN_MS;
+
   setTimeout(() => {
+    logger.info(
+      { startAt: nextStartAt.toISOString(), watchdogMs },
+      "timekeeper session timer fired",
+    );
+
+    // Reschedule exactly once whether the session settles normally, throws,
+    // or is force-aborted by the watchdog. Without this guard a wedged
+    // runSession would leave the daily schedule permanently disarmed.
+    let rescheduled = false;
+    const rescheduleOnce = () => {
+      if (rescheduled) {
+        return;
+      }
+      rescheduled = true;
+      pendingScheduledStartAt = null;
+      scheduleNextSession(client, config, botConfig, nextStartAt);
+    };
+
+    const watchdog = setTimeout(() => {
+      logger.error(
+        { startAt: nextStartAt.toISOString(), watchdogMs },
+        "timekeeper session watchdog expired; aborting wedged session",
+      );
+      void abortWedgedSession().then(rescheduleOnce, (error: unknown) => {
+        logger.error({ err: error }, "watchdog abort failed; rescheduling anyway");
+        rescheduleOnce();
+      });
+    }, watchdogMs);
+
     void runSession(client, config, botConfig, nextStartAt)
       .catch((error: unknown) => {
         logger.error({ err: error }, "timekeeper session failed");
       })
       .finally(() => {
-        pendingScheduledStartAt = null;
-        scheduleNextSession(client, config, botConfig);
+        clearTimeout(watchdog);
+        rescheduleOnce();
       });
   }, delayMs);
 }
 
+function getSessionDurationMinutes(config: TimekeeperConfig): number {
+  return config.phases.reduce((total, phase) => total + phase.durationMinutes, 0);
+}
+
 function isWithinSessionWindow(now: Date, startAt: Date, config: TimekeeperConfig): boolean {
-  const totalDurationMinutes = config.phases.reduce(
-    (total, phase) => total + phase.durationMinutes,
-    0,
-  );
-  const sessionEndAt = new Date(startAt.getTime() + totalDurationMinutes * 60_000);
+  const sessionEndAt = new Date(startAt.getTime() + getSessionDurationMinutes(config) * 60_000);
   return now >= startAt && now < sessionEndAt;
 }
 
@@ -395,8 +513,18 @@ async function runSession(
   botConfig: BotConfig,
   startAt: Date,
 ): Promise<void> {
-  const voiceChannel = await resolveVoiceChannel(client, config.voiceChannelId);
-  const textChannel = await resolveTextChannel(client, config.textChannelId);
+  const generation = ++sessionGeneration;
+
+  const voiceChannel = await withTimeout(
+    resolveVoiceChannel(client, config.voiceChannelId),
+    PREFLIGHT_STEP_TIMEOUT_MS,
+    "resolve voice channel",
+  );
+  const textChannel = await withTimeout(
+    resolveTextChannel(client, config.textChannelId),
+    PREFLIGHT_STEP_TIMEOUT_MS,
+    "resolve text channel",
+  );
 
   if (!voiceChannel) {
     throw new Error(`Voice channel not found: ${config.voiceChannelId}`);
@@ -406,11 +534,12 @@ async function runSession(
     throw new Error(`Text channel not found: ${config.textChannelId}`);
   }
 
-  const connection = await connectForPlayback(
+  const connection = await connectWithTimeout(
     voiceChannel,
     client,
     botConfig.voiceConnectionTimeoutMs,
   );
+  activeVoiceConnection = connection;
 
   const player = createAudioPlayer({
     behaviors: {
@@ -421,127 +550,192 @@ async function runSession(
   attachVoiceDebugging(connection, player);
   connection.subscribe(player);
 
-  const timeline = buildTimekeeperTimeline(startAt, config);
-  const now = new Date();
-  const startIndex = findTimelineStartIndex(timeline, now);
+  try {
+    const timeline = buildTimekeeperTimeline(startAt, config);
+    const now = new Date();
+    const startIndex = findTimelineStartIndex(timeline, now);
 
-  if (startIndex === -1) {
-    logger.info("session has already ended; skipping playback");
-    connection.destroy();
-    return;
-  }
+    if (startIndex === -1) {
+      logger.info("session has already ended; skipping playback");
+      return;
+    }
 
-  const firstEvent = timeline[startIndex];
-  if (firstEvent && firstEvent.at > now) {
-    logger.info(
-      { label: firstEvent.label, at: firstEvent.at.toISOString() },
-      "starting from upcoming phase",
+    const firstEvent = timeline[startIndex];
+    if (firstEvent && firstEvent.at > now) {
+      logger.info(
+        { label: firstEvent.label, at: firstEvent.at.toISOString() },
+        "starting from upcoming phase",
+      );
+    } else if (firstEvent) {
+      logger.info(
+        { label: firstEvent.label, startedAt: firstEvent.at.toISOString() },
+        "resuming from current phase",
+      );
+    }
+
+    activeTimeline = timeline;
+    activeSession = await withTimeout(
+      createSessionEngagement(startAt.toISOString()),
+      PREFLIGHT_STEP_TIMEOUT_MS,
+      "create session engagement",
     );
-  } else if (firstEvent) {
-    logger.info(
-      { label: firstEvent.label, startedAt: firstEvent.at.toISOString() },
-      "resuming from current phase",
-    );
+
+    const minuteMs = process.env.TIMEKEEPER_RUN_ON_READY === "true" ? 1_000 : 60_000;
+    const clock = createSessionClock(timeline, startAt, startIndex, minuteMs, Date.now());
+    activeClock = clock;
+    const timelineNow = getTimelineNow(clock, Date.now());
+
+    if (startIndex > 0) {
+      await postMissedProgressMessages(textChannel, timeline, startIndex, timelineNow);
+    }
+
+    const progressTasks: Promise<void>[] = [];
+
+    const eventsToRun = timeline.slice(startIndex);
+    for (const [index, event] of eventsToRun.entries()) {
+      const beforeWaitMs = Date.now();
+      const waitMs = getDelayFor(clock, event.at, beforeWaitMs);
+      logger.info(
+        {
+          order: event.order,
+          kind: event.kind,
+          scheduledAt: event.at.toISOString(),
+          now: new Date(beforeWaitMs).toISOString(),
+          waitMs,
+        },
+        "event waiting",
+      );
+
+      if (waitMs > 0) {
+        await awaitInterruptibleDelay(waitMs);
+      }
+
+      // The watchdog (or a cancellation) bumps sessionGeneration while this
+      // loop is suspended; bail out at the next event boundary instead of
+      // continuing to play audio for a session that no longer owns the state.
+      if (generation !== sessionGeneration) {
+        logger.info({ order: event.order }, "session superseded; aborting event loop");
+        return;
+      }
+
+      // A moderator-issued `/timekeeper skip` interrupts the wait above. If
+      // the skip landed between this event's `at` and the next event's `at`,
+      // treat that as a no-op for *this* iteration; the next loop iteration
+      // will fire its event on schedule from its own `getDelayFor` call.
+
+      if (isTimekeeperSessionPaused() && event.kind === "phase-ending-soon") {
+        logger.info({ order: event.order }, "suppressing paused phase-ending-soon");
+        continue;
+      }
+
+      const firedAtMs = Date.now();
+      logger.info(
+        {
+          order: event.order,
+          kind: event.kind,
+          scheduledAt: event.at.toISOString(),
+          actualAt: new Date(firedAtMs).toISOString(),
+          latenessMs: firedAtMs - event.at.getTime(),
+        },
+        "event firing",
+      );
+
+      if (!existsSync(event.audioPath)) {
+        throw new Error(`Audio file not found: ${event.audioPath}`);
+      }
+
+      // Bound this announcement to the time left before the next event, so a
+      // stalled player cannot overrun the gap and make the next event fire
+      // immediately after this one.
+      const nextEvent = eventsToRun[index + 1];
+      const msUntilNextEvent = nextEvent ? getDelayFor(clock, nextEvent.at, Date.now()) : null;
+
+      const { progressTask } = await playAnnouncement(
+        connection,
+        client,
+        voiceChannel,
+        player,
+        textChannel,
+        event,
+        clock,
+        resolvePlaybackTimeouts(msUntilNextEvent),
+        generation,
+      );
+
+      if (progressTask) {
+        progressTasks.push(progressTask);
+      }
+    }
+
+    await Promise.allSettled(progressTasks);
+    if (activeSession) {
+      await persistSessionAttendance(activeSession, formatSessionDate(startAt));
+    }
+    const fortuneSummaries = activeSession ? await buildFortuneSummary(activeSession) : null;
+    if (fortuneSummaries) {
+      for (const summary of fortuneSummaries) {
+        await textChannel.send(summary);
+      }
+    }
+  } finally {
+    if (generation === sessionGeneration) {
+      resetSessionRuntimeState();
+      pendingScheduledStartAt = null;
+    }
+    activeVoiceConnection = null;
+    safeDestroy(connection);
   }
+}
 
-  activeTimeline = timeline;
-  activeSession = await createSessionEngagement(startAt.toISOString());
-
-  const minuteMs = process.env.TIMEKEEPER_RUN_ON_READY === "true" ? 1_000 : 60_000;
-  const clock = createSessionClock(timeline, startAt, startIndex, minuteMs, Date.now());
-  activeClock = clock;
-  const timelineNow = getTimelineNow(clock, Date.now());
-
-  if (startIndex > 0) {
-    await postMissedProgressMessages(textChannel, timeline, startIndex, timelineNow);
-  }
-
-  const progressTasks: Promise<void>[] = [];
-
-  const eventsToRun = timeline.slice(startIndex);
-  for (const [index, event] of eventsToRun.entries()) {
-    const beforeWaitMs = Date.now();
-    const waitMs = getDelayFor(clock, event.at, beforeWaitMs);
-    logger.info(
-      {
-        order: event.order,
-        kind: event.kind,
-        scheduledAt: event.at.toISOString(),
-        now: new Date(beforeWaitMs).toISOString(),
-        waitMs,
+/**
+ * Reject `promise` after `ms` so an unbounded Discord REST / storage await
+ * cannot wedge the session (and with it the daily scheduler) silently.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
       },
-      "event waiting",
-    );
-
-    if (waitMs > 0) {
-      await awaitInterruptibleDelay(waitMs);
-    }
-
-    // A moderator-issued `/timekeeper skip` interrupts the wait above. If
-    // the skip landed between this event's `at` and the next event's `at`,
-    // treat that as a no-op for *this* iteration; the next loop iteration
-    // will fire its event on schedule from its own `getDelayFor` call.
-
-    if (isTimekeeperSessionPaused() && event.kind === "phase-ending-soon") {
-      logger.info({ order: event.order }, "suppressing paused phase-ending-soon");
-      continue;
-    }
-
-    const firedAtMs = Date.now();
-    logger.info(
-      {
-        order: event.order,
-        kind: event.kind,
-        scheduledAt: event.at.toISOString(),
-        actualAt: new Date(firedAtMs).toISOString(),
-        latenessMs: firedAtMs - event.at.getTime(),
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
       },
-      "event firing",
     );
+  });
+}
 
-    if (!existsSync(event.audioPath)) {
-      throw new Error(`Audio file not found: ${event.audioPath}`);
-    }
+/**
+ * `connectForPlayback` is internally bounded per attempt but its stage
+ * prepare path still awaits Discord REST calls (suppress / members fetch)
+ * that can hang. Cap the whole sequence; if the cap fires, destroy whatever
+ * connection the abandoned attempt eventually produces.
+ */
+async function connectWithTimeout(
+  voiceChannel: VoiceBasedChannel,
+  client: Client,
+  perAttemptTimeoutMs: number,
+): Promise<Awaited<ReturnType<typeof connectForPlayback>>> {
+  let expired = false;
+  const connectionPromise = connectForPlayback(voiceChannel, client, perAttemptTimeoutMs).then(
+    (connection) => {
+      if (expired) {
+        safeDestroy(connection);
+      }
+      return connection;
+    },
+  );
 
-    // Bound this announcement to the time left before the next event, so a
-    // stalled player cannot overrun the gap and make the next event fire
-    // immediately after this one.
-    const nextEvent = eventsToRun[index + 1];
-    const msUntilNextEvent = nextEvent ? getDelayFor(clock, nextEvent.at, Date.now()) : null;
-
-    const { progressTask } = await playAnnouncement(
-      connection,
-      client,
-      voiceChannel,
-      player,
-      textChannel,
-      event,
-      clock,
-      resolvePlaybackTimeouts(msUntilNextEvent),
-    );
-
-    if (progressTask) {
-      progressTasks.push(progressTask);
-    }
+  try {
+    return await withTimeout(connectionPromise, VOICE_CONNECT_TIMEOUT_MS, "voice connect");
+  } catch (error) {
+    expired = true;
+    throw error;
   }
-
-  await Promise.allSettled(progressTasks);
-  if (activeSession) {
-    await persistSessionAttendance(activeSession, formatSessionDate(startAt));
-  }
-  const fortuneSummaries = activeSession ? await buildFortuneSummary(activeSession) : null;
-  if (fortuneSummaries) {
-    for (const summary of fortuneSummaries) {
-      await textChannel.send(summary);
-    }
-  }
-  activeSession = null;
-  activeTimeline = [];
-  activeClock = null;
-  activePaused = false;
-  activeSkipResolver = null;
-  skipFlag = false;
-  connection.destroy();
 }
 
 async function playAnnouncement(
@@ -553,6 +747,7 @@ async function playAnnouncement(
   event: TimekeeperTimelineEvent,
   clock: SessionClock,
   timeouts: PlaybackTimeouts,
+  generation: number,
 ): Promise<AnnouncementPlaybackResult> {
   await refreshStageSpeakerBeforePlayback(client, voiceChannel);
   connection.setSpeaking(true);
@@ -570,7 +765,7 @@ async function playAnnouncement(
       content: initialMessage,
       components: buildCheckInComponents(event),
     });
-    progressTask = updateProgressMessage(sentMessage, event, clock);
+    progressTask = updateProgressMessage(sentMessage, event, clock, generation);
   }
 
   logger.info(
@@ -817,6 +1012,7 @@ async function updateProgressMessage(
   message: EditableTextMessage,
   event: TimekeeperTimelineEvent,
   clock: SessionClock,
+  generation: number,
 ): Promise<void> {
   if (!event.durationMinutes) {
     return;
@@ -830,6 +1026,12 @@ async function updateProgressMessage(
     const waitMs = getDelayFor(clock, targetAt, Date.now());
     if (waitMs > 0) {
       await delay(waitMs);
+    }
+
+    // Stop editing once the session has been superseded (watchdog abort or
+    // cancellation); the orphaned updater must not keep writing to Discord.
+    if (generation !== sessionGeneration) {
+      return;
     }
 
     const nextMessage = buildProgressMessage(
